@@ -1,0 +1,202 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Enterprise employee user profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "matricula": { "type": "string" },
+        "nome": { "type": "string" },
+        "tipo": { "type": "string", "enum": ["colaborador", "adm-dev"] },
+        "senha": { "type": "string" },
+        "primeiroAcesso": { "type": "boolean" },
+        "bloqueado": { "type": "boolean" },
+        "desativado": { "type": "boolean" },
+        "perm_trocar_senha_adm": { "type": "boolean" },
+        "termoAceito": { "type": "boolean" },
+        "termoAceitoEm": { "type": "string" },
+        "jornadaId": { "type": "string" },
+        "jornadaCustom": { "type": "object" },
+        "insalubridade": { "type": "number" },
+        "criadoEm": { "type": "string" },
+        "desativadoEm": { "type": "string" },
+        "desativadoPor": { "type": "string" },
+        "ferias": { "type": "array" },
+        "forcarVolus": { "type": "boolean" },
+        "lider": { "type": "boolean" },
+        "trocaJornadaDia": { "type": "number" },
+        "trocaJornadaIdAnterior": { "type": "string" },
+        "trocaInsalubridadeDia": { "type": "number" },
+        "trocaInsalubridadeAnterior": { "type": "number" },
+        "autorizarHoraExtra": { "type": "boolean" },
+        "apenasSomarHoras": { "type": "boolean" }
+      },
+      "required": ["id", "matricula", "nome", "tipo", "bloqueado", "desativado", "termoAceito", "criadoEm"]
+    },
+    "Pontos": {
+      "title": "Pontos",
+      "description": "Clock-in days batidas mapping for a specific user",
+      "type": "object",
+      "properties": {
+        "days": { "type": "object" }
+      },
+      "required": ["days"]
+    },
+    "ConfigEmpresa": {
+      "title": "ConfigEmpresa",
+      "description": "Enterprise configurations",
+      "type": "object",
+      "properties": {
+        "nome": { "type": "string" },
+        "cnpj": { "type": "string" }
+      },
+      "required": ["nome", "cnpj"]
+    },
+    "ConfigMinimoHoras": {
+      "title": "ConfigMinimoHoras",
+      "description": "Minimum active work hours setup",
+      "type": "object",
+      "properties": {
+        "value": { "type": "number" }
+      },
+      "required": ["value"]
+    },
+    "ConfigFeriados": {
+      "title": "ConfigFeriados",
+      "description": "List of holiday dates",
+      "type": "object",
+      "properties": {
+        "list": { "type": "array" }
+      },
+      "required": ["list"]
+    },
+    "ConfigWizard": {
+      "title": "ConfigWizard",
+      "description": "Superadmin wizard completion status",
+      "type": "object",
+      "properties": {
+        "done": { "type": "boolean" }
+      },
+      "required": ["done"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Clock-in system auditing trails",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "quando": { "type": "string" },
+        "quem": { "type": "string" },
+        "quemMat": { "type": "string" },
+        "acao": { "type": "string" },
+        "alvo": { "type": "string" },
+        "detalhe": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "accuracy": { "type": "number" }
+      },
+      "required": ["id", "quando", "quem", "quemMat", "acao", "alvo"]
+    },
+    "RenderError": {
+      "title": "RenderError",
+      "description": "Critical UI rendering error logs with stack traces",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "message": { "type": "string" },
+        "stack": { "type": "string" },
+        "componentStack": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "user": { "type": "string" },
+        "userAgent": { "type": "string" }
+      },
+      "required": ["id", "message", "stack", "timestamp"]
+    },
+    "PrePonto": {
+      "title": "PrePonto",
+      "description": "Pre-ponto punch intent registrations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "number" },
+        "userName": { "type": "string" },
+        "matricula": { "type": "string" },
+        "dayKey": { "type": "string" },
+        "idx": { "type": "number" },
+        "tipo": { "type": "string", "enum": ["auto", "manual"] },
+        "quando": { "type": "string" },
+        "status": { "type": "string", "enum": ["pendente", "sucesso", "cancelado"] },
+        "atualizadoEm": { "type": "string" }
+      },
+      "required": ["id", "userId", "userName", "matricula", "dayKey", "idx", "tipo", "quando", "status"]
+    },
+    "FolhaAceite": {
+      "title": "FolhaAceite",
+      "description": "Point sheet approval and rejection records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "number" },
+        "userName": { "type": "string" },
+        "matricula": { "type": "string" },
+        "mes": { "type": "number" },
+        "ano": { "type": "number" },
+        "status": { "type": "string", "enum": ["pendente", "aceito", "recusado", "retificado"] },
+        "horasTrabalhadas": { "type": "number" },
+        "horasExtra": { "type": "number" },
+        "horasAdicionalNoturno": { "type": "number" },
+        "faltas": { "type": "number" },
+        "atrasos": { "type": "number" },
+        "insalubridadeTexto": { "type": "string" },
+        "motivoRecusa": { "type": "string" },
+        "textoAceite": { "type": "string" },
+        "enviadoEm": { "type": "string" },
+        "respondidoEm": { "type": "string" }
+      },
+      "required": ["id", "userId", "userName", "matricula", "mes", "ano", "status", "enviadoEm"]
+    }
+  },
+  "firestore": {
+    "/folhasAceite/{folhaId}": {
+      "schema": "FolhaAceite",
+      "description": "Records of sent, approved or rejected point sheets"
+    },
+    "/prePontos/{prePontoId}": {
+      "schema": "PrePonto",
+      "description": "Registered clock-in clicks of intent (pre-pontos) before actual confirmation"
+    },
+    "/renderErrors/{errorId}": {
+      "schema": "RenderError",
+      "description": "Critical render errors captured by the Error Boundary"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Employee user profiles"
+    },
+    "/pontos/{userId}": {
+      "schema": "Pontos",
+      "description": "Employees clock-in events registered under dates"
+    },
+    "/config/empresa": {
+      "schema": "ConfigEmpresa",
+      "description": "Organization company metadata settings"
+    },
+    "/config/minimoHoras": {
+      "schema": "ConfigMinimoHoras",
+      "description": "Minimum work day length constraint"
+    },
+    "/config/feriados": {
+      "schema": "ConfigFeriados",
+      "description": "Organization local/regional holiday dates list"
+    },
+    "/config/wizard": {
+      "schema": "ConfigWizard",
+      "description": "Initial system initialization status indicator flag"
+    },
+    "/auditLogs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Actions logging log trace data records"
+    }
+  }
+}

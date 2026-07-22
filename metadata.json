@@ -1,0 +1,6 @@
+{
+  "name": "Ponto Digital Pro",
+  "description": "Sistema completo para controle de frequência, registro de ponto e auditoria de colaboradores em conformidade com as regras trabalhistas brasileiras.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": []
+}
