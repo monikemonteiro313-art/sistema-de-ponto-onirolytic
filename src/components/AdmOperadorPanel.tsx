@@ -10,6 +10,8 @@ import {
   getRegularNightIntersection
 } from "../utils/hrHelpers";
 import { getJornada, JORNADAS_PREDEFINIDAS, SUPERADMIN_MAT } from "../data/mockData";
+import { getCidInfo } from "../utils/cidHelper";
+import { gerarRelatorioAtestadosPDF } from "../utils/atestadosPdfGenerator";
 
 // --- CHILD COMPONENTS ---
 interface ResumoMesBadgesProps {
@@ -534,6 +536,7 @@ export function AdmOperadorPanel({
   const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "alimentacao" | "atestados" | "pre_pontos">("frequencia");
   const [preFilter, setPreFilter] = useState<"todos" | "sucesso" | "fantasma" | "cancelado" | "ativo">("todos");
   const [atestadoAmpliado, setAtestadoAmpliado] = useState<{ userName: string; dayKey: string; cid: string; foto: string } | null>(null);
+  const [filtroMesAtestado, setFiltroMesAtestado] = useState<string>("todos");
   const [valorDiarioAlimentacao, setValorDiarioAlimentacao] = useState<number>(() => {
     try {
       const cached = localStorage.getItem("hr_valor_diario_alimentacao");
@@ -1898,17 +1901,38 @@ export function AdmOperadorPanel({
     return list.sort((a, b) => b.dayKey.localeCompare(a.dayKey));
   }, [users, pontosGlobal]);
 
+  const mesesDisponiveisAtestados = useMemo(() => {
+    const setMeses = new Set<string>();
+    todosAtestados.forEach(a => {
+      if (a.dayKey && a.dayKey.length >= 7) {
+        setMeses.add(a.dayKey.slice(0, 7));
+      }
+    });
+    const now = new Date();
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      setMeses.add(`${yyyy}-${mm}`);
+    }
+    return Array.from(setMeses).sort((a, b) => b.localeCompare(a));
+  }, [todosAtestados]);
+
   const filtradosAtestados = useMemo(() => {
-    if (!busca.trim()) return todosAtestados;
+    let list = todosAtestados;
+    if (filtroMesAtestado !== "todos") {
+      list = list.filter(a => a.dayKey.startsWith(filtroMesAtestado));
+    }
+    if (!busca.trim()) return list;
     const term = busca.toLowerCase();
-    return todosAtestados.filter(
+    return list.filter(
       a =>
         a.userName.toLowerCase().includes(term) ||
         a.userMatricula.toLowerCase().includes(term) ||
         a.cid.toLowerCase().includes(term) ||
         a.dayKey.includes(term)
     );
-  }, [todosAtestados, busca]);
+  }, [todosAtestados, busca, filtroMesAtestado]);
 
   function salvarJornada(userId: number) {
     if (!checkCalendarPermission()) return;
@@ -3068,9 +3092,9 @@ export function AdmOperadorPanel({
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 }}>
               {[
                 ["Total de Atestados Lançados", todosAtestados.length, t.accent, t.accentGlow, t.borderFocus],
-                ["Atestados Filtrados", filtradosAtestados.length, "#3b82f6", "rgba(59,130,246,0.1)", "rgba(59,130,246,0.3)"],
-                ["Atestados Parciais (Horas)", todosAtestados.filter(x => x.parcial).length, "#F59E0B", "rgba(245,158,11,0.1)", "rgba(245,158,11,0.3)"],
-                ["Colaboradores Afetados", new Set(todosAtestados.map(x => x.userId)).size, "#10B981", "rgba(16,185,129,0.1)", "rgba(16,185,129,0.3)"]
+                ["Exibindo no Mês / Filtro", filtradosAtestados.length, "#3b82f6", "rgba(59,130,246,0.1)", "rgba(59,130,246,0.3)"],
+                ["Atestados Parciais (Horas)", filtradosAtestados.filter(x => x.parcial).length, "#F59E0B", "rgba(245,158,11,0.1)", "rgba(245,158,11,0.3)"],
+                ["Colaboradores Afetados", new Set(filtradosAtestados.map(x => x.userId)).size, "#10B981", "rgba(16,185,129,0.1)", "rgba(16,185,129,0.3)"]
               ].map(([label, val, color, bg, border], idx) => (
                 <div key={idx} style={{ background: t.surface, border: `1.5px solid ${border}`, borderRadius: 12, padding: "14px 16px" }}>
                   <div style={{ fontSize: 22, fontWeight: 800, color: color as string, fontVariantNumeric: "tabular-nums" }}>{val}</div>
@@ -3079,120 +3103,199 @@ export function AdmOperadorPanel({
               ))}
             </div>
 
-            {/* Filter Row for Atestados */}
-            <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: "260px" }}>
-                <input
-                  placeholder="Buscar por colaborador, CID ou data..."
-                  value={busca}
-                  onChange={e => setBusca(e.target.value)}
-                  style={{ width: "100%", boxSizing: "border-box", background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 10, color: t.text, fontSize: 14, padding: "10px 16px", outline: "none", fontFamily: "inherit" }}
-                />
+            {/* Filter & Action Row for Atestados */}
+            <div style={{ display: "flex", gap: 12, marginBottom: 20, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 12, flex: 1, minWidth: "280px", flexWrap: "wrap" }}>
+                {/* Search Box */}
+                <div style={{ flex: 1, minWidth: "220px" }}>
+                  <input
+                    placeholder="Buscar por colaborador, CID ou data..."
+                    value={busca}
+                    onChange={e => setBusca(e.target.value)}
+                    style={{ width: "100%", boxSizing: "border-box", background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 10, color: t.text, fontSize: 14, padding: "10px 16px", outline: "none", fontFamily: "inherit" }}
+                  />
+                </div>
+
+                {/* Month Selector Dropdown */}
+                <div style={{ width: "220px" }}>
+                  <select
+                    value={filtroMesAtestado}
+                    onChange={e => setFiltroMesAtestado(e.target.value)}
+                    style={{ width: "100%", boxSizing: "border-box", background: t.surface, border: `1.5px solid ${t.borderFocus}`, borderRadius: 10, color: t.text, fontSize: 13.5, fontWeight: 700, padding: "10px 14px", outline: "none", fontFamily: "inherit", cursor: "pointer" }}
+                  >
+                    <option value="todos">📅 Todos os Meses ({todosAtestados.length})</option>
+                    {mesesDisponiveisAtestados.map(mStr => {
+                      const [y, m] = mStr.split("-");
+                      const MESES_NOME = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+                      const idx = parseInt(m, 10) - 1;
+                      const label = idx >= 0 && idx < 12 ? `${MESES_NOME[idx]} / ${y}` : mStr;
+                      const qtd = todosAtestados.filter(x => x.dayKey.startsWith(mStr)).length;
+                      return (
+                        <option key={mStr} value={mStr}>
+                          🗓️ {label} ({qtd})
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
               </div>
+
+              {/* Download Consolidated PDF Button */}
+              <button
+                type="button"
+                onClick={() => gerarRelatorioAtestadosPDF(todosAtestados, filtroMesAtestado, empresaConfig)}
+                style={{
+                  background: `linear-gradient(135deg, ${t.accent}, #2563EB)`,
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: 10,
+                  padding: "10px 20px",
+                  fontSize: 13.5,
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  boxShadow: "0 4px 12px rgba(37,99,235,0.25)",
+                  transition: "all 0.2s"
+                }}
+              >
+                <span>📄 Baixar Relatório de Atestados (PDF)</span>
+              </button>
             </div>
 
             {filtradosAtestados.length === 0 ? (
               <div style={{ textAlign: "center", padding: "48px", background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 16, color: t.textMuted, fontSize: 14 }}>
-                Nenhum atestado médico registrado ou encontrado para a busca.
+                Nenhum atestado médico registrado ou encontrado para os filtros selecionados.
               </div>
             ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
-                {filtradosAtestados.map((atest, index) => (
-                  <div
-                    key={`${atest.userId}-${atest.dayKey}-${index}`}
-                    style={{
-                      background: t.surface,
-                      border: `1.5px solid ${t.border}`,
-                      borderRadius: 16,
-                      padding: 16,
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 12,
-                      boxShadow: "0 2px 8px rgba(0,0,0,0.04)"
-                    }}
-                  >
-                    {/* Header: User Info */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: t.text }}>{atest.userName}</div>
-                        <div style={{ fontSize: 11, color: t.textMuted }}>Mat. {atest.userMatricula}</div>
-                      </div>
-                      <span
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 700,
-                          padding: "3px 8px",
-                          borderRadius: 6,
-                          background: atest.parcial ? "rgba(245,158,11,0.12)" : "rgba(59,130,246,0.12)",
-                          color: atest.parcial ? "#D97706" : "#2563EB"
-                        }}
-                      >
-                        {atest.parcial ? "Parcial (Horas)" : "Dia Completo"}
-                      </span>
-                    </div>
-
-                    <div style={{ display: "flex", gap: 12, alignItems: "center", background: t.surfaceAlt, padding: "8px 12px", borderRadius: 10 }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 11, color: t.textMuted }}>Data do Atestado</div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: t.text }}>
-                          {(() => {
-                            try {
-                              const [year, month, day] = atest.dayKey.split("-");
-                              return `${day}/${month}/${year}`;
-                            } catch {
-                              return atest.dayKey;
-                            }
-                          })()}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 16 }}>
+                {filtradosAtestados.map((atest, index) => {
+                  const infoCid = getCidInfo(atest.cid);
+                  return (
+                    <div
+                      key={`${atest.userId}-${atest.dayKey}-${index}`}
+                      style={{
+                        background: t.surface,
+                        border: `1.5px solid ${t.border}`,
+                        borderRadius: 16,
+                        padding: 16,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 12,
+                        boxShadow: "0 2px 8px rgba(0,0,0,0.04)"
+                      }}
+                    >
+                      {/* Header: User Info */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: t.text }}>{atest.userName}</div>
+                          <div style={{ fontSize: 11, color: t.textMuted }}>Mat. {atest.userMatricula}</div>
                         </div>
-                      </div>
-                      <div style={{ textAlign: "right" }}>
-                        <div style={{ fontSize: 11, color: t.textMuted }}>Código CID-10</div>
                         <span
                           style={{
-                            fontSize: 12,
-                            fontWeight: 800,
-                            fontFamily: "monospace",
-                            background: t.accentGlow,
-                            color: t.accent,
-                            padding: "2px 6px",
-                            borderRadius: 4,
-                            border: `1px solid ${t.borderFocus}`
+                            fontSize: 11,
+                            fontWeight: 700,
+                            padding: "3px 8px",
+                            borderRadius: 6,
+                            background: atest.parcial ? "rgba(245,158,11,0.12)" : "rgba(59,130,246,0.12)",
+                            color: atest.parcial ? "#D97706" : "#2563EB"
                           }}
                         >
-                          {atest.cid}
+                          {atest.parcial ? "Parcial (Horas)" : "Dia Completo"}
                         </span>
                       </div>
-                    </div>
 
-                    {/* Obs / Justificativa */}
-                    {atest.obs && (
-                      <div style={{ fontSize: 12, color: t.textSub, fontStyle: "italic", lineHeight: "1.4", background: "rgba(0,0,0,0.02)", padding: "8px 10px", borderRadius: 8, borderLeft: `3px solid ${t.border}` }}>
-                        "{atest.obs}"
-                      </div>
-                    )}
-
-                    {/* Foto do Atestado Thumbnail */}
-                    {atest.fotoAtestado ? (
-                      <div style={{ position: "relative", width: "100%", height: 140, borderRadius: 8, overflow: "hidden", cursor: "pointer", border: `1px solid ${t.border}`, background: "#111" }} onClick={() => setAtestadoAmpliado({ userName: atest.userName, dayKey: atest.dayKey, cid: atest.cid, foto: atest.fotoAtestado! })}>
-                        <img
-                          src={atest.fotoAtestado}
-                          alt="Foto do Atestado"
-                          referrerPolicy="no-referrer"
-                          style={{ width: "100%", height: "100%", objectFit: "cover", transition: "transform 0.2s" }}
-                          onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.05)"; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
-                        />
-                        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "4px 8px", background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                          <span>🔍 Clique para ampliar</span>
+                      <div style={{ display: "flex", gap: 12, alignItems: "center", background: t.surfaceAlt, padding: "8px 12px", borderRadius: 10 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 11, color: t.textMuted }}>Data do Atestado</div>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: t.text }}>
+                            {(() => {
+                              try {
+                                const [year, month, day] = atest.dayKey.split("-");
+                                return `${day}/${month}/${year}`;
+                              } catch {
+                                return atest.dayKey;
+                              }
+                            })()}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 11, color: t.textMuted }}>Código CID-10</div>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 800,
+                              fontFamily: "monospace",
+                              background: t.accentGlow,
+                              color: t.accent,
+                              padding: "2px 8px",
+                              borderRadius: 4,
+                              border: `1px solid ${t.borderFocus}`
+                            }}
+                          >
+                            {atest.cid}
+                          </span>
                         </div>
                       </div>
-                    ) : (
-                      <div style={{ height: 140, borderRadius: 8, background: t.surfaceAlt, border: `1px dashed ${t.border}`, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 11 }}>
-                        Nenhuma foto enviada
+
+                      {/* CID Identification & Clinical Breakdown Box */}
+                      <div style={{
+                        background: t.surfaceAlt,
+                        border: `1px solid ${t.border}`,
+                        borderLeft: `4px solid ${t.accent}`,
+                        borderRadius: "0 10px 10px 0",
+                        padding: "10px 12px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 12, fontWeight: 800, color: t.text }}>
+                            🩺 {infoCid.titulo}
+                          </span>
+                        </div>
+                        <span style={{ fontSize: 10.5, color: t.textSub, fontWeight: 600 }}>
+                          Categoria: {infoCid.categoria}
+                        </span>
+                        <div style={{ fontSize: 11.5, color: t.text, marginTop: 4, lineHeight: "1.4" }}>
+                          <strong>O que diz o atestado:</strong> {infoCid.oQueDizOAtestado}
+                        </div>
+                        <div style={{ fontSize: 11, color: t.textMuted, fontStyle: "italic", marginTop: 2 }}>
+                          <strong>Recomendação:</strong> {infoCid.recomendacaoTrabalho}
+                        </div>
                       </div>
-                    )}
-                  </div>
-                ))}
+
+                      {/* Obs / Justificativa */}
+                      {atest.obs && (
+                        <div style={{ fontSize: 11.5, color: t.textSub, fontStyle: "italic", lineHeight: "1.4", background: "rgba(0,0,0,0.02)", padding: "8px 10px", borderRadius: 8, borderLeft: `3px solid ${t.border}` }}>
+                          "{atest.obs}"
+                        </div>
+                      )}
+
+                      {/* Foto do Atestado Thumbnail */}
+                      {atest.fotoAtestado ? (
+                        <div style={{ position: "relative", width: "100%", height: 140, borderRadius: 8, overflow: "hidden", cursor: "pointer", border: `1px solid ${t.border}`, background: "#111" }} onClick={() => setAtestadoAmpliado({ userName: atest.userName, dayKey: atest.dayKey, cid: atest.cid, foto: atest.fotoAtestado! })}>
+                          <img
+                            src={atest.fotoAtestado}
+                            alt="Foto do Atestado"
+                            referrerPolicy="no-referrer"
+                            style={{ width: "100%", height: "100%", objectFit: "cover", transition: "transform 0.2s" }}
+                            onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.05)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+                          />
+                          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "4px 8px", background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                            <span>🔍 Clique para ampliar foto</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ height: 60, borderRadius: 8, background: t.surfaceAlt, border: `1px dashed ${t.border}`, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 11 }}>
+                          Nenhuma foto anexada
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </>

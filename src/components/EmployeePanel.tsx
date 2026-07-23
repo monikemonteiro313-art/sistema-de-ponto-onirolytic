@@ -4,6 +4,7 @@ import { ThemeColors, User, Batida, DiaPontos, PontosGlobal, FolhaAceite, Alerta
 import { getOverlapWithNightShift, calcularDia, resumoMesCalculado } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
 import { LgpdModal } from "./LgpdModal";
+import { getCidInfo } from "../utils/cidHelper";
 
 function resizeAndCompressImage(base64Str: string, maxWidth = 480, maxHeight = 480, quality = 0.42): Promise<string> {
   return new Promise((resolve) => {
@@ -2258,6 +2259,27 @@ export function EmployeePanel({
                       outline: "none"
                     }}
                   />
+
+                  {/* CID Live Description Box */}
+                  {atestadoCid.trim().length >= 2 && (() => {
+                    const info = getCidInfo(atestadoCid);
+                    return (
+                      <div style={{
+                        marginTop: 8,
+                        background: t.surfaceAlt,
+                        border: `1px solid ${t.borderFocus}`,
+                        borderLeft: `4px solid ${t.accent}`,
+                        borderRadius: "0 8px 8px 0",
+                        padding: "8px 10px",
+                        fontSize: 11.5
+                      }}>
+                        <div style={{ fontWeight: 700, color: t.text }}>🩺 {info.titulo}</div>
+                        <div style={{ fontSize: 10.5, color: t.textSub, marginTop: 2 }}>
+                          <strong>O que diz:</strong> {info.oQueDizOAtestado}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Parcial toggle */}
