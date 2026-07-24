@@ -114,12 +114,74 @@ export function formatNightShiftOverlaps(overlaps: NightShiftOverlap[]): { total
   return { totalHoras, texto };
 }
 
+export function baixarArquivoAtestado(base64OrUrl: string, filename: string) {
+  if (!base64OrUrl) return;
+  const link = document.createElement("a");
+  link.href = base64OrUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+export function compressImageBase64(
+  base64Str: string,
+  maxWidth = 1800,
+  maxHeight = 1800,
+  quality = 0.88
+): Promise<string> {
+  return new Promise((resolve) => {
+    if (!base64Str || !base64Str.startsWith("data:image")) {
+      return resolve(base64Str);
+    }
+    const img = new Image();
+    img.onload = () => {
+      let width = img.width;
+      let height = img.height;
+
+      // If already small enough, keep full original resolution
+      if (width <= maxWidth && height <= maxHeight) {
+        maxWidth = width;
+        maxHeight = height;
+      }
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      } else {
+        resolve(base64Str);
+      }
+    };
+    img.onerror = () => resolve(base64Str);
+    img.src = base64Str;
+  });
+}
+
 export function calcularDia(
   userId: number,
   dayKey: string,
   users: User[],
   pontosGlobal: PontosGlobal,
-  feriadosGlobais?: string[]
+  feriadosGlobais?: string[],
+  toleranciaMin: number = 10
 ) {
   const u = users.find(x => x.id === userId);
   if (!u) return null;
@@ -181,7 +243,7 @@ export function calcularDia(
   }
 
   // Atestado dia inteiro
-  if (ocorrencia?.ocorrencia === "atestado" && !ocorrencia.parcial) {
+  if (ocorrencia?.ocorrencia === "atestado" && !ocorrencia.parcial && ocorrencia.statusAtestado !== "recusado") {
     return { status: "atestado" as const, horasTrabalhadas: horasJornada, horasJornada, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
@@ -220,22 +282,22 @@ export function calcularDia(
     const minutosJornada = Math.round(horasJornada * 60);
     const diffMin = minutosTrabalhados - minutosJornada;
 
-    if (diffMin > 10) {
+    if (diffMin > toleranciaMin) {
       horasExtra = diffMin / 60;
-    } else if (diffMin < -10) {
+    } else if (diffMin < -toleranciaMin) {
       atrasoMin = Math.abs(diffMin);
     }
   } else {
-    // Para jornadas rígidas/com horário fixo, calculamos desvios por marcação com tolerância de 10 minutos por marcação
+    // Para jornadas rígidas/com horário fixo, calculamos desvios por marcação com a margem de tolerância configurada
     
     // 1. Entrada (w)
     if (jornada.entrada && bEntrada) {
       const prevEntrada = toMin(jornada.entrada);
       const realEntrada = entradaReal.getHours() * 60 + entradaReal.getMinutes();
       const diff = realEntrada - prevEntrada;
-      if (diff > 10) {
+      if (diff > toleranciaMin) {
         atrasoMin += diff;
-      } else if (diff < -10) {
+      } else if (diff < -toleranciaMin) {
         horasExtra += Math.abs(diff) / 60;
       }
     }
@@ -245,9 +307,9 @@ export function calcularDia(
       const prevSaidaAlm = toMin(jornada.saidaAlmoco);
       const realSaidaAlm = bSaidaAlm.getHours() * 60 + bSaidaAlm.getMinutes();
       const diff = realSaidaAlm - prevSaidaAlm;
-      if (diff > 10) {
+      if (diff > toleranciaMin) {
         horasExtra += diff / 60;
-      } else if (diff < -10) {
+      } else if (diff < -toleranciaMin) {
         saidaAntMin += Math.abs(diff);
       }
     }
@@ -257,9 +319,9 @@ export function calcularDia(
       const prevRetornoAlm = toMin(jornada.retornoAlmoco);
       const realRetornoAlm = bRetorno.getHours() * 60 + bRetorno.getMinutes();
       const diff = realRetornoAlm - prevRetornoAlm;
-      if (diff > 10) {
+      if (diff > toleranciaMin) {
         atrasoMin += diff;
-      } else if (diff < -10) {
+      } else if (diff < -toleranciaMin) {
         horasExtra += Math.abs(diff) / 60;
       }
     }
@@ -269,9 +331,9 @@ export function calcularDia(
       const prevSaida = toMin(jornada.saida);
       const realSaida = saidaReal.getHours() * 60 + saidaReal.getMinutes();
       const diff = realSaida - prevSaida;
-      if (diff > 10) {
+      if (diff > toleranciaMin) {
         horasExtra += diff / 60;
-      } else if (diff < -10) {
+      } else if (diff < -toleranciaMin) {
         saidaAntMin += Math.abs(diff);
       }
     }
@@ -295,7 +357,7 @@ export function calcularDia(
     adicNoturnoTexto = formatted.texto;
   }
 
-  const isAtestadoParcial = ocorrencia?.ocorrencia === "atestado" && ocorrencia.parcial;
+  const isAtestadoParcial = ocorrencia?.ocorrencia === "atestado" && ocorrencia.parcial && ocorrencia.statusAtestado !== "recusado";
   const status = isAtestadoParcial ? ("atestado" as const) : (atrasoMin > 0 || saidaAntMin > 0) ? ("parcial" as const) : ("completo" as const);
   const contaParaCartao = !isAtestadoParcial;
 

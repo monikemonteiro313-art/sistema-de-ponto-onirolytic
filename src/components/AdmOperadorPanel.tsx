@@ -7,7 +7,8 @@ import {
   calcularDia,
   resumoMesCalculado,
   toMin,
-  getRegularNightIntersection
+  getRegularNightIntersection,
+  baixarArquivoAtestado
 } from "../utils/hrHelpers";
 import { getJornada, JORNADAS_PREDEFINIDAS, SUPERADMIN_MAT } from "../data/mockData";
 import { getCidInfo } from "../utils/cidHelper";
@@ -249,6 +250,7 @@ interface ModalEmpresaProps {
 function ModalEmpresa({ t, config, onSalvar, onFechar }: ModalEmpresaProps) {
   const [nome, setNome] = useState(config.nome || "");
   const [cnpj, setCnpj] = useState(config.cnpj || "");
+  const [toleranciaMinutos, setToleranciaMinutos] = useState<number>(config.toleranciaMinutos ?? 10);
 
   function fmtCnpj(v: string) {
     return v
@@ -313,7 +315,7 @@ function ModalEmpresa({ t, config, onSalvar, onFechar }: ModalEmpresaProps) {
           />
         </div>
 
-        <div style={{ marginBottom: 22 }}>
+        <div style={{ marginBottom: 16 }}>
           <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: t.textSub, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>
             CNPJ <span style={{ fontWeight: 400, color: t.textMuted }}>(opcional)</span>
           </label>
@@ -336,6 +338,35 @@ function ModalEmpresa({ t, config, onSalvar, onFechar }: ModalEmpresaProps) {
           />
         </div>
 
+        <div style={{ marginBottom: 22 }}>
+          <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: t.textSub, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            Margem de Tolerância (Minutos - CLT Art. 58)
+          </label>
+          <input
+            type="number"
+            min={0}
+            max={30}
+            value={toleranciaMinutos}
+            onChange={e => setToleranciaMinutos(Math.max(0, Number(e.target.value)))}
+            placeholder="10"
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              background: t.inputBg,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 9,
+              color: t.text,
+              fontSize: 14,
+              padding: "10px 13px",
+              outline: "none",
+              fontFamily: "inherit"
+            }}
+          />
+          <div style={{ fontSize: 11, color: t.textMuted, marginTop: 4 }}>
+            💡 Variações de horário dentro dessa margem (padrão CLT: 10 min por dia/batida) são desconsideradas como atraso ou hora extra.
+          </div>
+        </div>
+
         <div style={{ display: "flex", gap: 10 }}>
           <button
             onClick={onFechar}
@@ -355,7 +386,7 @@ function ModalEmpresa({ t, config, onSalvar, onFechar }: ModalEmpresaProps) {
             Cancelar
           </button>
           <button
-            onClick={() => nome.trim() && onSalvar({ nome: nome.trim(), cnpj })}
+            onClick={() => nome.trim() && onSalvar({ nome: nome.trim(), cnpj, toleranciaMinutos })}
             disabled={!nome.trim()}
             style={{
               flex: 2,
@@ -533,10 +564,145 @@ export function AdmOperadorPanel({
   prePontos = []
 }: AdmOperadorPanelProps) {
   const [busca, setBusca] = useState("");
-  const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "alimentacao" | "atestados" | "pre_pontos">("frequencia");
+  const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "alimentacao" | "atestados" | "pre_pontos" | "pontos_manuais">("frequencia");
   const [preFilter, setPreFilter] = useState<"todos" | "sucesso" | "fantasma" | "cancelado" | "ativo">("todos");
   const [atestadoAmpliado, setAtestadoAmpliado] = useState<{ userName: string; dayKey: string; cid: string; foto: string } | null>(null);
+  const [atestadoZoom, setAtestadoZoom] = useState<number>(1);
+  const [atestadoRotacao, setAtestadoRotacao] = useState<number>(0);
   const [filtroMesAtestado, setFiltroMesAtestado] = useState<string>("todos");
+  const [atestadoParaRecusar, setAtestadoParaRecusar] = useState<{
+    userId: number;
+    userName: string;
+    dayKey: string;
+    batidaIdx: number;
+    cid: string;
+  } | null>(null);
+  const [justificativaRecusaInput, setJustificativaRecusaInput] = useState("");
+
+  const pendenciasCalculadas = useMemo(() => {
+    let atestadosPendentes = 0;
+    let pontosManuaisPendentes = 0;
+    Object.keys(pontosGlobal).forEach(uId => {
+      const days = pontosGlobal[Number(uId)];
+      if (days) {
+        Object.keys(days).forEach(dKey => {
+          const arr = days[dKey];
+          if (arr) {
+            arr.forEach(b => {
+              if (b && b.ocorrencia === "atestado" && (!b.statusAtestado || b.statusAtestado === "pendente")) {
+                atestadosPendentes++;
+              }
+              if (b && b.tipo === "manual" && (!b.statusAprovacao || b.statusAprovacao === "pendente")) {
+                pontosManuaisPendentes++;
+              }
+            });
+          }
+        });
+      }
+    });
+
+    const prePontosPendentes = (prePontos || []).filter(p => p.status === "pendente").length;
+
+    const hoje = new Date().toISOString().slice(0, 10);
+    let prevDate = new Date();
+    prevDate.setDate(prevDate.getDate() - 1);
+    const ontem = prevDate.toISOString().slice(0, 10);
+
+    let batidasIncompletas = 0;
+    const colabs = users.filter(u => u.tipo !== "adm-dev" && !u.desativado);
+    colabs.forEach(colab => {
+      const userDays = pontosGlobal[colab.id];
+      if (userDays) {
+        [hoje, ontem].forEach(dk => {
+          const arr = userDays[dk];
+          if (arr) {
+            const valids = arr.filter(b => b && b.hora && !b.duplicadoOculto);
+            if (valids.length > 0 && valids.length % 2 !== 0) {
+              batidasIncompletas++;
+            }
+          }
+        });
+      }
+    });
+
+    return {
+      atestadosPendentes,
+      pontosManuaisPendentes,
+      prePontosPendentes,
+      batidasIncompletas,
+      total: atestadosPendentes + pontosManuaisPendentes + prePontosPendentes + batidasIncompletas
+    };
+  }, [pontosGlobal, prePontos, users]);
+
+  function handleAceitarAtestado(item: { userId: number; userName: string; dayKey: string; batidaIdx: number; cid: string }) {
+    const userRegs = pontosGlobal[item.userId] || {};
+    const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
+    if (dayArray[item.batidaIdx]) {
+      dayArray[item.batidaIdx] = {
+        ...dayArray[item.batidaIdx]!,
+        statusAtestado: "aceito",
+        motivoRecusaAtestado: undefined,
+        revisadoEm: new Date().toISOString(),
+        revisadoPor: currentUser.nome
+      };
+    }
+    const updated = {
+      ...pontosGlobal,
+      [item.userId]: {
+        ...userRegs,
+        [item.dayKey]: dayArray
+      }
+    };
+    setPontosGlobal(updated);
+    if (onAddLog) {
+      onAddLog(
+        "Aprovou Atestado Médico",
+        `${item.userName} (${item.dayKey})`,
+        `CID: ${item.cid} - Homologado e aceito por ${currentUser.nome}`
+      );
+    }
+  }
+
+  function handleConfirmarRecusaAtestado() {
+    if (!atestadoParaRecusar) return;
+    if (!justificativaRecusaInput.trim()) return;
+
+    const item = atestadoParaRecusar;
+    const userRegs = pontosGlobal[item.userId] || {};
+    const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
+
+    if (dayArray[item.batidaIdx]) {
+      dayArray[item.batidaIdx] = {
+        ...dayArray[item.batidaIdx]!,
+        statusAtestado: "recusado",
+        motivoRecusaAtestado: justificativaRecusaInput.trim(),
+        revisadoEm: new Date().toISOString(),
+        revisadoPor: currentUser.nome,
+        vistoPeloColaborador: false
+      };
+    }
+
+    const updated = {
+      ...pontosGlobal,
+      [item.userId]: {
+        ...userRegs,
+        [item.dayKey]: dayArray
+      }
+    };
+
+    setPontosGlobal(updated);
+
+    if (onAddLog) {
+      onAddLog(
+        "Recusou Atestado Médico",
+        `${item.userName} (${item.dayKey})`,
+        `CID: ${item.cid} - Recusado por ${currentUser.nome}. Justificativa: "${justificativaRecusaInput.trim()}"`
+      );
+    }
+
+    setAtestadoParaRecusar(null);
+    setJustificativaRecusaInput("");
+  }
   const [valorDiarioAlimentacao, setValorDiarioAlimentacao] = useState<number>(() => {
     try {
       const cached = localStorage.getItem("hr_valor_diario_alimentacao");
@@ -1862,11 +2028,16 @@ export function AdmOperadorPanel({
       userName: string;
       userMatricula: string;
       dayKey: string;
+      batidaIdx: number;
       cid: string;
       fotoAtestado?: string;
       obs?: string;
       registradoEm?: string;
       parcial?: boolean;
+      statusAtestado: "pendente" | "aceito" | "recusado";
+      motivoRecusaAtestado?: string;
+      revisadoEm?: string;
+      revisadoPor?: string;
     }[] = [];
 
     users.forEach(u => {
@@ -1877,7 +2048,7 @@ export function AdmOperadorPanel({
         const dayArray = userDays[dayKey];
         if (!dayArray) return;
 
-        dayArray.forEach(b => {
+        dayArray.forEach((b, idx) => {
           if (b && b.ocorrencia === "atestado") {
             const alreadyAdded = list.some(item => item.userId === u.id && item.dayKey === dayKey);
             if (!alreadyAdded) {
@@ -1886,11 +2057,16 @@ export function AdmOperadorPanel({
                 userName: u.nome,
                 userMatricula: u.matricula,
                 dayKey,
+                batidaIdx: idx,
                 cid: b.cid || "N/A",
                 fotoAtestado: b.fotoAtestado,
                 obs: b.obs,
                 registradoEm: b.registradoEm,
-                parcial: b.parcial
+                parcial: b.parcial,
+                statusAtestado: b.statusAtestado || "pendente",
+                motivoRecusaAtestado: b.motivoRecusaAtestado,
+                revisadoEm: b.revisadoEm,
+                revisadoPor: b.revisadoPor
               });
             }
           }
@@ -1933,6 +2109,128 @@ export function AdmOperadorPanel({
         a.dayKey.includes(term)
     );
   }, [todosAtestados, busca, filtroMesAtestado]);
+
+  const todosPontosManuais = useMemo(() => {
+    const list: {
+      userId: number;
+      userName: string;
+      userMatricula: string;
+      dayKey: string;
+      batidaIdx: number;
+      hora: string;
+      obs?: string;
+      registradoEm?: string;
+      latitude?: number;
+      longitude?: number;
+      accuracy?: number;
+      statusAprovacao: "pendente" | "aprovado" | "rejeitado";
+      motivoRejeicaoAjuste?: string;
+      revisadoPor?: string;
+      revisadoEm?: string;
+    }[] = [];
+
+    users.forEach(u => {
+      const userDays = pontosGlobal[u.id];
+      if (!userDays) return;
+
+      Object.keys(userDays).forEach(dayKey => {
+        const dayArray = userDays[dayKey];
+        if (!dayArray) return;
+
+        dayArray.forEach((b, idx) => {
+          if (b && b.tipo === "manual" && b.hora) {
+            list.push({
+              userId: u.id,
+              userName: u.nome,
+              userMatricula: u.matricula,
+              dayKey,
+              batidaIdx: idx,
+              hora: b.hora,
+              obs: b.obs,
+              registradoEm: b.registradoEm,
+              latitude: b.latitude,
+              longitude: b.longitude,
+              accuracy: b.accuracy,
+              statusAprovacao: b.statusAprovacao || "pendente",
+              motivoRejeicaoAjuste: b.motivoRejeicaoAjuste,
+              revisadoPor: b.revisadoPor,
+              revisadoEm: b.revisadoEm
+            });
+          }
+        });
+      });
+    });
+
+    return list.sort((a, b) => new Date(b.registradoEm || b.hora).getTime() - new Date(a.registradoEm || a.hora).getTime());
+  }, [users, pontosGlobal]);
+
+  const filtradosPontosManuais = useMemo(() => {
+    if (!busca.trim()) return todosPontosManuais;
+    const term = busca.toLowerCase();
+    return todosPontosManuais.filter(
+      p =>
+        p.userName.toLowerCase().includes(term) ||
+        p.userMatricula.toLowerCase().includes(term) ||
+        (p.obs && p.obs.toLowerCase().includes(term)) ||
+        p.dayKey.includes(term)
+    );
+  }, [todosPontosManuais, busca]);
+
+  function handleAprovarPontoManual(item: typeof todosPontosManuais[0]) {
+    setPontosGlobal(prev => {
+      const userRegs = prev[item.userId] || {};
+      const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
+      if (dayArray[item.batidaIdx]) {
+        dayArray[item.batidaIdx] = {
+          ...dayArray[item.batidaIdx]!,
+          statusAprovacao: "aprovado",
+          motivoRejeicaoAjuste: undefined,
+          revisadoEm: new Date().toISOString(),
+          revisadoPor: currentUser.nome
+        };
+      }
+      return {
+        ...prev,
+        [item.userId]: {
+          ...userRegs,
+          [item.dayKey]: dayArray
+        }
+      };
+    });
+    onAddLog(
+      "Aprovou Ponto Manual",
+      `${item.userName} (${item.userMatricula})`,
+      `Ponto manual do dia ${item.dayKey} (${item.batidaIdx + 1}ª batida) aprovado por ${currentUser.nome}.`
+    );
+  }
+
+  function handleRejeitarPontoManual(item: typeof todosPontosManuais[0], motivo: string) {
+    setPontosGlobal(prev => {
+      const userRegs = prev[item.userId] || {};
+      const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
+      if (dayArray[item.batidaIdx]) {
+        dayArray[item.batidaIdx] = {
+          ...dayArray[item.batidaIdx]!,
+          statusAprovacao: "rejeitado",
+          motivoRejeicaoAjuste: motivo || "Recusado pelo Gestor",
+          revisadoEm: new Date().toISOString(),
+          revisadoPor: currentUser.nome
+        };
+      }
+      return {
+        ...prev,
+        [item.userId]: {
+          ...userRegs,
+          [item.dayKey]: dayArray
+        }
+      };
+    });
+    onAddLog(
+      "Rejeitou Ponto Manual",
+      `${item.userName} (${item.userMatricula})`,
+      `Ponto manual do dia ${item.dayKey} (${item.batidaIdx + 1}ª batida) rejeitado por ${currentUser.nome}. Motivo: ${motivo}`
+    );
+  }
 
   function salvarJornada(userId: number) {
     if (!checkCalendarPermission()) return;
@@ -2785,6 +3083,106 @@ export function AdmOperadorPanel({
           </div>
         </div>
 
+        {/* PAINEL DE PENDÊNCIAS DIÁRIAS */}
+        <div style={{
+          background: t.surface,
+          border: `1.5px solid ${t.border}`,
+          borderRadius: 16,
+          padding: "16px 20px",
+          marginBottom: 20,
+          boxShadow: t.shadow
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 18 }}>🚨</span>
+              <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: t.text }}>Painel de Pendências Diárias</h3>
+              {pendenciasCalculadas.total > 0 ? (
+                <span style={{ background: "rgba(239,68,68,0.15)", color: "#DC2626", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 12, padding: "2px 8px", fontSize: 11, fontWeight: 800 }}>
+                  {pendenciasCalculadas.total} Ação(ões) Requerida(s)
+                </span>
+              ) : (
+                <span style={{ background: "rgba(16,185,129,0.15)", color: "#059669", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 12, padding: "2px 8px", fontSize: 11, fontWeight: 800 }}>
+                  ✓ Tudo em dia
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+            {/* Card 1: Atestados Pendentes */}
+            <div
+              onClick={() => setGuiaAtiva("atestados")}
+              style={{
+                background: pendenciasCalculadas.atestadosPendentes > 0 ? "rgba(245,158,11,0.08)" : t.surfaceAlt,
+                border: `1.5px solid ${pendenciasCalculadas.atestadosPendentes > 0 ? "rgba(245,158,11,0.3)" : t.border}`,
+                borderRadius: 12,
+                padding: "12px 14px",
+                cursor: "pointer",
+                transition: "all 0.15s"
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: t.textSub, textTransform: "uppercase" }}>Atestados Pendentes</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: pendenciasCalculadas.atestadosPendentes > 0 ? "#D97706" : t.text, marginTop: 4 }}>
+                📋 {pendenciasCalculadas.atestadosPendentes} <span style={{ fontSize: 12, fontWeight: 600, color: t.textMuted }}>para analisar</span>
+              </div>
+            </div>
+
+            {/* Card 2: Pontos Manuais (M) */}
+            <div
+              onClick={() => setGuiaAtiva("pontos_manuais")}
+              style={{
+                background: pendenciasCalculadas.pontosManuaisPendentes > 0 ? "rgba(245,158,11,0.08)" : t.surfaceAlt,
+                border: `1.5px solid ${pendenciasCalculadas.pontosManuaisPendentes > 0 ? "rgba(245,158,11,0.3)" : t.border}`,
+                borderRadius: 12,
+                padding: "12px 14px",
+                cursor: "pointer",
+                transition: "all 0.15s"
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: t.textSub, textTransform: "uppercase" }}>Pontos Manuais (M)</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: pendenciasCalculadas.pontosManuaisPendentes > 0 ? "#D97706" : t.text, marginTop: 4 }}>
+                ✍️ {pendenciasCalculadas.pontosManuaisPendentes} <span style={{ fontSize: 12, fontWeight: 600, color: t.textMuted }}>para aprovar</span>
+              </div>
+            </div>
+
+            {/* Card 3: Ajustes Solicitados (PrePonto) */}
+            <div
+              onClick={() => setGuiaAtiva("pre_pontos")}
+              style={{
+                background: pendenciasCalculadas.prePontosPendentes > 0 ? "rgba(59,130,246,0.08)" : t.surfaceAlt,
+                border: `1.5px solid ${pendenciasCalculadas.prePontosPendentes > 0 ? "rgba(59,130,246,0.3)" : t.border}`,
+                borderRadius: 12,
+                padding: "12px 14px",
+                cursor: "pointer",
+                transition: "all 0.15s"
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: t.textSub, textTransform: "uppercase" }}>Solicitações de Ajuste</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: pendenciasCalculadas.prePontosPendentes > 0 ? "#2563EB" : t.text, marginTop: 4 }}>
+                📝 {pendenciasCalculadas.prePontosPendentes} <span style={{ fontSize: 12, fontWeight: 600, color: t.textMuted }}>pendente(s)</span>
+              </div>
+            </div>
+
+            {/* Card 4: Ponto Incompleto (Hoje / Ontem) */}
+            <div
+              onClick={() => setGuiaAtiva("frequencia")}
+              style={{
+                background: pendenciasCalculadas.batidasIncompletas > 0 ? "rgba(239,68,68,0.08)" : t.surfaceAlt,
+                border: `1.5px solid ${pendenciasCalculadas.batidasIncompletas > 0 ? "rgba(239,68,68,0.3)" : t.border}`,
+                borderRadius: 12,
+                padding: "12px 14px",
+                cursor: "pointer",
+                transition: "all 0.15s"
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: t.textSub, textTransform: "uppercase" }}>Batidas Incompletas (Hoje/Ontem)</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: pendenciasCalculadas.batidasIncompletas > 0 ? "#DC2626" : t.text, marginTop: 4 }}>
+                ⚠️ {pendenciasCalculadas.batidasIncompletas} <span style={{ fontSize: 12, fontWeight: 600, color: t.textMuted }}>colaborador(es)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Navigation Tabs */}
         <div style={{ display: "flex", gap: 8, borderBottom: `1.5px solid ${t.border}`, paddingBottom: 12, marginBottom: 20 }}>
           <button
@@ -2834,6 +3232,22 @@ export function AdmOperadorPanel({
             }}
           >
             📋 Gestão de Atestados
+          </button>
+          <button
+            onClick={() => setGuiaAtiva("pontos_manuais")}
+            style={{
+              background: guiaAtiva === "pontos_manuais" ? t.accentGlow : "transparent",
+              border: `1.5px solid ${guiaAtiva === "pontos_manuais" ? t.borderFocus : "transparent"}`,
+              color: guiaAtiva === "pontos_manuais" ? t.accent : t.textSub,
+              fontSize: "13px",
+              fontWeight: 700,
+              padding: "7px 14px",
+              borderRadius: 8,
+              cursor: "pointer",
+              transition: "all 0.15s"
+            }}
+          >
+            ✍️ Aprovação de Pontos Manuais (M)
           </button>
           <button
             onClick={() => setGuiaAtiva("pre_pontos")}
@@ -3284,8 +3698,30 @@ export function AdmOperadorPanel({
                             onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.05)"; }}
                             onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
                           />
-                          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "4px 8px", background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                            <span>🔍 Clique para ampliar foto</span>
+                          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "6px 10px", background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                            <span>🔍 Ampliar foto</span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                baixarArquivoAtestado(atest.fotoAtestado!, `atestado_${atest.userName.replace(/\s+/g, '_')}_${atest.dayKey}.jpg`);
+                              }}
+                              style={{
+                                background: t.accent,
+                                color: "#ffffff",
+                                border: "none",
+                                borderRadius: 4,
+                                padding: "3px 8px",
+                                fontSize: 10,
+                                fontWeight: 800,
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 3
+                              }}
+                            >
+                              📥 Baixar Foto
+                            </button>
                           </div>
                         </div>
                       ) : (
@@ -3293,6 +3729,379 @@ export function AdmOperadorPanel({
                           Nenhuma foto anexada
                         </div>
                       )}
+
+                      {/* Status Badge */}
+                      <div style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        background: atest.statusAtestado === "aceito" ? "rgba(16,185,129,0.08)" : atest.statusAtestado === "recusado" ? "rgba(239,68,68,0.08)" : "rgba(245,158,11,0.08)",
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        border: `1px solid ${atest.statusAtestado === "aceito" ? "rgba(16,185,129,0.25)" : atest.statusAtestado === "recusado" ? "rgba(239,68,68,0.25)" : "rgba(245,158,11,0.25)"}`
+                      }}>
+                        <span style={{ fontSize: 11, fontWeight: 800, color: atest.statusAtestado === "aceito" ? "#059669" : atest.statusAtestado === "recusado" ? "#DC2626" : "#D97706" }}>
+                          {atest.statusAtestado === "aceito" ? "✅ HOMOLOGADO / ACEITO" : atest.statusAtestado === "recusado" ? "❌ RECUSADO PELO RH" : "⏳ AGUARDANDO HOMOLOGAÇÃO"}
+                        </span>
+                        {atest.revisadoPor && (
+                          <span style={{ fontSize: 10, color: t.textMuted }}>
+                            Por: {atest.revisadoPor}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Motivo da recusa se houver */}
+                      {atest.statusAtestado === "recusado" && (
+                        <div style={{ background: t.dangerBg, border: `1px solid ${t.dangerBorder}`, padding: "10px 12px", borderRadius: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: t.danger, marginBottom: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                            <span>💬</span> JUSTIFICATIVA DA RECUSA:
+                          </div>
+                          <div style={{ fontSize: 12, color: t.text, fontWeight: 600, fontStyle: "italic", lineHeight: 1.4 }}>
+                            "{atest.motivoRecusaAtestado || "Sem justificativa detalhada informada."}"
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Action buttons: Aceitar / Recusar */}
+                      <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                        <button
+                          type="button"
+                          onClick={() => handleAceitarAtestado(atest)}
+                          style={{
+                            flex: 1,
+                            background: atest.statusAtestado === "aceito" ? "#059669" : "rgba(16,185,129,0.12)",
+                            color: atest.statusAtestado === "aceito" ? "#ffffff" : "#059669",
+                            border: `1.5px solid ${atest.statusAtestado === "aceito" ? "#059669" : "rgba(16,185,129,0.3)"}`,
+                            borderRadius: 8,
+                            padding: "8px 10px",
+                            fontSize: 12,
+                            fontWeight: 800,
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 6,
+                            transition: "all 0.15s"
+                          }}
+                        >
+                          <span>{atest.statusAtestado === "aceito" ? "✓ Homologado" : "✅ Aceitar Atestado"}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAtestadoParaRecusar(atest);
+                            setJustificativaRecusaInput(atest.motivoRecusaAtestado || "");
+                          }}
+                          style={{
+                            flex: 1,
+                            background: atest.statusAtestado === "recusado" ? "#DC2626" : "rgba(239,68,68,0.12)",
+                            color: atest.statusAtestado === "recusado" ? "#ffffff" : "#DC2626",
+                            border: `1.5px solid ${atest.statusAtestado === "recusado" ? "#DC2626" : "rgba(239,68,68,0.3)"}`,
+                            borderRadius: 8,
+                            padding: "8px 10px",
+                            fontSize: 12,
+                            fontWeight: 800,
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 6,
+                            transition: "all 0.15s"
+                          }}
+                        >
+                          <span>{atest.statusAtestado === "recusado" ? "✏️ Editar Recusa" : "❌ Recusar Atestado"}</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Modal de Justificativa Manual de Recusa de Atestado */}
+            {atestadoParaRecusar && (
+              <div style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0,0,0,0.75)",
+                backdropFilter: "blur(4px)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                zIndex: 99999,
+                padding: 16
+              }}>
+                <div style={{
+                  background: t.surface,
+                  border: `2px solid ${t.danger}`,
+                  borderRadius: 16,
+                  padding: 24,
+                  maxWidth: 520,
+                  width: "100%",
+                  boxShadow: "0 20px 25px -5px rgba(0,0,0,0.3)"
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+                    <div style={{ width: 42, height: 42, borderRadius: "50%", background: t.dangerBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>
+                      🛑
+                    </div>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: t.text }}>Recusar Atestado Médico</h3>
+                      <p style={{ margin: 0, fontSize: 12, color: t.textMuted }}>
+                        Colaborador: <strong>{atestadoParaRecusar.userName}</strong> ({atestadoParaRecusar.dayKey.split("-").reverse().join("/")})
+                      </p>
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 800, color: t.textSub, marginBottom: 6 }}>
+                      JUSTIFICATIVA MANUAL DA RECUSA <span style={{ color: t.danger }}>* Obrigatório</span>
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={justificativaRecusaInput}
+                      onChange={e => setJustificativaRecusaInput(e.target.value)}
+                      placeholder="Descreva detalhadamente o motivo da recusa (ex: CID inconsistente com foto do atestado, documento sem carimbo/assinatura médica, rasura, fora do prazo)..."
+                      style={{
+                        width: "100%",
+                        boxSizing: "border-box",
+                        background: t.surfaceAlt,
+                        border: `1.5px solid ${t.border}`,
+                        borderRadius: 10,
+                        padding: "10px 12px",
+                        color: t.text,
+                        fontSize: 13,
+                        outline: "none",
+                        fontFamily: "inherit",
+                        resize: "vertical"
+                      }}
+                    />
+                    <div style={{ fontSize: 11, color: t.textMuted, marginTop: 4 }}>
+                      ⚠️ Esta justificativa ficará registrada no histórico e será exibida em um pop-up para o colaborador.
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAtestadoParaRecusar(null);
+                        setJustificativaRecusaInput("");
+                      }}
+                      style={{
+                        background: t.surfaceAlt,
+                        border: `1px solid ${t.border}`,
+                        borderRadius: 8,
+                        padding: "10px 16px",
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: t.textSub,
+                        cursor: "pointer"
+                      }}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!justificativaRecusaInput.trim()}
+                      onClick={handleConfirmarRecusaAtestado}
+                      style={{
+                        background: justificativaRecusaInput.trim() ? t.danger : t.border,
+                        color: "#ffffff",
+                        border: "none",
+                        borderRadius: 8,
+                        padding: "10px 20px",
+                        fontSize: 13,
+                        fontWeight: 800,
+                        cursor: justificativaRecusaInput.trim() ? "pointer" : "not-allowed",
+                        opacity: justificativaRecusaInput.trim() ? 1 : 0.6
+                      }}
+                    >
+                      Confirmar Recusa e Notificar
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        ) : guiaAtiva === "pontos_manuais" ? (
+          <>
+            {/* PONTOS MANUAIS TAB CONTENT */}
+            <div style={{ background: t.surfaceAlt, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: "20px", marginBottom: 20 }}>
+              <h3 style={{ margin: "0 0 6px 0", color: t.text, fontSize: "16px", fontWeight: 800, display: "flex", alignItems: "center", gap: 8 }}>
+                ✍️ Aprovação e Auditoria de Pontos Incorporados Manualmente (M)
+              </h3>
+              <p style={{ margin: 0, color: t.textSub, fontSize: "13px", lineHeight: "1.5" }}>
+                Todos os pontos inseridos manualmente pelos colaboradores requerem justificativa obrigatória e passam por este fluxo de aprovação do gestor antes de consolidar na folha.
+                Pontos manuais aprovados são identificados visualmente com a sigla <strong>(m)</strong>.
+              </p>
+            </div>
+
+            {/* Metric widgets for Manual Points */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 }}>
+              {[
+                ["Total de Inserções Manuais", todosPontosManuais.length, t.accent, t.accentGlow, t.borderFocus],
+                ["Aguardando Aprovação", todosPontosManuais.filter(x => x.statusAprovacao === "pendente").length, "#D97706", "rgba(245,158,11,0.1)", "rgba(245,158,11,0.3)"],
+                ["Pontos Aprovados", todosPontosManuais.filter(x => x.statusAprovacao === "aprovado").length, "#10B981", "rgba(16,185,129,0.1)", "rgba(16,185,129,0.3)"],
+                ["Pontos Rejeitados", todosPontosManuais.filter(x => x.statusAprovacao === "rejeitado").length, "#EF4444", "rgba(239,68,68,0.1)", "rgba(239,68,68,0.3)"]
+              ].map(([label, val, color, bg, border], idx) => (
+                <div key={idx} style={{ background: t.surface, border: `1.5px solid ${border}`, borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: color as string, fontVariantNumeric: "tabular-nums" }}>{val}</div>
+                  <div style={{ fontSize: 12, color: t.textSub, marginTop: 3 }}>{label as string}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Search filter */}
+            <div style={{ marginBottom: 20 }}>
+              <input
+                placeholder="Buscar por colaborador, matrícula, justificativa ou data..."
+                value={busca}
+                onChange={e => setBusca(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 10, color: t.text, fontSize: 14, padding: "10px 16px", outline: "none", fontFamily: "inherit" }}
+              />
+            </div>
+
+            {filtradosPontosManuais.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "40px 20px", background: t.surface, borderRadius: 16, border: `1.5px dashed ${t.border}`, color: t.textMuted }}>
+                <div style={{ fontSize: 32, marginBottom: 8 }}>✍️</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: t.text }}>Nenhum ponto manual encontrado</div>
+                <div style={{ fontSize: 13, marginTop: 4 }}>Não há registros manuais correspondentes aos filtros atuais.</div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: 16 }}>
+                {filtradosPontosManuais.map((item, idx) => {
+                  const horaFmt = new Date(item.hora).toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+                  const dataFmt = item.dayKey.split("-").reverse().join("/");
+
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        background: t.surface,
+                        border: `1.5px solid ${item.statusAprovacao === "pendente" ? "rgba(245,158,11,0.4)" : item.statusAprovacao === "aprovado" ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`,
+                        borderRadius: 16,
+                        padding: 18,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 12,
+                        boxShadow: "0 2px 8px rgba(0,0,0,0.04)"
+                      }}
+                    >
+                      {/* Card Header: Colaborador info */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div>
+                          <div style={{ fontSize: 15, fontWeight: 800, color: t.text }}>{item.userName}</div>
+                          <div style={{ fontSize: 12, color: t.textMuted, marginTop: 2 }}>Matrícula: {item.userMatricula}</div>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 800,
+                            padding: "4px 10px",
+                            borderRadius: 12,
+                            background: item.statusAprovacao === "pendente" ? "rgba(245,158,11,0.15)" : item.statusAprovacao === "aprovado" ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                            color: item.statusAprovacao === "pendente" ? "#D97706" : item.statusAprovacao === "aprovado" ? "#059669" : "#DC2626",
+                            border: `1px solid ${item.statusAprovacao === "pendente" ? "rgba(245,158,11,0.3)" : item.statusAprovacao === "aprovado" ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`
+                          }}
+                        >
+                          {item.statusAprovacao === "pendente" ? "⏳ AGUARDANDO APROVAÇÃO" : item.statusAprovacao === "aprovado" ? "✅ APROVADO" : "❌ REJEITADO"}
+                        </span>
+                      </div>
+
+                      {/* Details Box */}
+                      <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: t.textSub }}>📅 Data & Horário Manual:</span>
+                          <span style={{ fontSize: 15, fontWeight: 900, color: t.accent, fontFamily: "monospace" }}>
+                            {dataFmt} às {horaFmt}(m)
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: t.textSub }}>
+                          <span>Slot da Batida:</span>
+                          <span style={{ fontWeight: 700 }}>#{item.batidaIdx + 1} ({["Entrada", "Saída Almoço", "Retorno Almoço", "Saída"][item.batidaIdx] || "Batida"})</span>
+                        </div>
+                        {item.registradoEm && (
+                          <div style={{ fontSize: 11, color: t.textMuted }}>
+                            Carimbo Real de Registro: {new Date(item.registradoEm).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}
+                          </div>
+                        )}
+                        {item.latitude !== undefined && item.longitude !== undefined && (
+                          <div style={{ fontSize: 11, color: "#2563EB", fontWeight: 600 }}>
+                            📍 GPS: {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)} {item.accuracy ? `(Precisão: ${item.accuracy.toFixed(1)}m)` : ""}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Mandatory Justification */}
+                      <div style={{ background: "rgba(0,0,0,0.03)", borderLeft: "3px solid #F59E0B", padding: "10px 12px", borderRadius: "0 8px 8px 0" }}>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#D97706", textTransform: "uppercase", marginBottom: 2 }}>
+                          JUSTIFICATIVA DO COLABORADOR:
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: t.text, fontStyle: "italic", lineHeight: 1.4 }}>
+                          "{item.obs || "Sem justificativa informada."}"
+                        </div>
+                      </div>
+
+                      {/* Rejection reason if rejected */}
+                      {item.statusAprovacao === "rejeitado" && item.motivoRejeicaoAjuste && (
+                        <div style={{ background: "rgba(239,68,68,0.08)", borderLeft: "3px solid #DC2626", padding: "8px 10px", borderRadius: "0 8px 8px 0", fontSize: 12, color: "#DC2626" }}>
+                          <strong>Motivo da Recusa:</strong> "{item.motivoRejeicaoAjuste}"
+                        </div>
+                      )}
+
+                      {/* Reviewer Info */}
+                      {item.revisadoPor && (
+                        <div style={{ fontSize: 11, color: t.textMuted, fontStyle: "italic" }}>
+                          Analisado por {item.revisadoPor} em {item.revisadoEm ? new Date(item.revisadoEm).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }) : ""}
+                        </div>
+                      )}
+
+                      {/* Action buttons */}
+                      <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                        <button
+                          type="button"
+                          onClick={() => handleAprovarPontoManual(item)}
+                          style={{
+                            flex: 1,
+                            background: item.statusAprovacao === "aprovado" ? "#059669" : "rgba(16,185,129,0.12)",
+                            color: item.statusAprovacao === "aprovado" ? "#ffffff" : "#059669",
+                            border: `1.5px solid ${item.statusAprovacao === "aprovado" ? "#059669" : "rgba(16,185,129,0.3)"}`,
+                            borderRadius: 8,
+                            padding: "9px",
+                            fontSize: 13,
+                            fontWeight: 800,
+                            cursor: "pointer",
+                            transition: "all 0.15s"
+                          }}
+                        >
+                          {item.statusAprovacao === "aprovado" ? "✓ Aprovado" : "✅ Aprovar Ponto"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const motivo = window.prompt("Informe o motivo da recusa do ponto manual:", item.motivoRejeicaoAjuste || "Horário inconsistente");
+                            if (motivo !== null) {
+                              handleRejeitarPontoManual(item, motivo);
+                            }
+                          }}
+                          style={{
+                            flex: 1,
+                            background: item.statusAprovacao === "rejeitado" ? "#DC2626" : "rgba(239,68,68,0.12)",
+                            color: item.statusAprovacao === "rejeitado" ? "#ffffff" : "#DC2626",
+                            border: `1.5px solid ${item.statusAprovacao === "rejeitado" ? "#DC2626" : "rgba(239,68,68,0.3)"}`,
+                            borderRadius: 8,
+                            padding: "9px",
+                            fontSize: 13,
+                            fontWeight: 800,
+                            cursor: "pointer",
+                            transition: "all 0.15s"
+                          }}
+                        >
+                          {item.statusAprovacao === "rejeitado" ? "❌ Rejeitado" : "❌ Rejeitar Ponto"}
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
@@ -3525,15 +4334,19 @@ export function AdmOperadorPanel({
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0,0,0,0.8)",
-            backdropFilter: "blur(5px)",
+            background: "rgba(0,0,0,0.85)",
+            backdropFilter: "blur(6px)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             zIndex: 1100,
-            padding: 20
+            padding: 16
           }}
-          onClick={() => setAtestadoAmpliado(null)}
+          onClick={() => {
+            setAtestadoAmpliado(null);
+            setAtestadoZoom(1);
+            setAtestadoRotacao(0);
+          }}
         >
           <div
             style={{
@@ -3541,9 +4354,9 @@ export function AdmOperadorPanel({
               border: `1.5px solid ${t.border}`,
               borderRadius: 20,
               width: "100%",
-              maxWidth: 700,
+              maxWidth: 920,
               boxShadow: t.shadow,
-              maxHeight: "92vh",
+              maxHeight: "94vh",
               display: "flex",
               flexDirection: "column",
               overflow: "hidden"
@@ -3551,7 +4364,7 @@ export function AdmOperadorPanel({
             onClick={e => e.stopPropagation()}
           >
             {/* Header */}
-            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${t.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${t.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               <div>
                 <h3 style={{ margin: 0, color: t.text, fontSize: 16, fontWeight: 700 }}>Atestado de {atestadoAmpliado.userName}</h3>
                 <div style={{ fontSize: 12, color: t.textSub, marginTop: 2 }}>
@@ -3565,49 +4378,185 @@ export function AdmOperadorPanel({
                   })()} · CID: <strong style={{ color: t.accent }}>{atestadoAmpliado.cid}</strong>
                 </div>
               </div>
-              <button
-                onClick={() => setAtestadoAmpliado(null)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 18,
-                  color: t.textMuted,
-                  padding: 4,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center"
-                }}
-              >
-                ✕
-              </button>
+
+              {/* Toolbar Controls */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: "2px 4px" }}>
+                  <button
+                    type="button"
+                    title="Diminuir Zoom"
+                    onClick={() => setAtestadoZoom(z => Math.max(0.5, z - 0.25))}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: "4px 8px", color: t.text, fontWeight: "bold", fontSize: 14 }}
+                  >
+                    ➖
+                  </button>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: t.text, minWidth: 44, textAlign: "center" }}>
+                    {Math.round(atestadoZoom * 100)}%
+                  </span>
+                  <button
+                    type="button"
+                    title="Aumentar Zoom"
+                    onClick={() => setAtestadoZoom(z => Math.min(3, z + 0.25))}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: "4px 8px", color: t.text, fontWeight: "bold", fontSize: 14 }}
+                  >
+                    ➕
+                  </button>
+                  {atestadoZoom !== 1 && (
+                    <button
+                      type="button"
+                      title="Resetar Zoom"
+                      onClick={() => setAtestadoZoom(1)}
+                      style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer", padding: "2px 6px", color: t.textSub, marginLeft: 4 }}
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  title="Girar 90 Graus"
+                  onClick={() => setAtestadoRotacao(r => (r + 90) % 360)}
+                  style={{
+                    background: t.surfaceAlt,
+                    border: `1px solid ${t.border}`,
+                    borderRadius: 10,
+                    padding: "6px 12px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: t.text,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4
+                  }}
+                >
+                  🔄 Girar ({atestadoRotacao}°)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const win = window.open("");
+                    if (win) {
+                      win.document.write(`<img src="${atestadoAmpliado.foto}" style="max-width:100%; height:auto;" />`);
+                    }
+                  }}
+                  style={{
+                    background: t.surfaceAlt,
+                    border: `1px solid ${t.border}`,
+                    borderRadius: 10,
+                    padding: "6px 12px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: t.accent,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4
+                  }}
+                >
+                  🔗 Abrir em Nova Aba
+                </button>
+
+                <button
+                  onClick={() => {
+                    setAtestadoAmpliado(null);
+                    setAtestadoZoom(1);
+                    setAtestadoRotacao(0);
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: 18,
+                    color: t.textMuted,
+                    padding: 4,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center"
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
+
             {/* Image Container */}
-            <div style={{ flex: 1, overflow: "auto", background: "#000", display: "flex", alignItems: "center", justifyContent: "center", padding: 12, minHeight: 300 }}>
-              <img
-                src={atestadoAmpliado.foto}
-                alt="Atestado Ampliado"
-                referrerPolicy="no-referrer"
-                style={{ maxWidth: "100%", maxHeight: "70vh", objectFit: "contain", borderRadius: 8 }}
-              />
+            <div
+              style={{
+                flex: 1,
+                overflow: "auto",
+                background: "#09090b",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 20,
+                minHeight: 380,
+                position: "relative"
+              }}
+            >
+              <div style={{ transition: "transform 0.2s ease-out", transform: `scale(${atestadoZoom}) rotate(${atestadoRotacao}deg)` }}>
+                <img
+                  src={atestadoAmpliado.foto}
+                  alt="Atestado Ampliado"
+                  referrerPolicy="no-referrer"
+                  style={{
+                    maxWidth: atestadoZoom > 1 ? "none" : "100%",
+                    maxHeight: atestadoZoom > 1 ? "none" : "70vh",
+                    objectFit: "contain",
+                    borderRadius: 8,
+                    boxShadow: "0 10px 30px rgba(0,0,0,0.5)"
+                  }}
+                />
+              </div>
             </div>
+
             {/* Footer */}
-            <div style={{ padding: "12px 20px", borderTop: `1px solid ${t.border}`, display: "flex", justifyContent: "flex-end" }}>
-              <button
-                onClick={() => setAtestadoAmpliado(null)}
-                style={{
-                  background: t.surfaceAlt,
-                  border: `1px solid ${t.border}`,
-                  color: t.text,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  padding: "8px 16px",
-                  borderRadius: 10,
-                  cursor: "pointer"
-                }}
-              >
-                Fechar
-              </button>
+            <div style={{ padding: "12px 20px", borderTop: `1px solid ${t.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 11, color: t.textMuted }}>
+                💡 Dica: Use os botões de ➕ / ➖ Zoom e 🔄 Girar para visualizar assinaturas, CRM e detalhes do atestado com nitidez.
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => baixarArquivoAtestado(atestadoAmpliado.foto, `atestado_${atestadoAmpliado.userName.replace(/\s+/g, '_')}_${atestadoAmpliado.dayKey}.jpg`)}
+                  style={{
+                    background: t.accent,
+                    color: "#ffffff",
+                    border: "none",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    padding: "8px 16px",
+                    borderRadius: 10,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6
+                  }}
+                >
+                  📥 Baixar Foto de Alta Resolução
+                </button>
+                <button
+                  onClick={() => {
+                    setAtestadoAmpliado(null);
+                    setAtestadoZoom(1);
+                    setAtestadoRotacao(0);
+                  }}
+                  style={{
+                    background: t.surfaceAlt,
+                    border: `1px solid ${t.border}`,
+                    color: t.text,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    padding: "8px 16px",
+                    borderRadius: 10,
+                    cursor: "pointer"
+                  }}
+                >
+                  Fechar
+                </button>
+              </div>
             </div>
           </div>
         </div>

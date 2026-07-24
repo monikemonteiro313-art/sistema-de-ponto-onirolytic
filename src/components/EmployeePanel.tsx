@@ -1,17 +1,24 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { Check, Calendar, Clock, Unlock, Shield, SquarePen, ShieldCheck, Stethoscope, Folder, X, Upload, Camera, FileText, AlertTriangle, Eye, ArrowLeft, RefreshCw, File, Bell } from "lucide-react";
+import { Check, Calendar, Clock, Unlock, Shield, SquarePen, ShieldCheck, Stethoscope, Folder, X, Upload, FileText, AlertTriangle, Eye, ArrowLeft, RefreshCw, File, Bell } from "lucide-react";
 import { ThemeColors, User, Batida, DiaPontos, PontosGlobal, FolhaAceite, Alerta } from "../types";
-import { getOverlapWithNightShift, calcularDia, resumoMesCalculado } from "../utils/hrHelpers";
+import { getOverlapWithNightShift, calcularDia, resumoMesCalculado, baixarArquivoAtestado, compressImageBase64 } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
 import { LgpdModal } from "./LgpdModal";
+import { PontinhoTourModal } from "./PontinhoTourModal";
 import { getCidInfo } from "../utils/cidHelper";
 
-function resizeAndCompressImage(base64Str: string, maxWidth = 480, maxHeight = 480, quality = 0.42): Promise<string> {
+function resizeAndCompressImage(base64Str: string, maxWidth = 1800, maxHeight = 1800, quality = 0.88): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       let width = img.width;
       let height = img.height;
+
+      // Keep original dimensions if already smaller than max
+      if (width <= maxWidth && height <= maxHeight) {
+        maxWidth = width;
+        maxHeight = height;
+      }
 
       // Maintain aspect ratio
       if (width > height) {
@@ -31,6 +38,8 @@ function resizeAndCompressImage(base64Str: string, maxWidth = 480, maxHeight = 4
       canvas.height = height;
       const ctx = canvas.getContext("2d");
       if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.drawImage(img, 0, 0, width, height);
         resolve(canvas.toDataURL("image/jpeg", quality));
       } else {
@@ -410,14 +419,19 @@ export function EmployeePanel({
   const [atestadoSucesso, setAtestadoSucesso] = useState(false);
   const [atestadoSubmitting, setAtestadoSubmitting] = useState(false);
 
-  // Webcam states
-  const [cameraAtiva, setCameraAtiva] = useState(false);
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-
   const [pdfModalOpen, setPdfModalOpen] = useState(false);
   const [pdfMes, setPdfMes] = useState(() => new Date().getMonth());
   const [pdfAno, setPdfAno] = useState(() => new Date().getFullYear());
+
+  // Tour guiado do Pontinho (abre automaticamente no 1º acesso do colaborador)
+  const [tourInitialStep, setTourInitialStep] = useState(1);
+  const [tourModalOpen, setTourModalOpen] = useState(() => {
+    try {
+      return localStorage.getItem(`tour_visto_${currentUser.id}`) !== "true";
+    } catch {
+      return true;
+    }
+  });
 
   // Geoloc states
   const [geoActiveFor, setGeoActiveFor] = useState<{
@@ -487,96 +501,28 @@ export function EmployeePanel({
     return () => clearInterval(interval);
   }, [pontosGlobal, syncNow]);
 
-  // Webcam stream management side effect
-  useEffect(() => {
-    if (cameraAtiva && videoRef.current) {
-      async function setupCamera() {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-          setCameraStream(stream);
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-          }
-        } catch (err) {
-          console.error("Camera access failed:", err);
-          setAtestadoError("Não foi possível acessar a câmera do dispositivo. Por favor, carregue o arquivo de foto abaixo.");
-          setCameraAtiva(false);
-        }
-      }
-      setupCamera();
-    } else {
-      if (cameraStream) {
-        cameraStream.getTracks().forEach(track => track.stop());
-        setCameraStream(null);
-      }
-    }
-  }, [cameraAtiva]);
-
-  function capturarFoto() {
-    if (videoRef.current) {
-      try {
-        const video = videoRef.current;
-        const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const rawQuality = modoLeve ? 0.4 : 0.6;
-          const dataUrl = canvas.toDataURL("image/jpeg", rawQuality);
-          
-          const maxDim = modoLeve ? 320 : 480;
-          const compQuality = modoLeve ? 0.3 : 0.42;
-          
-          resizeAndCompressImage(dataUrl, maxDim, maxDim, compQuality).then(compressed => {
-            setAtestadoFoto(compressed);
-            setAtestadoFotoNome(`captura_${new Date().getTime()}.jpg`);
-            setCameraAtiva(false);
-            setAtestadoError("");
-          }).catch((err) => {
-            console.error("Image compression failed:", err);
-            setAtestadoFoto(dataUrl);
-            setAtestadoFotoNome(`captura_${new Date().getTime()}.jpg`);
-            setCameraAtiva(false);
-            setAtestadoError("");
-          });
-        }
-      } catch (err) {
-        console.error("Failed to capture photo:", err);
-        setAtestadoError("Falha ao capturar a foto através da câmera.");
-      }
-    }
-  }
-
   function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     setAtestadoError("");
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        setAtestadoError("O arquivo excede o tamanho máximo de 5MB.");
+      if (file.size > 10 * 1024 * 1024) {
+        setAtestadoError("O arquivo excede o tamanho máximo de 10MB.");
+        e.target.value = "";
         return;
       }
       const reader = new FileReader();
       reader.onloadend = () => {
         const rawBase64 = reader.result as string;
-        
-        const maxDim = modoLeve ? 320 : 480;
-        const compQuality = modoLeve ? 0.3 : 0.42;
-
-        resizeAndCompressImage(rawBase64, maxDim, maxDim, compQuality).then(compressed => {
-          setAtestadoFoto(compressed);
-          setAtestadoFotoNome(file.name);
-        }).catch((err) => {
-          console.error("Image compression failed:", err);
-          setAtestadoFoto(rawBase64);
-          setAtestadoFotoNome(file.name);
-        });
+        // Mantém qualidade original
+        setAtestadoFoto(rawBase64);
+        setAtestadoFotoNome(file.name);
       };
       reader.onerror = () => {
         setAtestadoError("Erro ao ler o arquivo selecionado.");
       };
       reader.readAsDataURL(file);
     }
+    e.target.value = "";
   }
 
   async function enviarAtestado() {
@@ -628,37 +574,31 @@ export function EmployeePanel({
         const atestadoObj: Batida = {
           ocorrencia: "atestado",
           parcial: atestadoIsParcial,
+          horaInicioParcial: atestadoIsParcial ? atestadoParcialInicio : undefined,
+          horaFimParcial: atestadoIsParcial ? atestadoParcialFim : undefined,
           cid: atestadoCid.trim().toUpperCase(),
           fotoAtestado: atestadoFoto,
-          obs: atestadoObs.trim() || `Atestado Médico lançado pelo colaborador (CID: ${atestadoCid.trim().toUpperCase()})`,
+          obs: atestadoObs.trim() || (atestadoIsParcial
+            ? `Atestado Parcial (${atestadoParcialInicio} às ${atestadoParcialFim}) - CID: ${atestadoCid.trim().toUpperCase()}`
+            : `Atestado Médico lançado pelo colaborador (CID: ${atestadoCid.trim().toUpperCase()})`),
           registradoEm: timestamp,
           tipo: "manual",
           serverTime: "pending"
         };
 
-        // Set at index 1 to match system convention
-        dayArray[1] = atestadoObj;
-
         if (atestadoIsParcial) {
-          const baseDateString = `${dayKey}T`;
-          if (!dayArray[0]) {
-            dayArray[0] = {
-              hora: new Date(baseDateString + atestadoParcialInicio + ":00").toISOString(),
-              tipo: "manual",
-              registradoEm: timestamp,
-              serverTime: "pending"
-            };
+          // Atestado de Horas (Parcial): Não encerra o expediente nem preenche a saída (dayArray[3])
+          // Guarda o registro do atestado em um slot disponível (slot 1 por padrão) mantendo os demais horários livres
+          let targetIdx = dayArray.findIndex((b, idx) => b === null && idx !== 3);
+          if (targetIdx === -1) {
+            targetIdx = dayArray.findIndex(b => b === null);
           }
-          if (!dayArray[3]) {
-            dayArray[3] = {
-              hora: new Date(baseDateString + atestadoParcialFim + ":00").toISOString(),
-              tipo: "manual",
-              registradoEm: timestamp,
-              cobertoPorAtestado: true,
-              serverTime: "pending"
-            };
-          }
+          if (targetIdx === -1) targetIdx = 1;
+
+          dayArray[targetIdx] = atestadoObj;
         } else {
+          // Atestado de Dia Inteiro: encerra a jornada e cobre o dia completo
+          dayArray[1] = atestadoObj;
           dayArray[0] = null;
           dayArray[2] = null;
           dayArray[3] = null;
@@ -861,8 +801,9 @@ export function EmployeePanel({
     }
   ];
 
+  const temAtestadoDiaInteiro = todayBatidas.some(b => b && b.ocorrencia === "atestado" && !b.parcial && b.statusAtestado !== "recusado");
   const nextIdx = todayBatidas.findIndex(b => b === null);
-  const allDone = todayBatidas[3] !== null || nextIdx === -1;
+  const allDone = temAtestadoDiaInteiro || todayBatidas[3] !== null || nextIdx === -1;
   const current = allDone ? null : steps[nextIdx];
 
   function isStepClickable(i: number): boolean {
@@ -877,10 +818,11 @@ export function EmployeePanel({
       return todayBatidas[1] !== null && todayBatidas[2] === null;
     }
     if (i === 3) {
-      if (todayBatidas[1] === null) {
+      const temAtestadoNoDia = todayBatidas.some(b => b && b.ocorrencia === "atestado");
+      if (todayBatidas[1] === null || temAtestadoNoDia) {
         return todayBatidas[0] !== null && todayBatidas[3] === null;
       } else {
-        return todayBatidas[2] !== null && todayBatidas[3] === null;
+        return (todayBatidas[2] !== null || todayBatidas[1] !== null) && todayBatidas[3] === null;
       }
     }
     return false;
@@ -1095,7 +1037,8 @@ export function EmployeePanel({
           accuracy: acc,
           consentimentoGeoloc: true,
           dispositivoLocalHora: new Date().toISOString(),
-          gravadoOffline: isOffline ? true : undefined
+          gravadoOffline: isOffline ? true : undefined,
+          statusAprovacao: "pendente"
         };
         setPontosGlobal(prev => {
           const userRegs = prev[currentUser.id] || {};
@@ -1161,6 +1104,10 @@ export function EmployeePanel({
       setManualError("Horário inválido.");
       return;
     }
+    if (!manualJust.trim()) {
+      setManualError("A justificativa é obrigatória para incorporar ponto manualmente.");
+      return;
+    }
     if (!manualModal) return;
     const { idx, dayKey } = manualModal;
     if (registerPrePonto) {
@@ -1212,7 +1159,11 @@ export function EmployeePanel({
 
   function fmt(batida: Batida | null) {
     if (!batida || !batida.hora) return "—";
-    return new Date(batida.hora).toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+    const horaStr = new Date(batida.hora).toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+    if (batida.tipo === "manual") {
+      return `${horaStr}(m)`;
+    }
+    return horaStr;
   }
 
   function fmtFull(dateStr: string | undefined) {
@@ -1300,6 +1251,96 @@ export function EmployeePanel({
 
   const calBatidas = calDay ? pontosGlobal[currentUser.id]?.[calDay] || [null, null, null, null] : null;
 
+  const atestadoRecusadoPendente = useMemo(() => {
+    const userDays = pontosGlobal[currentUser.id];
+    if (!userDays) return null;
+
+    for (const dayKey of Object.keys(userDays)) {
+      const dayArray = userDays[dayKey];
+      if (!dayArray) continue;
+      for (let idx = 0; idx < dayArray.length; idx++) {
+        const b = dayArray[idx];
+        if (b && b.ocorrencia === "atestado" && b.statusAtestado === "recusado" && !b.vistoPeloColaborador) {
+          return { dayKey, batidaIdx: idx, batida: b };
+        }
+      }
+    }
+    return null;
+  }, [pontosGlobal, currentUser.id]);
+
+  const meusAtestadosList = useMemo(() => {
+    const list: {
+      dayKey: string;
+      cid: string;
+      statusAtestado: "pendente" | "aceito" | "recusado";
+      motivoRecusaAtestado?: string;
+      revisadoPor?: string;
+      revisadoEm?: string;
+      parcial?: boolean;
+      obs?: string;
+      fotoAtestado?: string;
+    }[] = [];
+
+    const userDays = pontosGlobal[currentUser.id];
+    if (!userDays) return list;
+
+    Object.keys(userDays).forEach(dayKey => {
+      const dayArray = userDays[dayKey];
+      if (!dayArray) return;
+      dayArray.forEach(b => {
+        if (b && b.ocorrencia === "atestado") {
+          list.push({
+            dayKey,
+            cid: b.cid || "N/A",
+            statusAtestado: b.statusAtestado || "pendente",
+            motivoRecusaAtestado: b.motivoRecusaAtestado,
+            revisadoPor: b.revisadoPor,
+            revisadoEm: b.revisadoEm,
+            parcial: b.parcial,
+            obs: b.obs,
+            fotoAtestado: b.fotoAtestado
+          });
+        }
+      });
+    });
+
+    return list.sort((a, b) => b.dayKey.localeCompare(a.dayKey));
+  }, [pontosGlobal, currentUser.id]);
+
+  // Alerta de Ponto Incompleto do Dia Anterior (só aparece a partir do dia seguinte)
+  const alertaOntemPendente = useMemo(() => {
+    const hoje = getSyncDate();
+    let prevDate = new Date(hoje);
+    prevDate.setDate(prevDate.getDate() - 1);
+    let prevKey = prevDate.toISOString().slice(0, 10);
+
+    if (prevDate.getDay() === 0) {
+      prevDate.setDate(prevDate.getDate() - 2);
+      prevKey = prevDate.toISOString().slice(0, 10);
+    } else if (prevDate.getDay() === 6) {
+      prevDate.setDate(prevDate.getDate() - 1);
+      prevKey = prevDate.toISOString().slice(0, 10);
+    }
+
+    const userDays = pontosGlobal[currentUser.id];
+    if (!userDays || !userDays[prevKey]) return null;
+
+    const rawArray = userDays[prevKey] || [null, null, null, null];
+    const validBatidas = rawArray.filter(b => b && b.hora && !b.duplicadoOculto);
+
+    // Se possui batidas porém número ímpar (ponto incompleto sem saída ou retorno)
+    if (validBatidas.length > 0 && validBatidas.length % 2 !== 0) {
+      return {
+        dayKey: prevKey,
+        count: validBatidas.length,
+        formattedDate: prevKey.split("-").reverse().join("/")
+      };
+    }
+    return null;
+  }, [pontosGlobal, currentUser.id]);
+
+  const [alertaOntemDismissed, setAlertaOntemDismissed] = useState(false);
+
   return (
     <div
       style={{
@@ -1313,9 +1354,211 @@ export function EmployeePanel({
         fontFamily: "'DM Sans','Segoe UI',sans-serif"
       }}
     >
+      {/* Pop-up de Atestado Recusado pelo RH */}
+      {atestadoRecusadoPendente && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,0.8)",
+          backdropFilter: "blur(6px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 999999,
+          padding: 16
+        }}>
+          <div style={{
+            background: t.surface,
+            border: `2px solid ${t.danger}`,
+            borderRadius: 20,
+            padding: 24,
+            maxWidth: 480,
+            width: "100%",
+            boxShadow: "0 25px 50px -12px rgba(239, 68, 68, 0.4)",
+            animation: "scaleIn 0.25s ease-out"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+              <div style={{
+                width: 48,
+                height: 48,
+                borderRadius: "50%",
+                background: t.dangerBg,
+                border: `1.5px solid ${t.dangerBorder}`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 24,
+                flexShrink: 0
+              }}>
+                🛑
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: t.text }}>
+                  Atestado Médico Recusado
+                </h3>
+                <p style={{ margin: 0, fontSize: 12, color: t.textMuted }}>
+                  Comunicado da Gestão de Recursos Humanos
+                </p>
+              </div>
+            </div>
+
+            <div style={{
+              background: t.surfaceAlt,
+              borderRadius: 12,
+              padding: 14,
+              marginBottom: 16,
+              border: `1px solid ${t.border}`
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                <span style={{ fontSize: 12, color: t.textMuted }}>Data do Atestado:</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: t.text }}>
+                  {atestadoRecusadoPendente.dayKey.split("-").reverse().join("/")}
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                <span style={{ fontSize: 12, color: t.textMuted }}>Código CID-10:</span>
+                <span style={{ fontSize: 12, fontWeight: 800, fontFamily: "monospace", color: t.accent }}>
+                  {atestadoRecusadoPendente.batida.cid || "N/A"}
+                </span>
+              </div>
+              {atestadoRecusadoPendente.batida.revisadoPor && (
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12, color: t.textMuted }}>Analisado por:</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: t.textSub }}>
+                    {atestadoRecusadoPendente.batida.revisadoPor}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div style={{
+              background: t.dangerBg,
+              border: `1.5px solid ${t.dangerBorder}`,
+              borderRadius: 12,
+              padding: 14,
+              marginBottom: 20
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: t.danger, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                <span>💬</span> JUSTIFICATIVA DA RECUSA:
+              </div>
+              <div style={{ fontSize: 13, color: t.text, fontWeight: 600, lineHeight: 1.5, fontStyle: "italic" }}>
+                "{atestadoRecusadoPendente.batida.motivoRecusaAtestado || "Sem justificativa detalhada registrada."}"
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                const item = atestadoRecusadoPendente;
+                const userRegs = pontosGlobal[currentUser.id] || {};
+                const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
+                if (dayArray[item.batidaIdx]) {
+                  dayArray[item.batidaIdx] = {
+                    ...dayArray[item.batidaIdx]!,
+                    vistoPeloColaborador: true
+                  };
+                }
+                setPontosGlobal(prev => ({
+                  ...prev,
+                  [currentUser.id]: {
+                    ...userRegs,
+                    [item.dayKey]: dayArray
+                  }
+                }));
+              }}
+              style={{
+                width: "100%",
+                padding: "12px",
+                background: t.accent,
+                color: "#ffffff",
+                border: "none",
+                borderRadius: 10,
+                fontWeight: 800,
+                fontSize: 14,
+                cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(37,99,235,0.25)"
+              }}
+            >
+              Entendi / Ciente
+            </button>
+          </div>
+        </div>
+      )}
       {/* Top Header */}
-      <div style={{ width: "100%", maxWidth: 420, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ width: "100%", maxWidth: 420, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+
+      {/* Alerta de Ponto Incompleto do Dia Anterior (SÓ APARECE NO DIA SEGUINTE) */}
+      {alertaOntemPendente && !alertaOntemDismissed && (
+        <div style={{
+          width: "100%",
+          maxWidth: 420,
+          background: t.dangerBg,
+          border: `1.5px solid ${t.dangerBorder}`,
+          borderRadius: 14,
+          padding: "12px 14px",
+          marginBottom: 16,
+          boxSizing: "border-box",
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 10,
+          boxShadow: "0 4px 12px rgba(239, 68, 68, 0.12)"
+        }}>
+          <div style={{ fontSize: 20, lineHeight: 1 }}>⚠️</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: t.text, marginBottom: 2 }}>
+              Ponto Incompleto do Dia Anterior ({alertaOntemPendente.formattedDate})
+            </div>
+            <div style={{ fontSize: 11.5, color: t.textSub, lineHeight: 1.4 }}>
+              Identificamos apenas {alertaOntemPendente.count} registro(s) de ponto ontem. Solicite um ajuste ao seu gestor para regularizar.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAlertaOntemDismissed(true)}
+            style={{
+              background: "none",
+              border: "none",
+              color: t.textMuted,
+              cursor: "pointer",
+              fontSize: 14,
+              fontWeight: 700,
+              padding: 2
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            onClick={() => {
+              setTourInitialStep(1);
+              setTourModalOpen(true);
+            }}
+            title="Abrir Guia Orientativo do Ponto Digital (Pontinho)"
+            style={{
+              background: "linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.15))",
+              border: `1.5px solid rgba(59,130,246,0.4)`,
+              borderRadius: 10,
+              padding: "7px 11px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 11.5,
+              fontWeight: 800,
+              color: t.accent,
+              transition: "all 0.2s"
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = "scale(1.03)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = "scale(1)";
+            }}
+          >
+            <span style={{ fontSize: 14 }}>🤖</span> GUIA PASSO A PASSO
+          </button>
           <button
             onClick={() => setAtestadoModalOpen(true)}
             title="Lançar Atestado Médico"
@@ -1541,11 +1784,26 @@ export function EmployeePanel({
                       <div>
                         <div style={{ fontSize: 13.5, fontWeight: batida ? 600 : 400, color: batida ? t.text : t.textMuted }}>{s.done}</div>
                         {batida?.tipo === "manual" && (
-                          <div style={{ fontSize: 10, color: "#F59E0B", marginTop: 1 }}>
-                            MANUAL · reg. {fmtFull(batida.registradoEm)}
-                            {batida.obs ? ` · "${batida.obs}"` : ""}
-                            {batida.suspeitoHoraModificada && <span style={{ color: t.danger, fontWeight: 700, marginLeft: 6 }}>[⚠️ Suspeito - Hora Modificada]</span>}
-                            {batida.gravadoOffline && <span style={{ color: "#D97706", fontWeight: 700, marginLeft: 6 }}>[⚠️ Gravado Offline]</span>}
+                          <div style={{ fontSize: 10, color: "#F59E0B", marginTop: 1, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+                            <span>MANUAL (M) · reg. {fmtFull(batida.registradoEm)}</span>
+                            {batida.obs ? <span> · "{batida.obs}"</span> : ""}
+                            {(!batida.statusAprovacao || batida.statusAprovacao === "pendente") && (
+                              <span style={{ background: "rgba(245,158,11,0.15)", color: "#D97706", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(245,158,11,0.3)" }}>
+                                ⏳ Aguardando Aprovação do Gestor
+                              </span>
+                            )}
+                            {batida.statusAprovacao === "aprovado" && (
+                              <span style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(34,197,94,0.3)" }}>
+                                ✅ Aprovado pelo Gestor
+                              </span>
+                            )}
+                            {batida.statusAprovacao === "rejeitado" && (
+                              <span style={{ background: "rgba(239,68,68,0.15)", color: "#DC2626", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(239,68,68,0.3)" }}>
+                                ❌ Rejeitado pelo Gestor {batida.motivoRejeicaoAjuste ? `("${batida.motivoRejeicaoAjuste}")` : ""}
+                              </span>
+                            )}
+                            {batida.suspeitoHoraModificada && <span style={{ color: t.danger, fontWeight: 700 }}>[⚠️ Suspeito - Hora Modificada]</span>}
+                            {batida.gravadoOffline && <span style={{ color: "#D97706", fontWeight: 700 }}>[⚠️ Gravado Offline]</span>}
                           </div>
                         )}
                         {batida?.tipo === "auto" && (
@@ -2130,7 +2388,6 @@ export function EmployeePanel({
             <button
               onClick={() => {
                 setAtestadoModalOpen(false);
-                setCameraAtiva(false);
                 setAtestadoError("");
               }}
               style={{
@@ -2146,16 +2403,42 @@ export function EmployeePanel({
               <X size={20} />
             </button>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
-              <div style={{ background: t.accentGlow, padding: 8, borderRadius: 10, display: "flex" }}>
-                <Stethoscope size={24} color={t.accent} />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ background: t.accentGlow, padding: 8, borderRadius: 10, display: "flex" }}>
+                  <Stethoscope size={24} color={t.accent} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: t.text }}>
+                    Lançar Atestado Médico
+                  </h3>
+                  <span style={{ fontSize: 12, color: t.textSub }}>Preenchimento obrigatório de CID e foto</span>
+                </div>
               </div>
-              <div>
-                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: t.text }}>
-                  Lançar Atestado Médico
-                </h3>
-                <span style={{ fontSize: 12, color: t.textSub }}>Preenchimento obrigatório de CID e foto</span>
-              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setTourInitialStep(6);
+                  setTourModalOpen(true);
+                }}
+                style={{
+                  background: "rgba(2,132,199,0.1)",
+                  border: "1.5px solid rgba(2,132,199,0.35)",
+                  borderRadius: 10,
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  color: "#0284c7",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  whiteSpace: "nowrap"
+                }}
+              >
+                <span>📋</span> Guia de Atestado
+              </button>
             </div>
 
             {atestadoSucesso ? (
@@ -2335,10 +2618,10 @@ export function EmployeePanel({
                   </div>
                 )}
 
-                {/* Photo Upload & Camera - Mandatory */}
+                {/* Document Upload - Mandatory */}
                 <div>
                   <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: t.textSub, marginBottom: 6, textTransform: "uppercase" }}>
-                    Foto do Documento <span style={{ color: t.danger }}>* Obrigatório</span>
+                    Anexo do Documento <span style={{ color: t.danger }}>* Obrigatório</span>
                   </label>
 
                   {atestadoFoto ? (
@@ -2361,142 +2644,143 @@ export function EmployeePanel({
                     </div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      
-                      {cameraAtiva ? (
-                        <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: `2px solid ${t.accent}`, background: "#000", display: "flex", flexDirection: "column" }}>
-                          <video
-                            ref={videoRef}
-                            autoPlay
-                            playsInline
-                            style={{ width: "100%", height: 220, objectFit: "cover" }}
-                          />
-                          <div style={{ display: "flex", gap: 10, padding: 10, background: "rgba(0,0,0,0.85)" }}>
-                            <button
-                              onClick={capturarFoto}
-                              type="button"
-                              style={{ flex: 1, background: t.accent, border: "none", borderRadius: 8, padding: "8px", color: "#fff", fontWeight: 700, cursor: "pointer" }}
-                            >
-                              📸 Capturar Foto
-                            </button>
-                            <button
-                              onClick={() => setCameraAtiva(false)}
-                              type="button"
-                              style={{ background: "rgba(255,255,255,0.15)", border: "none", borderRadius: 8, padding: "8px 12px", color: "#fff", fontWeight: 600, cursor: "pointer" }}
-                            >
-                              Cancelar
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div style={{ display: "flex", gap: 8 }}>
-                          {/* File input disguised as drag and drop */}
-                          <label
-                            style={{
-                              flex: 1,
-                              display: "flex",
-                              flexDirection: "column",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              border: `2px dashed ${t.border}`,
-                              borderRadius: 12,
-                              padding: "16px",
-                              cursor: "pointer",
-                              background: t.surfaceAlt,
-                              transition: "all 0.2s"
-                            }}
-                            onDragOver={(e) => e.preventDefault()}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              const file = e.dataTransfer.files?.[0];
-                              if (file) {
-                                const reader = new FileReader();
-                                reader.onloadend = () => {
-                                  const rawBase64 = reader.result as string;
-                                  const maxDim = modoLeve ? 320 : 480;
-                                  const compQuality = modoLeve ? 0.3 : 0.42;
-                                  resizeAndCompressImage(rawBase64, maxDim, maxDim, compQuality).then(compressed => {
-                                    setAtestadoFoto(compressed);
-                                    setAtestadoFotoNome(file.name);
-                                  }).catch((err) => {
-                                    console.error("Image compression failed:", err);
-                                    setAtestadoFoto(rawBase64);
-                                    setAtestadoFotoNome(file.name);
-                                  });
-                                };
-                                reader.readAsDataURL(file);
-                              }
-                            }}
-                          >
-                            <Upload size={20} color={t.textSub} style={{ marginBottom: 4 }} />
-                            <span style={{ fontSize: 12, fontWeight: 600, color: t.text }}>Enviar Arquivo</span>
-                            <span style={{ fontSize: 10, color: t.textMuted }}>Até 5MB</span>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              onChange={handleFileUpload}
-                              style={{ display: "none" }}
-                            />
-                          </label>
-
-                          {/* Use Camera */}
-                          <button
-                            type="button"
-                            onClick={() => setCameraAtiva(true)}
-                            style={{
-                              flex: 1,
-                              display: "flex",
-                              flexDirection: "column",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              border: `1.5px solid ${t.border}`,
-                              borderRadius: 12,
-                              padding: "16px",
-                              cursor: "pointer",
-                              background: t.surfaceAlt,
-                              color: t.text,
-                              fontFamily: "inherit",
-                              transition: "all 0.2s"
-                            }}
-                          >
-                            <Camera size={20} color={t.accent} style={{ marginBottom: 4 }} />
-                            <span style={{ fontSize: 12, fontWeight: 600 }}>Tirar Foto Agora</span>
-                            <span style={{ fontSize: 10, color: t.textMuted }}>Usar webcam/câmera</span>
-                          </button>
-                        </div>
-                      )}
+                      <label
+                        style={{
+                          width: "100%",
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          border: `2px dashed ${t.border}`,
+                          borderRadius: 14,
+                          padding: "24px 16px",
+                          cursor: "pointer",
+                          background: t.surfaceAlt,
+                          transition: "all 0.2s",
+                          textAlign: "center"
+                        }}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const file = e.dataTransfer.files?.[0];
+                          if (file) {
+                            if (file.size > 10 * 1024 * 1024) {
+                              setAtestadoError("O arquivo excede o tamanho máximo de 10MB.");
+                              return;
+                            }
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              const rawBase64 = reader.result as string;
+                              setAtestadoFoto(rawBase64);
+                              setAtestadoFotoNome(file.name);
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }}
+                      >
+                        <Upload size={28} color={t.accent} style={{ marginBottom: 8 }} />
+                        <span style={{ fontSize: 13, fontWeight: 700, color: t.text }}>Anexar Atestado (Foto ou PDF)</span>
+                        <span style={{ fontSize: 11, color: t.textSub, marginTop: 4 }}>
+                          Clique para selecionar ou arraste o arquivo aqui (Até 10MB)
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/*,.pdf,application/pdf"
+                          onChange={handleFileUpload}
+                          style={{ display: "none" }}
+                        />
+                      </label>
 
                       {/* Mock Capture simulator button to ensure seamless desktop testing! */}
-                      {!cameraAtiva && (
-                        <button
-                          type="button"
+                      <button
+                        type="button"
                           onClick={() => {
                             const mockCanvas = document.createElement("canvas");
-                            mockCanvas.width = 400;
-                            mockCanvas.height = 300;
+                            mockCanvas.width = 1200;
+                            mockCanvas.height = 900;
                             const ctx = mockCanvas.getContext("2d");
                             if (ctx) {
-                              ctx.fillStyle = "#ffffff";
-                              ctx.fillRect(0, 0, 400, 300);
-                              ctx.fillStyle = "#1e40af";
-                              ctx.font = "bold 16px sans-serif";
-                              ctx.fillText("ATESTADO MÉDICO SIMULADO", 20, 40);
-                              ctx.fillStyle = "#333333";
-                              ctx.font = "12px sans-serif";
-                              ctx.fillText(`Colaborador: ${currentUser.nome}`, 20, 80);
-                              ctx.fillText(`Período: ${atestadoDataInicio} a ${atestadoDataFim}`, 20, 110);
-                              ctx.fillText(`Código CID-10: ${atestadoCid || "M54.5"}`, 20, 140);
-                              ctx.fillText("Assinatura do Médico Dr. Silva CRM 123456", 20, 200);
-                              
-                              ctx.strokeStyle = "rgba(220,38,38,0.15)";
-                              ctx.lineWidth = 10;
+                              ctx.imageSmoothingEnabled = true;
+                              ctx.imageSmoothingQuality = "high";
+                              ctx.fillStyle = "#fcfcfd";
+                              ctx.fillRect(0, 0, 1200, 900);
+
+                              // Border frame
+                              ctx.strokeStyle = "#cbd5e1";
+                              ctx.lineWidth = 4;
+                              ctx.strokeRect(30, 30, 1140, 840);
+
+                              // Clinic Header
+                              ctx.fillStyle = "#1e3a8a";
+                              ctx.font = "bold 32px sans-serif";
+                              ctx.fillText("CLÍNICA MÉDICA INTEGRADA", 60, 90);
+
+                              ctx.fillStyle = "#64748b";
+                              ctx.font = "18px sans-serif";
+                              ctx.fillText("Atestado Médico Oficial de Afastamento - Uso Trabalhista / RH", 60, 125);
+
+                              ctx.strokeStyle = "#e2e8f0";
+                              ctx.lineWidth = 2;
                               ctx.beginPath();
-                              ctx.moveTo(200, 100);
-                              ctx.lineTo(200, 200);
-                              ctx.moveTo(150, 150);
-                              ctx.lineTo(250, 150);
+                              ctx.moveTo(60, 150);
+                              ctx.lineTo(1140, 150);
                               ctx.stroke();
 
-                              setAtestadoFoto(mockCanvas.toDataURL("image/jpeg"));
+                              // Document Content
+                              ctx.fillStyle = "#0f172a";
+                              ctx.font = "22px sans-serif";
+                              ctx.fillText(`Atesto para os devidos fins de comprovação trabalhista que o(a) Sr(a):`, 60, 220);
+
+                              ctx.fillStyle = "#1e40af";
+                              ctx.font = "bold 26px sans-serif";
+                              ctx.fillText(`${currentUser.nome.toUpperCase()}`, 60, 260);
+
+                              ctx.fillStyle = "#334155";
+                              ctx.font = "20px sans-serif";
+                              ctx.fillText(`Esteve sob meus cuidados médicos no período de: ${atestadoDataInicio} até ${atestadoDataFim}`, 60, 320);
+
+                              ctx.fillText(`Necessitando de afastamento das suas atividades laborais conforme protocolo médico.`, 60, 360);
+
+                              // CID Box
+                              ctx.fillStyle = "#eff6ff";
+                              ctx.fillRect(60, 410, 1080, 80);
+                              ctx.strokeStyle = "#3b82f6";
+                              ctx.lineWidth = 2;
+                              ctx.strokeRect(60, 410, 1080, 80);
+
+                              ctx.fillStyle = "#1e40af";
+                              ctx.font = "bold 24px sans-serif";
+                              ctx.fillText(`DIAGNÓSTICO E CÓDIGO CID-10:  ${atestadoCid || "M54.5"}`, 80, 460);
+
+                              // Red Cross / Watermark
+                              ctx.strokeStyle = "rgba(220,38,38,0.12)";
+                              ctx.lineWidth = 30;
+                              ctx.beginPath();
+                              ctx.moveTo(950, 220);
+                              ctx.lineTo(950, 380);
+                              ctx.moveTo(870, 300);
+                              ctx.lineTo(1030, 300);
+                              ctx.stroke();
+
+                              // Doctor Stamp & Signature
+                              ctx.fillStyle = "#1e293b";
+                              ctx.font = "italic 22px serif";
+                              ctx.fillText("Dr. Roberto Silva - Médico Clínico Geral", 650, 700);
+                              ctx.font = "18px sans-serif";
+                              ctx.fillText("CRM/SP 148.920 - RQE 45210", 650, 735);
+
+                              ctx.strokeStyle = "#0284c7";
+                              ctx.lineWidth = 3;
+                              ctx.beginPath();
+                              ctx.moveTo(620, 670);
+                              ctx.lineTo(1050, 670);
+                              ctx.stroke();
+
+                              ctx.fillStyle = "#94a3b8";
+                              ctx.font = "14px monospace";
+                              ctx.fillText(`Autenticação Digital: DOC-${Date.now()}-REG-OK`, 60, 830);
+
+                              setAtestadoFoto(mockCanvas.toDataURL("image/jpeg", 0.92));
                               setAtestadoFotoNome("atestado_medico_simulado.jpg");
                               setAtestadoError("");
                             }
@@ -2516,7 +2800,6 @@ export function EmployeePanel({
                         >
                           🧪 Simular Captura Digital de Atestado (Ambiente de Testes)
                         </button>
-                      )}
 
                     </div>
                   )}
@@ -2553,7 +2836,6 @@ export function EmployeePanel({
                   <button
                     onClick={() => {
                       setAtestadoModalOpen(false);
-                      setCameraAtiva(false);
                       setAtestadoError("");
                     }}
                     type="button"
@@ -2592,6 +2874,88 @@ export function EmployeePanel({
                     {atestadoSubmitting ? "Enviando..." : "Lançar Atestado"}
                   </button>
                 </div>
+
+                {/* Meus Atestados Enviados History Section */}
+                {meusAtestadosList.length > 0 && (
+                  <div style={{ marginTop: 24, paddingTop: 16, borderTop: `1px solid ${t.border}` }}>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: t.text, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span>📋</span> Meus Atestados Enviados ({meusAtestadosList.length})
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 220, overflowY: "auto" }}>
+                      {meusAtestadosList.map((item, idx) => (
+                        <div
+                          key={`${item.dayKey}-${idx}`}
+                          style={{
+                            background: t.surfaceAlt,
+                            border: `1px solid ${item.statusAtestado === "aceito" ? "rgba(16,185,129,0.3)" : item.statusAtestado === "recusado" ? "rgba(239,68,68,0.3)" : t.border}`,
+                            borderRadius: 10,
+                            padding: 12
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                            <span style={{ fontSize: 13, fontWeight: 700, color: t.text }}>
+                              📅 {item.dayKey.split("-").reverse().join("/")} {item.parcial ? "(Horas)" : ""}
+                            </span>
+                            <span style={{
+                              fontSize: 10.5,
+                              fontWeight: 800,
+                              padding: "2px 8px",
+                              borderRadius: 6,
+                              background: item.statusAtestado === "aceito" ? "rgba(16,185,129,0.15)" : item.statusAtestado === "recusado" ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.15)",
+                              color: item.statusAtestado === "aceito" ? "#059669" : item.statusAtestado === "recusado" ? "#DC2626" : "#D97706"
+                            }}>
+                              {item.statusAtestado === "aceito" ? "✅ Aceito / Homologado" : item.statusAtestado === "recusado" ? "❌ Recusado" : "⏳ Em Análise"}
+                            </span>
+                          </div>
+
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: t.textSub, marginBottom: 4 }}>
+                            <div>
+                              <strong>CID-10:</strong> <code style={{ color: t.accent }}>{item.cid}</code>
+                            </div>
+                            {item.fotoAtestado && (
+                              <button
+                                type="button"
+                                onClick={() => baixarArquivoAtestado(item.fotoAtestado!, `atestado_${currentUser.nome.replace(/\s+/g, '_')}_${item.dayKey}.jpg`)}
+                                style={{
+                                  background: t.surface,
+                                  border: `1px solid ${t.border}`,
+                                  borderRadius: 6,
+                                  padding: "3px 8px",
+                                  fontSize: 10.5,
+                                  fontWeight: 700,
+                                  color: t.accent,
+                                  cursor: "pointer",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 4
+                                }}
+                              >
+                                📥 Baixar Foto
+                              </button>
+                            )}
+                          </div>
+
+                          {item.statusAtestado === "recusado" && (
+                            <div style={{
+                              marginTop: 6,
+                              background: t.dangerBg,
+                              border: `1px solid ${t.dangerBorder}`,
+                              borderRadius: 6,
+                              padding: "8px 10px",
+                              fontSize: 11.5,
+                              color: t.danger
+                            }}>
+                              <div style={{ fontWeight: 800, marginBottom: 2 }}>💬 Motivo da Recusa (RH):</div>
+                              <div style={{ color: t.text, fontStyle: "italic", fontWeight: 600 }}>
+                                "{item.motivoRecusaAtestado || "Sem justificativa cadastrada."}"
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
               </div>
             )}
@@ -3001,7 +3365,7 @@ export function EmployeePanel({
             </div>
 
             <div style={{ background: "rgba(245,158,11,0.09)", border: "1.5px solid rgba(245,158,11,0.28)", borderRadius: 8, padding: "9px 12px", marginBottom: 16, fontSize: 12, color: "#F59E0B", lineHeight: 1.5 }}>
-              ⚠️ Este registro ficará salvo com o carimbo do horário real da inserção por auditoria.
+              ⚠️ Marcado como Manual (M). A justificativa é obrigatória e o ponto será enviado para aprovação do seu gestor.
             </div>
 
             <div style={{ marginBottom: 14 }}>
@@ -3039,13 +3403,16 @@ export function EmployeePanel({
             </div>
 
             <div style={{ marginBottom: 20 }}>
-              <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: t.textSub, marginBottom: 7, letterSpacing: "0.5px", textTransform: "uppercase" }}>
-                Justificativa <span style={{ fontWeight: 400, color: t.textMuted }}>(opcional)</span>
+              <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: manualError && !manualJust.trim() ? t.danger : t.textSub, marginBottom: 7, letterSpacing: "0.5px", textTransform: "uppercase" }}>
+                Justificativa * <span style={{ fontWeight: 700, color: manualError && !manualJust.trim() ? t.danger : "#D97706" }}>(Obrigatória)</span>
               </label>
               <textarea
                 value={manualJust}
-                onChange={e => setManualJust(e.target.value)}
-                placeholder="Ex: Esqueci de registrar na entrada..."
+                onChange={e => {
+                  setManualJust(e.target.value);
+                  setManualError("");
+                }}
+                placeholder="Ex: Esqueci de registrar o ponto no horário de entrada..."
                 rows={2}
                 style={{
                   width: "100%",
@@ -4055,6 +4422,23 @@ export function EmployeePanel({
           </div>
         </div>
       )}
+
+      {/* Pontinho Tour Guiado Modal */}
+      <PontinhoTourModal
+        isOpen={tourModalOpen}
+        initialStep={tourInitialStep}
+        onClose={() => {
+          setTourModalOpen(false);
+          setTourInitialStep(1);
+          try {
+            localStorage.setItem(`tour_visto_${currentUser.id}`, "true");
+          } catch (e) {
+            console.error("Failed to save tour state:", e);
+          }
+        }}
+        t={t}
+        userName={currentUser.nome}
+      />
     </div>
   );
 }

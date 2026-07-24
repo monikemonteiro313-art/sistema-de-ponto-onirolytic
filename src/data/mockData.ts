@@ -2,6 +2,50 @@ import { Jornada, User, PontosGlobal, PeriodoFerias, DiaPontos } from "../types"
 
 export const JORNADAS_PREDEFINIDAS: Jornada[] = [
   {
+    id: "posto_07_17_sab",
+    nome: "Posto 07h–17h (2h Almoço + Sáb 4h)",
+    entrada: "07:00",
+    saidaAlmoco: "11:00",
+    retornoAlmoco: "13:00",
+    saida: "17:00",
+    diasSemana: [1, 2, 3, 4, 5, 6],
+    horasDia: 8,
+    descricao: "Seg–Sex: 07h-11h / 13h-17h (8h) · Sáb: 07h-11h (4h) · Total: 44h/sem"
+  },
+  {
+    id: "posto_08_18_sab",
+    nome: "Posto 08h–18h (2h Almoço + Sáb 4h)",
+    entrada: "08:00",
+    saidaAlmoco: "12:00",
+    retornoAlmoco: "14:00",
+    saida: "18:00",
+    diasSemana: [1, 2, 3, 4, 5, 6],
+    horasDia: 8,
+    descricao: "Seg–Sex: 08h-12h / 14h-18h (8h) · Sáb: 08h-12h (4h) · Total: 44h/sem"
+  },
+  {
+    id: "posto_09_19_sab",
+    nome: "Posto 09h–19h (2h Almoço + Sáb 4h)",
+    entrada: "09:00",
+    saidaAlmoco: "13:00",
+    retornoAlmoco: "15:00",
+    saida: "19:00",
+    diasSemana: [1, 2, 3, 4, 5, 6],
+    horasDia: 8,
+    descricao: "Seg–Sex: 09h-13h / 15h-19h (8h) · Sáb: 09h-13h (4h) · Total: 44h/sem"
+  },
+  {
+    id: "clt_comp_1h",
+    nome: "Compensatória 44h (1h Almoço - Sem Sábado)",
+    entrada: "08:00",
+    saidaAlmoco: "12:00",
+    retornoAlmoco: "13:00",
+    saida: "17:48",
+    diasSemana: [1, 2, 3, 4, 5],
+    horasDia: 8.8,
+    descricao: "Seg–Sex: 8h48min/dia (1h almoço) · Sáb: Folga · Total: 44h/sem"
+  },
+  {
     id: "clt_8h",
     nome: "CLT Padrão 8h",
     entrada: "08:00",
@@ -22,6 +66,17 @@ export const JORNADAS_PREDEFINIDAS: Jornada[] = [
     diasSemana: [1, 2, 3, 4, 5, 6],
     horasDia: 6,
     descricao: "Seg–Sáb · 6h/dia · 36h/semana (sem intervalo obrigatório)"
+  },
+  {
+    id: "noturno_20_02",
+    nome: "Noturno 20h–02h (6h / 2 Batidas)",
+    entrada: "20:00",
+    saidaAlmoco: null,
+    retornoAlmoco: null,
+    saida: "02:00",
+    diasSemana: [1, 2, 3, 4, 5, 6],
+    horasDia: 6,
+    descricao: "20:00 às 02:00 · 6h/dia · Somente 2 batidas (Entrada e Saída) com intervalo de 15min pré-assinalado"
   },
   {
     id: "clt_12x36",

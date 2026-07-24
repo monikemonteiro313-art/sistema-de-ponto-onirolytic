@@ -73,6 +73,15 @@ export interface Batida {
   offlineAudited?: boolean;
   cid?: string;
   fotoAtestado?: string;
+  horaInicioParcial?: string;
+  horaFimParcial?: string;
+  statusAtestado?: "pendente" | "aceito" | "recusado";
+  motivoRecusaAtestado?: string;
+  revisadoEm?: string;
+  revisadoPor?: string;
+  vistoPeloColaborador?: boolean;
+  statusAprovacao?: "pendente" | "aprovado" | "rejeitado";
+  motivoRejeicaoAjuste?: string;
 }
 
 export type DiaPontos = (Batida | null)[];
@@ -99,6 +108,7 @@ export interface AuditLogEntry {
 export interface EmpresaConfig {
   nome: string;
   cnpj: string;
+  toleranciaMinutos?: number;
 }
 
 export interface PrePonto {
