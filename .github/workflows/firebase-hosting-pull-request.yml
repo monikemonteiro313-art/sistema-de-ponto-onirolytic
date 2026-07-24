@@ -17,5 +17,5 @@ jobs:
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0736524660 }}
-          projectId: gen-lang-client-0736524660
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PONTO_E_FREQUENCIA }}
+          projectId: ponto-e-frequencia
