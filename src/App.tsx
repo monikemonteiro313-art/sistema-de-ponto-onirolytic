@@ -1,9 +1,10 @@
 import { useState, useEffect, lazy, Suspense } from "react";
 import { T } from "./components/Theme";
-import { User, ThemeColors, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta } from "./types";
+import { User, ThemeColors, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Batida } from "./types";
 import { LoginScreen } from "./components/LoginScreen";
 import { WizardScreen } from "./components/WizardScreen";
 import { TermoCienciaScreen } from "./components/TermoCienciaScreen";
+import { GerenciarMarcacoesView } from "./components/GerenciarMarcacoesView";
 
 function lazyWithRetry(
   componentImport: () => Promise<any>,
@@ -215,9 +216,9 @@ export default function App() {
         await initializeDbIfEmpty();
         
         // Fetch all database records safely to prevent any single collection error from crashing the entire initial load
-        const safeFetch = async <T,>(promise: Promise<T>, fallback: T, name: string): Promise<T> => {
+        const safeFetch = async <T,>(fn: () => Promise<T>, fallback: T, name: string): Promise<T> => {
           try {
-            return await promise;
+            return await fn();
           } catch (error) {
             console.warn(`[Firestore Load] Failed to fetch ${name}, using safe fallback value. Error:`, error);
             return fallback;
@@ -225,16 +226,16 @@ export default function App() {
         };
 
         const [rawDbUsers, dbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, wizardDone, dbPrePontos, dbFolhas, dbAlertas] = await Promise.all([
-          safeFetch(fetchAllUsers(), [] as User[], "users"),
-          safeFetch(fetchAllPontos(), {} as PontosGlobal, "pontos"),
-          safeFetch(fetchAuditLogs(), [] as AuditLogEntry[], "auditLogs"),
-          safeFetch(fetchMinimoHoras(), 7, "minimoHoras"),
-          safeFetch(fetchEmpresaConfig(), { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" } as EmpresaConfig, "empresaConfig"),
-          safeFetch(fetchFeriados(), [] as string[], "feriados"),
-          safeFetch(fetchWizardDone(), false, "wizardDone"),
-          safeFetch(fetchAllPrePontos(), [] as PrePonto[], "prePontos"),
-          safeFetch(fetchAllFolhasAceite(), [] as FolhaAceite[], "folhasAceite"),
-          safeFetch(fetchAllAlertas(), [] as Alerta[], "alertas")
+          safeFetch(() => fetchAllUsers(), [] as User[], "users"),
+          safeFetch(() => fetchAllPontos(), {} as PontosGlobal, "pontos"),
+          safeFetch(() => fetchAuditLogs(), [] as AuditLogEntry[], "auditLogs"),
+          safeFetch(() => fetchMinimoHoras(), 7, "minimoHoras"),
+          safeFetch(() => fetchEmpresaConfig(), { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" } as EmpresaConfig, "empresaConfig"),
+          safeFetch(() => fetchFeriados(), [] as string[], "feriados"),
+          safeFetch(() => fetchWizardDone(), false, "wizardDone"),
+          safeFetch(() => fetchAllPrePontos(), [] as PrePonto[], "prePontos"),
+          safeFetch(() => fetchAllFolhasAceite(), [] as FolhaAceite[], "folhasAceite"),
+          safeFetch(() => fetchAllAlertas(), [] as Alerta[], "alertas")
         ]);
 
         const dbUsers = rawDbUsers;
@@ -364,7 +365,79 @@ export default function App() {
   }, []);
 
   // For Admin views which can toggle between "adm-dev" config and "adm-operator" points
-  const [adminRoleMode, setAdminRoleMode] = useState<"dev" | "operador">("operador");
+  const [adminRoleMode, setAdminRoleMode] = useState<"dev" | "operador" | "gerenciar_marcacoes">("operador");
+
+  const handleSalvarPontoGerenciado = async (
+    userId: number,
+    dayKey: string,
+    batidaIdx: number,
+    novaHora: string,
+    justificativa: string
+  ) => {
+    const [hh, mm] = novaHora.split(":").map(Number);
+    const dateObj = new Date(`${dayKey}T00:00:00`);
+    dateObj.setHours(hh, mm, 0, 0);
+
+    const targetUser = users.find((u) => u.id === userId);
+    const userDays = { ...(pontos[userId] || {}) };
+    const dayPunches = [...(userDays[dayKey] || [null, null, null, null])];
+    while (dayPunches.length < 4) dayPunches.push(null);
+
+    const existingPunch = dayPunches[batidaIdx];
+    const horaAnteriorStr =
+      existingPunch && existingPunch.hora
+        ? new Date(existingPunch.hora).toLocaleTimeString("pt-BR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "--:--";
+
+    const updatedPunch: Batida = {
+      ...(existingPunch || {}),
+      hora: dateObj.toISOString(),
+      tipo: "manual",
+      origemMarcacao: "MO",
+      modificadoPorGestor: true,
+      modificadoPor: currentUser?.nome || "Gestor",
+      modificadoPorMatricula: currentUser?.matricula || "",
+      alteradoEm: new Date().toISOString(),
+      justificativaAlteracao: justificativa,
+      lancadoPorAdm: true,
+    };
+
+    dayPunches[batidaIdx] = updatedPunch;
+    userDays[dayKey] = dayPunches;
+
+    const nextPontosGlobal = {
+      ...pontos,
+      [userId]: userDays,
+    };
+
+    updatePontos(nextPontosGlobal);
+    await saveUserPontosToDb(userId, userDays);
+
+    const log: AuditLogEntry = {
+      id: Date.now(),
+      quando: new Date().toISOString(),
+      quem: currentUser?.nome || "Gestor",
+      quemMat: currentUser?.matricula || "",
+      acao: `GERENCIAR_MARCACAO_MO`,
+      alvo: `Matrícula: ${targetUser?.matricula || userId} — ${targetUser?.nome || "Colaborador"}`,
+      detalhe: `Ponto modificado/inserido [Slot ${batidaIdx + 1}] em ${dayKey}: de ${horaAnteriorStr} para ${novaHora}. Justificativa: "${justificativa}"`,
+      userId,
+      dayKey,
+      slotIdx: batidaIdx,
+      horaAnterior: horaAnteriorStr,
+      horaNova: novaHora,
+      tipoModificacao: "MO",
+      justificativa,
+    };
+
+    await saveAuditLogToDb(log).catch((err) =>
+      console.warn("Erro ao salvar log de auditoria:", err)
+    );
+    handleAddLog(log.acao, log.quem, log.detalhe || "");
+  };
 
   // Wrapper functions to keep local state and Firestore in perfect sync
   const updateUsers = (newUsersOrFn: User[] | ((prev: User[]) => User[])) => {
@@ -1034,6 +1107,21 @@ export default function App() {
                     📊 Frequência & Operador
                   </button>
                   <button
+                    onClick={() => setAdminRoleMode("gerenciar_marcacoes")}
+                    style={{
+                      background: adminRoleMode === "gerenciar_marcacoes" ? t.accentGlow : "none",
+                      border: "none",
+                      color: adminRoleMode === "gerenciar_marcacoes" ? t.accent : t.textSub,
+                      fontSize: "12.5px",
+                      fontWeight: 700,
+                      padding: "8px 14px",
+                      borderRadius: 8,
+                      cursor: "pointer"
+                    }}
+                  >
+                    ✍️ Gerenciar Marcações
+                  </button>
+                  <button
                     onClick={() => setAdminRoleMode("dev")}
                     style={{
                       background: adminRoleMode === "dev" ? t.accentGlow : "none",
@@ -1083,6 +1171,19 @@ export default function App() {
                     }}
                   />
                 </Suspense>
+              ) : adminRoleMode === "gerenciar_marcacoes" ? (
+                <div style={{ background: t.bg, minHeight: "calc(100vh - 50px)" }}>
+                  <GerenciarMarcacoesView
+                    t={t}
+                    users={users}
+                    currentUser={currentUser}
+                    pontosGlobal={pontos}
+                    auditLogs={auditLogs}
+                    onSalvarPonto={handleSalvarPontoGerenciado}
+                    feriados={feriados}
+                    minimoHorasDia={minimoHorasDia}
+                  />
+                </div>
               ) : (
                 <Suspense fallback={<div style={{ padding: 40, textAlign: "center", color: t.textSub, fontFamily: "sans-serif" }}>Carregando Painel do Operador...</div>}>
                   <AdmOperadorPanel
@@ -1092,6 +1193,7 @@ export default function App() {
                     currentUser={currentUser}
                     onLogout={handleLogout}
                     onGoAdm={() => setAdminRoleMode("dev")}
+                    onOpenGerenciarMarcacoes={() => setAdminRoleMode("gerenciar_marcacoes")}
                     pontosGlobal={pontos}
                     setPontosGlobal={updatePontos}
                     onAddLog={handleAddLog}

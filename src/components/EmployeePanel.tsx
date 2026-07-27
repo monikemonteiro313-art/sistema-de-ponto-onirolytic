@@ -511,9 +511,15 @@ export function EmployeePanel({
         return;
       }
       const reader = new FileReader();
-      reader.onloadend = () => {
-        const rawBase64 = reader.result as string;
-        // Mantém qualidade original
+      reader.onloadend = async () => {
+        let rawBase64 = reader.result as string;
+        if (rawBase64 && rawBase64.startsWith("data:image")) {
+          try {
+            rawBase64 = await compressImageBase64(rawBase64, 800, 800, 0.65);
+          } catch (err) {
+            console.warn("Compression failed:", err);
+          }
+        }
         setAtestadoFoto(rawBase64);
         setAtestadoFotoNome(file.name);
       };
@@ -2669,8 +2675,15 @@ export function EmployeePanel({
                               return;
                             }
                             const reader = new FileReader();
-                            reader.onloadend = () => {
-                              const rawBase64 = reader.result as string;
+                            reader.onloadend = async () => {
+                              let rawBase64 = reader.result as string;
+                              if (rawBase64 && rawBase64.startsWith("data:image")) {
+                                try {
+                                  rawBase64 = await compressImageBase64(rawBase64, 800, 800, 0.65);
+                                } catch (err) {
+                                  console.warn("Compression failed:", err);
+                                }
+                              }
                               setAtestadoFoto(rawBase64);
                               setAtestadoFotoNome(file.name);
                             };

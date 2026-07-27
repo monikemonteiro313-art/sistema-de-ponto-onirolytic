@@ -57,6 +57,12 @@ export interface Batida {
   registradoEm?: string;
   serverTime?: any;
   lancadoPorAdm?: boolean;
+  modificadoPorGestor?: boolean;
+  origemMarcacao?: "MA" | "MO" | "NORMAL";
+  modificadoPor?: string;
+  modificadoPorMatricula?: string;
+  alteradoEm?: string;
+  justificativaAlteracao?: string;
   ocorrencia?: string;
   obs?: string;
   parcial?: boolean;
@@ -103,6 +109,15 @@ export interface AuditLogEntry {
   latitude?: number;
   longitude?: number;
   accuracy?: number;
+  userId?: number;
+  dayKey?: string;
+  slotIdx?: number;
+  horaAnterior?: string;
+  horaNova?: string;
+  tipoModificacao?: "MA" | "MO" | "NORMAL";
+  justificativa?: string;
+  ip?: string;
+  dispositivo?: string;
 }
 
 export interface EmpresaConfig {

@@ -126,24 +126,18 @@ export function baixarArquivoAtestado(base64OrUrl: string, filename: string) {
 
 export function compressImageBase64(
   base64Str: string,
-  maxWidth = 1800,
-  maxHeight = 1800,
-  quality = 0.88
+  maxWidth = 800,
+  maxHeight = 800,
+  quality = 0.65
 ): Promise<string> {
   return new Promise((resolve) => {
-    if (!base64Str || !base64Str.startsWith("data:image")) {
+    if (!base64Str || typeof base64Str !== "string" || !base64Str.startsWith("data:image")) {
       return resolve(base64Str);
     }
     const img = new Image();
     img.onload = () => {
-      let width = img.width;
-      let height = img.height;
-
-      // If already small enough, keep full original resolution
-      if (width <= maxWidth && height <= maxHeight) {
-        maxWidth = width;
-        maxHeight = height;
-      }
+      let width = img.width || 800;
+      let height = img.height || 800;
 
       if (width > height) {
         if (width > maxWidth) {
@@ -163,7 +157,7 @@ export function compressImageBase64(
       const ctx = canvas.getContext("2d");
       if (ctx) {
         ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
+        ctx.imageSmoothingQuality = "medium";
         ctx.drawImage(img, 0, 0, width, height);
         resolve(canvas.toDataURL("image/jpeg", quality));
       } else {
@@ -173,6 +167,19 @@ export function compressImageBase64(
     img.onerror = () => resolve(base64Str);
     img.src = base64Str;
   });
+}
+
+export function calcHoursBetween(startStr?: string, endStr?: string): number {
+  if (!startStr || !endStr) return 0;
+  const [h1, m1] = startStr.split(":").map(Number);
+  const [h2, m2] = endStr.split(":").map(Number);
+  if (isNaN(h1) || isNaN(m1) || isNaN(h2) || isNaN(m2)) return 0;
+  let minStart = h1 * 60 + m1;
+  let minEnd = h2 * 60 + m2;
+  if (minEnd < minStart) {
+    minEnd += 24 * 60;
+  }
+  return Math.max(0, (minEnd - minStart) / 60);
 }
 
 export function calcularDia(
@@ -189,13 +196,13 @@ export function calcularDia(
   // 1. Verificar férias
   const emFerias = u.ferias?.some(p => dayKey >= p.inicio && dayKey <= p.fim);
   if (emFerias) {
-    return { status: "ferias" as const, horasTrabalhadas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+    return { status: "ferias" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
   // 2. Verificar feriado corporativo
   const eFeriado = feriadosGlobais?.includes(dayKey);
   if (eFeriado) {
-    return { status: "feriado" as const, horasTrabalhadas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+    return { status: "feriado" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
   const date = new Date(dayKey + "T12:00:00");
@@ -220,10 +227,10 @@ export function calcularDia(
 
   // Dia não útil ou futuro
   if (!diasUteis.includes(diaSem)) {
-    return { status: "folga" as const, horasTrabalhadas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+    return { status: "folga" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
   if (dayKey > hojeStr) {
-    return { status: "futuro" as const, horasTrabalhadas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+    return { status: "futuro" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
   const horasJornada = jornadaIdParaODia ? calcularHorasDia(jornadaIdParaODia, jornadaCustomParaODia) : 8;
@@ -231,43 +238,69 @@ export function calcularDia(
 
   // Afastamento
   if (ocorrencia?.ocorrencia === "afastamento") {
-    return { status: "afastamento" as const, horasTrabalhadas: 0, horasJornada, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+    return { status: "afastamento" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
   // Falta
   if (ocorrencia?.ocorrencia === "falta" || (!ocorrencia && batidas.every(b => b === null))) {
     if (u.apenasSomarHoras) {
-      return { status: "folga" as const, horasTrabalhadas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+      return { status: "folga" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
     }
-    return { status: "falta" as const, horasTrabalhadas: 0, horasJornada, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+    return { status: "falta" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada, atrasoMin: 0, saidaAntMin: Math.round(horasJornada * 60), horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
   // Atestado dia inteiro
   if (ocorrencia?.ocorrencia === "atestado" && !ocorrencia.parcial && ocorrencia.statusAtestado !== "recusado") {
-    return { status: "atestado" as const, horasTrabalhadas: horasJornada, horasJornada, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+    return { status: "atestado" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
   // Atestado parcial ou horários comuns
-  const bEntrada = batidas[0];
-  const bSaida   = batidas[3];
+  const bEntrada = batidas[0] && !batidas[0].ocorrencia && batidas[0].hora ? batidas[0] : null;
+  const bSaidaAlm = batidas[1] && !batidas[1].ocorrencia && batidas[1].hora ? batidas[1] : null;
+  const bRetorno  = batidas[2] && !batidas[2].ocorrencia && batidas[2].hora ? batidas[2] : null;
+  const bSaida    = batidas[3] && !batidas[3].ocorrencia && batidas[3].hora ? batidas[3] : null;
+
   if (!bEntrada || !bEntrada.hora) {
     if (u.apenasSomarHoras) {
-      return { status: "folga" as const, horasTrabalhadas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+      return { status: "folga" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
     }
-    return { status: "parcial" as const, horasTrabalhadas: 0, horasJornada, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+    return { status: "parcial" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada, atrasoMin: 0, saidaAntMin: Math.round(horasJornada * 60), horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
   const entradaReal = new Date(bEntrada.hora);
   const saidaReal   = bSaida && bSaida.hora ? new Date(bSaida.hora) : null;
-  const bSaidaAlm   = batidas[1] && !batidas[1].ocorrencia && batidas[1].hora ? new Date(batidas[1].hora) : null;
-  const bRetorno    = batidas[2] && !batidas[2].ocorrencia && batidas[2].hora ? new Date(batidas[2].hora) : null;
+  const dSaidaAlm   = bSaidaAlm && bSaidaAlm.hora ? new Date(bSaidaAlm.hora) : null;
+  const dRetorno    = bRetorno && bRetorno.hora ? new Date(bRetorno.hora) : null;
 
-  // Horas trabalhadas brutas
-  let msPresente = saidaReal ? saidaReal.getTime() - entradaReal.getTime() : 0;
-  if (bSaidaAlm && bRetorno) {
-    msPresente -= (bRetorno.getTime() - bSaidaAlm.getTime());
+  // Horas efetivamente trabalhadas no posto (brutas, descontando intervalo de almoço)
+  let msEfetivo = 0;
+  if (saidaReal) {
+    msEfetivo = saidaReal.getTime() - entradaReal.getTime();
+    if (dSaidaAlm && dRetorno) {
+      msEfetivo -= (dRetorno.getTime() - dSaidaAlm.getTime());
+    }
+  } else if (dSaidaAlm) {
+    // Saiu para almoço/médico e não retornou
+    msEfetivo = dSaidaAlm.getTime() - entradaReal.getTime();
   }
-  const horasTrabalhadas = Math.max(0, msPresente / 3600000);
+  const horasEfetivas = Math.max(0, msEfetivo / 3600000);
+
+  // Atestado Parcial (Abono de horas)
+  const atestadoParcialObj = batidas.find(
+    b => b && b.ocorrencia === "atestado" && b.parcial && b.statusAtestado !== "recusado"
+  );
+  let horasAtestadoParcial = 0;
+  if (atestadoParcialObj) {
+    if (atestadoParcialObj.horaInicioParcial && atestadoParcialObj.horaFimParcial) {
+      horasAtestadoParcial = calcHoursBetween(atestadoParcialObj.horaInicioParcial, atestadoParcialObj.horaFimParcial);
+    }
+  }
+
+  // Horas efetivamente trabalhadas no dia
+  const horasTrabalhadas = horasEfetivas;
+
+  // Horas com abono de atestado para fins de verificação de faltas/atrasos
+  const horasAbonadasTotal = horasEfetivas + horasAtestadoParcial;
 
   // Atraso, Saída antecipada e Hora extra
   let atrasoMin = 0;
@@ -277,20 +310,17 @@ export function calcularDia(
   const isFlexible = !!u.apenasSomarHoras || !jornada || !jornada.entrada || !jornada.saida;
 
   if (isFlexible) {
-    // Para jornadas flexíveis, calcula o saldo final do dia em relação à carga horária esperada em minutos inteiros
-    const minutosTrabalhados = Math.round(horasTrabalhadas * 60);
+    const minutosCredito = Math.round(horasAbonadasTotal * 60);
     const minutosJornada = Math.round(horasJornada * 60);
-    const diffMin = minutosTrabalhados - minutosJornada;
+    const diffMin = minutosCredito - minutosJornada;
 
     if (diffMin > toleranciaMin) {
       horasExtra = diffMin / 60;
     } else if (diffMin < -toleranciaMin) {
-      atrasoMin = Math.abs(diffMin);
+      saidaAntMin = Math.abs(diffMin);
     }
   } else {
-    // Para jornadas rígidas/com horário fixo, calculamos desvios por marcação com a margem de tolerância configurada
-    
-    // 1. Entrada (w)
+    // 1. Entrada atrasada
     if (jornada.entrada && bEntrada) {
       const prevEntrada = toMin(jornada.entrada);
       const realEntrada = entradaReal.getHours() * 60 + entradaReal.getMinutes();
@@ -302,39 +332,24 @@ export function calcularDia(
       }
     }
 
-    // 2. Saída para Almoço (x)
-    if (jornada.saidaAlmoco && bSaidaAlm) {
-      const prevSaidaAlm = toMin(jornada.saidaAlmoco);
-      const realSaidaAlm = bSaidaAlm.getHours() * 60 + bSaidaAlm.getMinutes();
-      const diff = realSaidaAlm - prevSaidaAlm;
-      if (diff > toleranciaMin) {
-        horasExtra += diff / 60;
-      } else if (diff < -toleranciaMin) {
-        saidaAntMin += Math.abs(diff);
-      }
-    }
+    // Calcular déficit total em minutos em relação à jornada esperada do dia
+    const totalMinJornada = Math.round(horasJornada * 60);
+    const totalMinCredito = Math.round(horasAbonadasTotal * 60);
+    const deficitTotalMin = totalMinJornada - totalMinCredito;
 
-    // 3. Retorno do Almoço (y)
-    if (jornada.retornoAlmoco && bRetorno) {
-      const prevRetornoAlm = toMin(jornada.retornoAlmoco);
-      const realRetornoAlm = bRetorno.getHours() * 60 + bRetorno.getMinutes();
-      const diff = realRetornoAlm - prevRetornoAlm;
-      if (diff > toleranciaMin) {
-        atrasoMin += diff;
-      } else if (diff < -toleranciaMin) {
-        horasExtra += Math.abs(diff) / 60;
+    if (deficitTotalMin > toleranciaMin) {
+      if (atrasoMin > 0) {
+        const restoDeficit = deficitTotalMin - atrasoMin;
+        if (restoDeficit > 0) {
+          saidaAntMin = restoDeficit;
+        }
+      } else {
+        saidaAntMin = deficitTotalMin;
       }
-    }
-
-    // 4. Saída Final (z)
-    if (jornada.saida && saidaReal && !bSaida?.cobertoPorAtestado) {
-      const prevSaida = toMin(jornada.saida);
-      const realSaida = saidaReal.getHours() * 60 + saidaReal.getMinutes();
-      const diff = realSaida - prevSaida;
-      if (diff > toleranciaMin) {
-        horasExtra += diff / 60;
-      } else if (diff < -toleranciaMin) {
-        saidaAntMin += Math.abs(diff);
+    } else if (deficitTotalMin < -toleranciaMin) {
+      const extraCand = Math.abs(deficitTotalMin) / 60;
+      if (extraCand > horasExtra) {
+        horasExtra = extraCand;
       }
     }
   }
@@ -344,10 +359,10 @@ export function calcularDia(
   let adicNoturnoTexto = "";
   if (entradaReal) {
     const listOverlaps: NightShiftOverlap[] = [];
-    if (bSaidaAlm) {
-      listOverlaps.push(...getOverlapWithNightShift(entradaReal, bSaidaAlm));
-      if (bRetorno && saidaReal) {
-        listOverlaps.push(...getOverlapWithNightShift(bRetorno, saidaReal));
+    if (dSaidaAlm) {
+      listOverlaps.push(...getOverlapWithNightShift(entradaReal, dSaidaAlm));
+      if (dRetorno && saidaReal) {
+        listOverlaps.push(...getOverlapWithNightShift(dRetorno, saidaReal));
       }
     } else if (saidaReal) {
       listOverlaps.push(...getOverlapWithNightShift(entradaReal, saidaReal));
@@ -357,11 +372,14 @@ export function calcularDia(
     adicNoturnoTexto = formatted.texto;
   }
 
-  const isAtestadoParcial = ocorrencia?.ocorrencia === "atestado" && ocorrencia.parcial && ocorrencia.statusAtestado !== "recusado";
+  const isAtestadoParcial = !!atestadoParcialObj;
   const status = isAtestadoParcial ? ("atestado" as const) : (atrasoMin > 0 || saidaAntMin > 0) ? ("parcial" as const) : ("completo" as const);
-  const contaParaCartao = !isAtestadoParcial;
 
-  return { status, horasTrabalhadas, horasJornada, atrasoMin, saidaAntMin, horasExtra, contaParaCartao, adicNoturnoHoras, adicNoturnoTexto };
+  // Vale-Alimentação: exigência de no mínimo 7h (ou minimoHorasDia) de trabalho EFETIVO no posto.
+  // O atestado (parcial ou total) abona a falta/jornada, mas NUNCA contabiliza como horas trabalhadas para alimentação.
+  const contaParaCartao = horasEfetivas >= 7;
+
+  return { status, horasTrabalhadas, horasEfetivas, horasJornada, atrasoMin, saidaAntMin, horasExtra, contaParaCartao, adicNoturnoHoras, adicNoturnoTexto };
 }
 
 export function resumoMesCalculado(
@@ -412,7 +430,7 @@ export function resumoMesCalculado(
     if (r.status === "falta")       diasFalta++;
     if (r.status === "atestado")    diasAtestado++;
     if (r.status === "afastamento") diasAfastamento++;
-    if (r.contaParaCartao && r.horasTrabalhadas >= minimoHorasDia) {
+    if (r.contaParaCartao && r.horasEfetivas >= minimoHorasDia) {
       horasParaCartao += 1;
     }
   }

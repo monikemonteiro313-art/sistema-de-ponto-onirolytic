@@ -1,7 +1,9 @@
 import React, { useState, useMemo } from "react";
-import { ThemeColors, User, PontosGlobal, Jornada, EmpresaConfig, PeriodoFerias, DiaPontos, PrePonto } from "../types";
+import { ThemeColors, User, PontosGlobal, Jornada, EmpresaConfig, PeriodoFerias, DiaPontos, PrePonto, Batida, AuditLogEntry } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { ModalJornada } from "./ModalJornada";
+import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
+import { saveUserPontosToDb, saveAuditLogToDb } from "../lib/firebaseService";
 import {
   calcularHorasDia,
   calcularDia,
@@ -544,6 +546,7 @@ interface AdmOperadorPanelProps {
   setEmpresaConfig: (val: EmpresaConfig) => void;
   feriados?: string[];
   prePontos?: PrePonto[];
+  onOpenGerenciarMarcacoes?: () => void;
 }
 
 export function AdmOperadorPanel({
@@ -561,10 +564,85 @@ export function AdmOperadorPanel({
   empresaConfig,
   setEmpresaConfig,
   feriados = [],
-  prePontos = []
+  prePontos = [],
+  onOpenGerenciarMarcacoes
 }: AdmOperadorPanelProps) {
   const [busca, setBusca] = useState("");
-  const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "alimentacao" | "atestados" | "pre_pontos" | "pontos_manuais">("frequencia");
+  const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "gerenciar_marcacoes" | "alimentacao" | "atestados" | "pre_pontos" | "pontos_manuais">("frequencia");
+
+  const handleSalvarPontoGerenciado = async (
+    userId: number,
+    dayKey: string,
+    batidaIdx: number,
+    novaHora: string,
+    justificativa: string
+  ) => {
+    const [hh, mm] = novaHora.split(":").map(Number);
+    const dateObj = new Date(`${dayKey}T00:00:00`);
+    dateObj.setHours(hh, mm, 0, 0);
+
+    const targetUser = users.find((u) => u.id === userId);
+    const userDays = { ...(pontosGlobal[userId] || {}) };
+    const dayPunches = [...(userDays[dayKey] || [null, null, null, null])];
+    while (dayPunches.length < 4) dayPunches.push(null);
+
+    const existingPunch = dayPunches[batidaIdx];
+    const horaAnteriorStr =
+      existingPunch && existingPunch.hora
+        ? new Date(existingPunch.hora).toLocaleTimeString("pt-BR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "--:--";
+
+    const updatedPunch: Batida = {
+      ...(existingPunch || {}),
+      hora: dateObj.toISOString(),
+      tipo: "manual",
+      origemMarcacao: "MO",
+      modificadoPorGestor: true,
+      modificadoPor: currentUser.nome,
+      modificadoPorMatricula: currentUser.matricula,
+      alteradoEm: new Date().toISOString(),
+      justificativaAlteracao: justificativa,
+      lancadoPorAdm: true,
+    };
+
+    dayPunches[batidaIdx] = updatedPunch;
+    userDays[dayKey] = dayPunches;
+
+    const nextPontosGlobal = {
+      ...pontosGlobal,
+      [userId]: userDays,
+    };
+
+    setPontosGlobal(nextPontosGlobal);
+    await saveUserPontosToDb(userId, userDays);
+
+    const log: AuditLogEntry = {
+      id: Date.now(),
+      quando: new Date().toISOString(),
+      quem: currentUser.nome,
+      quemMat: currentUser.matricula,
+      acao: `GERENCIAR_MARCACAO_MO`,
+      alvo: `Matrícula: ${targetUser?.matricula || userId} — ${targetUser?.nome || "Colaborador"}`,
+      detalhe: `Ponto modificado/inserido [Slot ${batidaIdx + 1}] em ${dayKey}: de ${horaAnteriorStr} para ${novaHora}. Justificativa: "${justificativa}"`,
+      userId,
+      dayKey,
+      slotIdx: batidaIdx,
+      horaAnterior: horaAnteriorStr,
+      horaNova: novaHora,
+      tipoModificacao: "MO",
+      justificativa,
+    };
+
+    await saveAuditLogToDb(log).catch((err) =>
+      console.warn("Erro ao salvar log de auditoria:", err)
+    );
+    if (onAddLog) {
+      onAddLog(log.acao, log.quem, log.detalhe || "");
+    }
+  };
   const [preFilter, setPreFilter] = useState<"todos" | "sucesso" | "fantasma" | "cancelado" | "ativo">("todos");
   const [atestadoAmpliado, setAtestadoAmpliado] = useState<{ userName: string; dayKey: string; cid: string; foto: string } | null>(null);
   const [atestadoZoom, setAtestadoZoom] = useState<number>(1);
@@ -3202,6 +3280,28 @@ export function AdmOperadorPanel({
             📊 Controle de Frequência
           </button>
           <button
+            onClick={() => {
+              if (onOpenGerenciarMarcacoes) {
+                onOpenGerenciarMarcacoes();
+              } else {
+                setGuiaAtiva("gerenciar_marcacoes");
+              }
+            }}
+            style={{
+              background: guiaAtiva === "gerenciar_marcacoes" ? t.accentGlow : "transparent",
+              border: `1.5px solid ${guiaAtiva === "gerenciar_marcacoes" ? t.borderFocus : "transparent"}`,
+              color: guiaAtiva === "gerenciar_marcacoes" ? t.accent : t.textSub,
+              fontSize: "13px",
+              fontWeight: 700,
+              padding: "7px 14px",
+              borderRadius: 8,
+              cursor: "pointer",
+              transition: "all 0.15s"
+            }}
+          >
+            ✍️ Gerenciar Marcações
+          </button>
+          <button
             onClick={() => setGuiaAtiva("alimentacao")}
             style={{
               background: guiaAtiva === "alimentacao" ? t.accentGlow : "transparent",
@@ -3318,6 +3418,17 @@ export function AdmOperadorPanel({
               </div>
             )}
           </>
+        ) : guiaAtiva === "gerenciar_marcacoes" ? (
+          <GerenciarMarcacoesView
+            t={t}
+            users={users}
+            currentUser={currentUser}
+            pontosGlobal={pontosGlobal}
+            auditLogs={[]}
+            onSalvarPonto={handleSalvarPontoGerenciado}
+            feriados={feriados}
+            minimoHorasDia={minimoHorasDia}
+          />
         ) : guiaAtiva === "alimentacao" ? (
           <>
             {/* VALE-ALIMENTAÇÃO TAB CONTENT */}
@@ -3343,7 +3454,7 @@ export function AdmOperadorPanel({
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginBottom: 4 }}>Sobre o Cálculo do Vale-Alimentação</div>
                   <div style={{ fontSize: 12, color: t.textSub, lineHeight: "1.5" }}>
-                    Os dias de direito ao vale-alimentação correspondem apenas aos dias úteis em que o funcionário trabalhou no mínimo <strong>{minimoHorasDia} horas</strong> (configurado no topo). Dias de falta, férias, feriados, afastamentos ou atestados de dia completo não contabilizam dias de direito ao benefício. O pagamento é limitado ao teto máximo de <strong>R$ {limiteMaximoAlimentacao}</strong> (configurado no topo) por funcionário. O direito ao benefício pode ser ativado ou desativado individualmente para cada funcionário na tabela abaixo ou na tela de detalhes do colaborador.
+                    Os dias de direito ao vale-alimentação correspondem apenas aos dias em que o funcionário <strong>efetivamente trabalhou</strong> no mínimo <strong>{minimoHorasDia} horas</strong> no posto. O atestado (seja de dia completo ou parcial) abona as horas/faltas no espelho de ponto, mas <strong>nunca contabiliza como horas trabalhadas para o vale-alimentação</strong>. Férias, feriados e afastamentos também não geram direito ao benefício. O pagamento é limitado ao teto máximo de <strong>R$ {limiteMaximoAlimentacao}</strong> (configurado no topo) por funcionário.
                   </div>
                 </div>
               </div>

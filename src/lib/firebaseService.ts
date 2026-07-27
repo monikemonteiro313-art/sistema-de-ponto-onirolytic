@@ -1,4 +1,5 @@
 import { db, fallbackToDefaultDatabase } from "./firebase";
+import { compressImageBase64 } from "../utils/hrHelpers";
 import { 
   collection, 
   getDocs as firestoreGetDocs, 
@@ -95,8 +96,11 @@ export interface FirestoreErrorInfo {
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errMessage = error instanceof Error ? error.message : String(error);
+  const isOffline = errMessage.includes("offline") || errMessage.includes("unavailable") || errMessage.includes("Could not reach Cloud Firestore");
+  
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMessage,
     authInfo: {
       userId: null,
       email: null,
@@ -108,7 +112,11 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   };
-  console.error("Firestore Error: ", JSON.stringify(errInfo));
+  if (isOffline) {
+    console.warn(`[Firestore Offline] ${operationType} on ${path}: ${errMessage}`);
+  } else {
+    console.error("Firestore Error: ", JSON.stringify(errInfo));
+  }
   throw new Error(JSON.stringify(errInfo));
 }
 
@@ -150,10 +158,11 @@ export async function initializeDbIfEmpty() {
   try {
     usersSnapshot = await getDocs(usersColl);
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "users");
+    console.warn("[Firebase] Could not check users collection (offline or unreachable):", error);
+    return;
   }
   
-  if (usersSnapshot.empty) {
+  if (usersSnapshot && usersSnapshot.empty) {
     console.log("Firestore is empty. Seeding initial database...");
     
     // Seed Users
@@ -161,7 +170,7 @@ export async function initializeDbIfEmpty() {
       try {
         await setDoc(doc(db, "users", String(u.id)), cleanObject(u));
       } catch (error) {
-        handleFirestoreError(error, OperationType.WRITE, `users/${u.id}`);
+        console.warn(`[Firebase] Offline/error writing user ${u.id}:`, error);
       }
     }
 
@@ -173,7 +182,7 @@ export async function initializeDbIfEmpty() {
         try {
           await setDoc(doc(db, "pontos", String(userId)), cleanObject({ days: userDays }));
         } catch (error) {
-          handleFirestoreError(error, OperationType.WRITE, `pontos/${userId}`);
+          console.warn(`[Firebase] Offline/error writing pontos for ${userId}:`, error);
         }
       }
     }
@@ -185,7 +194,7 @@ export async function initializeDbIfEmpty() {
       await setDoc(doc(db, "config", "feriados"), { list: [] });
       await setDoc(doc(db, "config", "wizard"), { done: false });
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, "config");
+      console.warn("[Firebase] Offline/error writing config:", error);
     }
     
     console.log("Database seeding completed successfully!");
@@ -202,7 +211,8 @@ export async function fetchAllUsers(): Promise<User[]> {
     });
     return list.sort((a, b) => a.id - b.id);
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "users");
+    console.warn("[Firebase] Error fetching users (offline?):", error);
+    return [];
   }
 }
 
@@ -222,25 +232,37 @@ export async function deleteUserFromDb(userId: number): Promise<void> {
   }
 }
 
-// Helper to prepare points for Firestore, injecting a synced/local timestamp for pending ones
-function prepareDaysForFirestore(days: any): any {
+// Helper to prepare points for Firestore, compressing large attachments and injecting timestamps
+async function prepareDaysForFirestore(days: any): Promise<any> {
   if (!days) return days;
   const result: any = {};
   for (const dayKey of Object.keys(days)) {
     const dayArray = days[dayKey];
     if (Array.isArray(dayArray)) {
-      const mapped = dayArray.map((punch: any) => {
-        if (!punch) return null;
-        const newPunch = { ...punch };
-        if (newPunch.serverTime === "pending" || !newPunch.serverTime) {
-          newPunch.serverTime = Timestamp.now();
-        }
-        // Quando vai para o Firestore, o ponto deixa de ser considerado offline/local pendente
-        if (newPunch.gravadoOffline) {
-          delete newPunch.gravadoOffline;
-        }
-        return newPunch;
-      });
+      const mapped = await Promise.all(
+        dayArray.map(async (punch: any) => {
+          if (!punch) return null;
+          const newPunch = { ...punch };
+          if (newPunch.serverTime === "pending" || !newPunch.serverTime) {
+            newPunch.serverTime = Timestamp.now();
+          }
+          // Quando vai para o Firestore, o ponto deixa de ser considerado offline/local pendente
+          if (newPunch.gravadoOffline) {
+            delete newPunch.gravadoOffline;
+          }
+          // Compress fotoAtestado if present to guarantee document stays under 1MB limit
+          if (newPunch.fotoAtestado && typeof newPunch.fotoAtestado === "string") {
+            if (newPunch.fotoAtestado.startsWith("data:image")) {
+              try {
+                newPunch.fotoAtestado = await compressImageBase64(newPunch.fotoAtestado, 800, 800, 0.65);
+              } catch (e) {
+                console.warn("[FirebaseService] Could not compress fotoAtestado:", e);
+              }
+            }
+          }
+          return newPunch;
+        })
+      );
       while (mapped.length < 4) {
         mapped.push(null);
       }
@@ -292,13 +314,42 @@ export async function fetchAllPontos(): Promise<PontosGlobal> {
     });
     return pontos;
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "pontos");
+    console.warn("[Firebase] Error fetching pontos (offline?):", error);
+    return {};
   }
 }
 
 export async function saveUserPontosToDb(userId: number, days: any): Promise<any> {
   try {
-    const preparedDays = prepareDaysForFirestore(days);
+    const preparedDays = await prepareDaysForFirestore(days);
+    const payload = cleanObject({ days: preparedDays });
+
+    // Safety guard for Firestore 1MB document limit (1,048,576 bytes)
+    const jsonStr = JSON.stringify(payload);
+    if (jsonStr.length > 850000) {
+      console.warn(`[FirebaseService] Payload size for user ${userId} is large (${jsonStr.length} bytes). Applying extra compression...`);
+      for (const dayKey of Object.keys(preparedDays)) {
+        const dayArr = preparedDays[dayKey];
+        if (Array.isArray(dayArr)) {
+          for (const punch of dayArr) {
+            if (punch && punch.fotoAtestado && typeof punch.fotoAtestado === "string") {
+              if (punch.fotoAtestado.startsWith("data:image")) {
+                try {
+                  punch.fotoAtestado = await compressImageBase64(punch.fotoAtestado, 500, 500, 0.50);
+                } catch (e) {
+                  console.warn("Extra compression failed:", e);
+                }
+              } else if (punch.fotoAtestado.length > 100000) {
+                // Non-image string (like huge PDF base64) exceeding size
+                console.warn(`[FirebaseService] Oversized attachment in ${dayKey} removed to keep document within 1MB Firestore limit.`);
+                delete punch.fotoAtestado;
+              }
+            }
+          }
+        }
+      }
+    }
+
     await setDoc(doc(db, "pontos", String(userId)), cleanObject({ days: preparedDays }));
     return preparedDays;
   } catch (error) {
@@ -320,7 +371,8 @@ export async function fetchAuditLogs(): Promise<AuditLogEntry[]> {
       return timeB - timeA;
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "auditLogs");
+    console.warn("[Firebase] Error fetching auditLogs (offline?):", error);
+    return [];
   }
 }
 
@@ -336,13 +388,13 @@ export async function saveAuditLogToDb(log: AuditLogEntry): Promise<void> {
 export async function fetchEmpresaConfig(): Promise<EmpresaConfig> {
   try {
     const docSnap = await getDoc(doc(db, "config", "empresa"));
-    if (docSnap.exists()) {
+    if (docSnap && docSnap.exists()) {
       return docSnap.data() as EmpresaConfig;
     }
-    return { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" };
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "config/empresa");
+    console.warn("[Firebase] Error fetching empresa config (offline?):", error);
   }
+  return { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" };
 }
 
 export async function saveEmpresaConfigToDb(config: EmpresaConfig): Promise<void> {
@@ -356,13 +408,13 @@ export async function saveEmpresaConfigToDb(config: EmpresaConfig): Promise<void
 export async function fetchMinimoHoras(): Promise<number> {
   try {
     const docSnap = await getDoc(doc(db, "config", "minimoHoras"));
-    if (docSnap.exists()) {
+    if (docSnap && docSnap.exists()) {
       return docSnap.data().value;
     }
-    return 7;
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "config/minimoHoras");
+    console.warn("[Firebase] Error fetching minimoHoras (offline?):", error);
   }
+  return 7;
 }
 
 export async function saveMinimoHorasToDb(val: number): Promise<void> {
@@ -376,13 +428,13 @@ export async function saveMinimoHorasToDb(val: number): Promise<void> {
 export async function fetchFeriados(): Promise<string[]> {
   try {
     const docSnap = await getDoc(doc(db, "config", "feriados"));
-    if (docSnap.exists()) {
+    if (docSnap && docSnap.exists()) {
       return docSnap.data().list || [];
     }
-    return [];
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "config/feriados");
+    console.warn("[Firebase] Error fetching feriados (offline?):", error);
   }
+  return [];
 }
 
 export async function saveFeriadosToDb(list: string[]): Promise<void> {
@@ -396,13 +448,13 @@ export async function saveFeriadosToDb(list: string[]): Promise<void> {
 export async function fetchWizardDone(): Promise<boolean> {
   try {
     const docSnap = await getDoc(doc(db, "config", "wizard"));
-    if (docSnap.exists()) {
+    if (docSnap && docSnap.exists()) {
       return !!docSnap.data().done;
     }
-    return false;
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "config/wizard");
+    console.warn("[Firebase] Error fetching wizard (offline?):", error);
   }
+  return false;
 }
 
 export async function saveWizardDoneToDb(done: boolean): Promise<void> {
@@ -423,7 +475,8 @@ export async function fetchAllPrePontos(): Promise<PrePonto[]> {
     });
     return list.sort((a, b) => new Date(b.quando).getTime() - new Date(a.quando).getTime());
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "prePontos");
+    console.warn("[Firebase] Error fetching prePontos (offline?):", error);
+    return [];
   }
 }
 
@@ -445,7 +498,8 @@ export async function fetchAllFolhasAceite(): Promise<FolhaAceite[]> {
     });
     return list.sort((a, b) => new Date(b.enviadoEm).getTime() - new Date(a.enviadoEm).getTime());
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "folhasAceite");
+    console.warn("[Firebase] Error fetching folhasAceite (offline?):", error);
+    return [];
   }
 }
 
@@ -493,7 +547,8 @@ export async function fetchAllAlertas(): Promise<Alerta[]> {
     });
     return list.sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, "alertas");
+    console.warn("[Firebase] Error fetching alertas (offline?):", error);
+    return [];
   }
 }
 

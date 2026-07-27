@@ -1,12 +1,13 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map, FileText, Globe, Database, Server, HardDrive, RefreshCw, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle } from "lucide-react";
-import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta } from "../types";
+import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map, FileText, Globe, Database, Server, HardDrive, RefreshCw, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote } from "lucide-react";
+import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta, Batida } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { PwModal, CreateModal, DeleteModal, EditMatriculaModal } from "./AdmModals";
 import { FeriasModal } from "./FeriasModal";
+import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
 import { genMatricula, timeAgo, resumoMesCalculado, calcularDia } from "../utils/hrHelpers";
 import { SUPERADMIN_MAT, getJornada } from "../data/mockData";
-import { fetchWizardDone, saveUserPontosToDb } from "../lib/firebaseService";
+import { fetchWizardDone, saveUserPontosToDb, saveAuditLogToDb } from "../lib/firebaseService";
 
 // Decides what actions are permitted based on credentials mapping
 export function perms(viewer: User, target: User) {
@@ -107,7 +108,9 @@ export function AdmPanel({
   saveAlertaToDb,
   deleteAlertaFromDb
 }: AdmPanelProps) {
-  const [tab, setTab] = useState<"colaboradores" | "adm" | "alertas" | "auditoria" | "feriados" | "arquivo_morto" | "armazenamento" | "guia_manutencao" | "aceites">("colaboradores");
+  const [tab, setTab] = useState<"colaboradores" | "gerenciar_marcacoes" | "adm" | "alertas" | "auditoria" | "feriados" | "arquivo_morto" | "armazenamento" | "guia_manutencao" | "aceites">("colaboradores");
+  const [blocoNotas, setBlocoNotas] = useState(() => localStorage.getItem("bloco_notas_gestor") || "");
+  const [blocoNotasSalvoMsg, setBlocoNotasSalvoMsg] = useState(false);
   const [alertaDestinoTipo, setAlertaDestinoTipo] = useState<"TODOS" | "ESPECIFICO">("TODOS");
   const [alertaMatricula, setAlertaMatricula] = useState<string>("");
   const [alertaMensagem, setAlertaMensagem] = useState<string>("");
@@ -610,6 +613,78 @@ export function AdmPanel({
       onAddLog(acao, alvo, detalhe);
     }
   }
+
+  const handleSalvarPontoGerenciado = async (
+    userId: number,
+    dayKey: string,
+    batidaIdx: number,
+    novaHora: string,
+    justificativa: string
+  ) => {
+    const [hh, mm] = novaHora.split(":").map(Number);
+    const dateObj = new Date(`${dayKey}T00:00:00`);
+    dateObj.setHours(hh, mm, 0, 0);
+
+    const targetUser = users.find((u) => u.id === userId);
+    const userDays = { ...(pontosGlobal[userId] || {}) };
+    const dayPunches = [...(userDays[dayKey] || [null, null, null, null])];
+    while (dayPunches.length < 4) dayPunches.push(null);
+
+    const existingPunch = dayPunches[batidaIdx];
+    const horaAnteriorStr =
+      existingPunch && existingPunch.hora
+        ? new Date(existingPunch.hora).toLocaleTimeString("pt-BR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "--:--";
+
+    const updatedPunch: Batida = {
+      ...(existingPunch || {}),
+      hora: dateObj.toISOString(),
+      tipo: "manual",
+      origemMarcacao: "MO",
+      modificadoPorGestor: true,
+      modificadoPor: currentUser.nome,
+      modificadoPorMatricula: currentUser.matricula,
+      alteradoEm: new Date().toISOString(),
+      justificativaAlteracao: justificativa,
+      lancadoPorAdm: true,
+    };
+
+    dayPunches[batidaIdx] = updatedPunch;
+    userDays[dayKey] = dayPunches;
+
+    const nextPontosGlobal = {
+      ...pontosGlobal,
+      [userId]: userDays,
+    };
+
+    setPontosGlobal(nextPontosGlobal);
+    await saveUserPontosToDb(userId, userDays);
+
+    const log: AuditLogEntry = {
+      id: Date.now(),
+      quando: new Date().toISOString(),
+      quem: currentUser.nome,
+      quemMat: currentUser.matricula,
+      acao: `GERENCIAR_MARCACAO_MO`,
+      alvo: `Matrícula: ${targetUser?.matricula || userId} — ${targetUser?.nome || "Colaborador"}`,
+      detalhe: `Ponto modificado/inserido [Slot ${batidaIdx + 1}] em ${dayKey}: de ${horaAnteriorStr} para ${novaHora}. Justificativa: "${justificativa}"`,
+      userId,
+      dayKey,
+      slotIdx: batidaIdx,
+      horaAnterior: horaAnteriorStr,
+      horaNova: novaHora,
+      tipoModificacao: "MO",
+      justificativa,
+    };
+
+    await saveAuditLogToDb(log).catch((err) =>
+      console.warn("Erro ao salvar log de auditoria:", err)
+    );
+    addLog(log.acao, log.alvo, log.detalhe || "");
+  };
 
   function createUser(data: any) {
     const newUser: User = {
@@ -1497,7 +1572,7 @@ export function AdmPanel({
           </div>
         </div>
         <div style={{ display: "flex", gap: 2, overflowX: "auto", whiteSpace: "nowrap", flexWrap: "nowrap" }} className="no-scrollbar">
-          {(["colaboradores", "adm", "alertas", "auditoria", "feriados", "arquivo_morto", "armazenamento", "guia_manutencao", "aceites"] as const).map(key => (
+          {(["colaboradores", "gerenciar_marcacoes", "adm", "alertas", "auditoria", "feriados", "arquivo_morto", "armazenamento", "guia_manutencao", "aceites"] as const).map(key => (
             <button
               key={key}
               onClick={() => setTab(key)}
@@ -1520,6 +1595,8 @@ export function AdmPanel({
             >
               {key === "colaboradores"
                 ? "Colaboradores"
+                : key === "gerenciar_marcacoes"
+                ? "Gerenciar Marcações"
                 : key === "adm"
                 ? "Credenciais ADMs"
                 : key === "alertas"
@@ -1866,6 +1943,20 @@ export function AdmPanel({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Gerenciar Marcações Tab Rendering */}
+      {tab === "gerenciar_marcacoes" && (
+        <GerenciarMarcacoesView
+          t={t}
+          users={users}
+          currentUser={currentUser}
+          pontosGlobal={pontosGlobal}
+          auditLogs={combinedAuditLogs}
+          onSalvarPonto={handleSalvarPontoGerenciado}
+          feriados={feriados}
+          minimoHorasDia={minimoHorasDia}
+        />
       )}
 
       {/* Calendario Geral / Feriados Corporativos tab */}
@@ -3335,6 +3426,124 @@ export function AdmPanel({
                     </div>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* Bloco Informativo de Legendas de Marcações (ma e mo) */}
+            <div style={{
+              background: t.surface,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 14,
+              padding: "20px 24px",
+              marginTop: 24,
+              marginBottom: 24,
+              boxShadow: "0 2px 10px rgba(0,0,0,0.02)"
+            }}>
+              <h3 style={{ margin: "0 0 12px 0", fontSize: 15, fontWeight: 700, color: t.text, display: "flex", alignItems: "center", gap: 8 }}>
+                <Info size={18} color={t.accent} /> Nota Técnica: Legenda de Marcações e Identificação (ma, mo, --:--)
+              </h3>
+              <p style={{ fontSize: 13, color: t.textSub, margin: "0 0 16px 0", lineHeight: 1.5 }}>
+                O sistema de ponto aplica identificadores automáticos nas marcações do espelho para distinguir entre registros normais, pré-pontos aprovados e edições efetuadas pela gestão:
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
+                <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ background: "#2563eb", color: "#fff", fontSize: 10, fontWeight: 800, padding: "2px 6px", borderRadius: 4 }}>
+                      ma
+                    </span>
+                    <strong style={{ fontSize: 13, color: t.text }}>Manual Aprovada</strong>
+                  </div>
+                  <div style={{ fontSize: 12, color: t.textSub, lineHeight: 1.4 }}>
+                    Sinaliza que o ponto foi solicitado pelo colaborador (através de formulário de inclusão manual ou pré-ponto) e aprovado explicitamente pelo gestor/operador.
+                  </div>
+                </div>
+
+                <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ background: "#9333ea", color: "#fff", fontSize: 10, fontWeight: 800, padding: "2px 6px", borderRadius: 4 }}>
+                      mo
+                    </span>
+                    <strong style={{ fontSize: 13, color: t.text }}>Modificado pelo Gestor</strong>
+                  </div>
+                  <div style={{ fontSize: 12, color: t.textSub, lineHeight: 1.4 }}>
+                    Sinaliza que o registro de ponto foi inserido ou alterado diretamente pelo gestor na aba <strong>Gerenciar Marcações</strong>, mediante justificativa registrada na auditoria.
+                  </div>
+                </div>
+
+                <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ color: t.textMuted, fontSize: 12, fontWeight: 700 }}>--:--</span>
+                    <strong style={{ fontSize: 13, color: t.text }}>Ausência de Marcação (Slot Livre)</strong>
+                  </div>
+                  <div style={{ fontSize: 12, color: t.textSub, lineHeight: 1.4 }}>
+                    Indica ausência de marcação para determinado horário previsto. Permite ao gestor clicar e realizar inclusão direta com carimbo <strong>mo</strong>.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Bloco de Notas do Gestor */}
+            <div style={{
+              background: t.surface,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 14,
+              padding: "20px 24px",
+              marginBottom: 24,
+              boxShadow: "0 2px 10px rgba(0,0,0,0.02)"
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text, display: "flex", alignItems: "center", gap: 8 }}>
+                  <StickyNote size={18} color={t.accent} /> Bloco de Notas e Anotações da Gestão de RH
+                </h3>
+                {blocoNotasSalvoMsg && (
+                  <span style={{ fontSize: 12, fontWeight: 700, color: t.success }}>
+                    ✓ Anotações salvas!
+                  </span>
+                )}
+              </div>
+              <p style={{ fontSize: 12.5, color: t.textSub, margin: "0 0 12px 0" }}>
+                Utilize este espaço para rascunhos, orientações internas de manutenção, lembretes de fechamento de folha e observações operacionais.
+              </p>
+              <textarea
+                rows={5}
+                placeholder="Escreva aqui suas anotações, lembretes de rotina, pendências com a contabilidade ou observações gerais..."
+                value={blocoNotas}
+                onChange={(e) => setBlocoNotas(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "12px 14px",
+                  background: t.bg,
+                  border: `1.5px solid ${t.border}`,
+                  borderRadius: 10,
+                  fontSize: 13,
+                  color: t.text,
+                  outline: "none",
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                  marginBottom: 12
+                }}
+              />
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    localStorage.setItem("bloco_notas_gestor", blocoNotas);
+                    setBlocoNotasSalvoMsg(true);
+                    setTimeout(() => setBlocoNotasSalvoMsg(false), 2000);
+                  }}
+                  style={{
+                    background: t.accent,
+                    color: "#ffffff",
+                    border: "none",
+                    padding: "8px 18px",
+                    borderRadius: 8,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: "pointer"
+                  }}
+                >
+                  Salvar Anotações
+                </button>
               </div>
             </div>
 
