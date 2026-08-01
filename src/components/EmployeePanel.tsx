@@ -5,6 +5,7 @@ import { getOverlapWithNightShift, calcularDia, resumoMesCalculado, baixarArquiv
 import { getJornada } from "../data/mockData";
 import { LgpdModal } from "./LgpdModal";
 import { PontinhoTourModal } from "./PontinhoTourModal";
+import { ModalSolicitarCorrecao } from "./ModalSolicitarCorrecao";
 import { getCidInfo } from "../utils/cidHelper";
 
 function resizeAndCompressImage(base64Str: string, maxWidth = 1800, maxHeight = 1800, quality = 0.88): Promise<string> {
@@ -57,6 +58,7 @@ interface EmployeePanelProps {
   t: ThemeColors;
   currentUser: User;
   onLogout: () => void;
+  onToggleTheme?: () => void;
   pontosGlobal: PontosGlobal;
   setPontosGlobal: React.Dispatch<React.SetStateAction<PontosGlobal>>;
   onAddLog: (acao: string, alvo: string, detalhe?: string) => void;
@@ -74,12 +76,22 @@ interface EmployeePanelProps {
   alertas?: Alerta[];
   setAlertas?: React.Dispatch<React.SetStateAction<Alerta[]>>;
   markAlertaAsReadInDb?: (alertaId: string, matricula: string) => Promise<void>;
+  onSendSolicitacaoCorrecao?: (data: {
+    data: string;
+    hora: string;
+    slotIdx: number;
+    motivo: string;
+    latitude?: number | null;
+    longitude?: number | null;
+    accuracy?: number | null;
+  }) => Promise<void>;
 }
 
 export function EmployeePanel({ 
   t, 
   currentUser, 
   onLogout, 
+  onToggleTheme,
   pontosGlobal, 
   setPontosGlobal, 
   onAddLog, 
@@ -96,10 +108,12 @@ export function EmployeePanel({
   updateUserBloqueioAceite,
   alertas = [],
   setAlertas,
-  markAlertaAsReadInDb
+  markAlertaAsReadInDb,
+  onSendSolicitacaoCorrecao
 }: EmployeePanelProps) {
   const [now, setNow] = useState(new Date());
   const [isLgpdOpen, setIsLgpdOpen] = useState(false);
+  const [solicitarCorrecaoOpen, setSolicitarCorrecaoOpen] = useState(false);
 
   // Alert Pop-up logic for active unread alerts directed to this user
   const activeAlertsForUser = useMemo(() => {
@@ -1491,51 +1505,61 @@ export function EmployeePanel({
         </div>
       )}
       {/* Top Header */}
-      <div style={{ width: "100%", maxWidth: 420, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-
-      {/* Alerta de Ponto Incompleto do Dia Anterior (SÓ APARECE NO DIA SEGUINTE) */}
-      {alertaOntemPendente && !alertaOntemDismissed && (
-        <div style={{
-          width: "100%",
-          maxWidth: 420,
-          background: t.dangerBg,
-          border: `1.5px solid ${t.dangerBorder}`,
-          borderRadius: 14,
-          padding: "12px 14px",
-          marginBottom: 16,
-          boxSizing: "border-box",
-          display: "flex",
-          alignItems: "flex-start",
-          gap: 10,
-          boxShadow: "0 4px 12px rgba(239, 68, 68, 0.12)"
-        }}>
-          <div style={{ fontSize: 20, lineHeight: 1 }}>⚠️</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: t.text, marginBottom: 2 }}>
-              Ponto Incompleto do Dia Anterior ({alertaOntemPendente.formattedDate})
-            </div>
-            <div style={{ fontSize: 11.5, color: t.textSub, lineHeight: 1.4 }}>
-              Identificamos apenas {alertaOntemPendente.count} registro(s) de ponto ontem. Solicite um ajuste ao seu gestor para regularizar.
-            </div>
+      <div style={{ width: "100%", maxWidth: 420, boxSizing: "border-box", marginBottom: 16 }}>
+        {/* User Greeting and Logout row */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: t.text, lineHeight: 1.2 }}>Olá, {firstName}! 👋</div>
+            <div style={{ fontSize: "12px", color: t.textSub, marginTop: 2, textTransform: "capitalize" }}>{dateStr}</div>
           </div>
-          <button
-            type="button"
-            onClick={() => setAlertaOntemDismissed(true)}
-            style={{
-              background: "none",
-              border: "none",
-              color: t.textMuted,
-              cursor: "pointer",
-              fontSize: 14,
-              fontWeight: 700,
-              padding: 2
-            }}
-          >
-            ✕
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {onToggleTheme && (
+              <button
+                onClick={onToggleTheme}
+                style={{
+                  background: t.surfaceAlt,
+                  border: `1px solid ${t.border}`,
+                  borderRadius: 9,
+                  padding: "6px 12px",
+                  cursor: "pointer",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  color: t.textSub,
+                  fontFamily: "inherit"
+                }}
+              >
+                Modo
+              </button>
+            )}
+            <button
+              onClick={onLogout}
+              style={{
+                background: t.surfaceAlt,
+                border: `1px solid ${t.border}`,
+                borderRadius: 9,
+                padding: "6px 12px",
+                cursor: "pointer",
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: t.textSub,
+                fontFamily: "inherit"
+              }}
+            >
+              Sair
+            </button>
+          </div>
         </div>
-      )}
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+
+        {/* Action Buttons Grid for Mobile & Desktop */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(2, 1fr)",
+            gap: 8,
+            width: "100%",
+            boxSizing: "border-box"
+          }}
+        >
           <button
             onClick={() => {
               setTourInitialStep(1);
@@ -1543,28 +1567,48 @@ export function EmployeePanel({
             }}
             title="Abrir Guia Orientativo do Ponto Digital (Pontinho)"
             style={{
-              background: "linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.15))",
-              border: `1.5px solid rgba(59,130,246,0.4)`,
+              background: "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(139,92,246,0.12))",
+              border: `1.5px solid rgba(59,130,246,0.35)`,
               borderRadius: 10,
-              padding: "7px 11px",
+              padding: "8px 10px",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
               gap: 6,
-              fontSize: 11.5,
+              fontSize: 11,
               fontWeight: 800,
               color: t.accent,
-              transition: "all 0.2s"
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.transform = "scale(1.03)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.transform = "scale(1)";
+              width: "100%",
+              boxSizing: "border-box"
             }}
           >
             <span style={{ fontSize: 14 }}>🤖</span> GUIA PASSO A PASSO
           </button>
+
+          <button
+            onClick={() => setSolicitarCorrecaoOpen(true)}
+            title="Solicitar Correção ou Ajuste de Ponto"
+            style={{
+              background: "linear-gradient(135deg, rgba(245,158,11,0.12), rgba(234,179,8,0.12))",
+              border: `1.5px solid rgba(245,158,11,0.35)`,
+              borderRadius: 10,
+              padding: "8px 10px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              fontSize: 11,
+              fontWeight: 800,
+              color: "#d97706",
+              width: "100%",
+              boxSizing: "border-box"
+            }}
+          >
+            <SquarePen size={15} color="#d97706" /> SOLICITAR CORREÇÃO
+          </button>
+
           <button
             onClick={() => setAtestadoModalOpen(true)}
             title="Lançar Atestado Médico"
@@ -1572,24 +1616,22 @@ export function EmployeePanel({
               background: t.surfaceAlt,
               border: `1.5px solid ${t.border}`,
               borderRadius: 10,
-              padding: "8px 9.5px",
+              padding: "8px 10px",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              transition: "all 0.2s"
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.transform = "scale(1.05)";
-              e.currentTarget.style.background = t.accentGlow;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.transform = "scale(1)";
-              e.currentTarget.style.background = t.surfaceAlt;
+              gap: 6,
+              fontSize: 11,
+              fontWeight: 700,
+              color: t.text,
+              width: "100%",
+              boxSizing: "border-box"
             }}
           >
-            <Stethoscope size={19} color={t.accent} />
+            <Stethoscope size={16} color={t.accent} /> ATESTADO
           </button>
+
           <button
             onClick={() => setPdfModalOpen(true)}
             title="Visualizar Espelho de Ponto (PDF)"
@@ -1597,45 +1639,64 @@ export function EmployeePanel({
               background: t.surfaceAlt,
               border: `1.5px solid ${t.border}`,
               borderRadius: 10,
-              padding: "8px 9.5px",
+              padding: "8px 10px",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              transition: "all 0.2s"
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.transform = "scale(1.05)";
-              e.currentTarget.style.background = t.accentGlow;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.transform = "scale(1)";
-              e.currentTarget.style.background = t.surfaceAlt;
+              gap: 6,
+              fontSize: 11,
+              fontWeight: 700,
+              color: t.text,
+              width: "100%",
+              boxSizing: "border-box"
             }}
           >
-            <Folder size={19} color={t.accent} />
+            <Folder size={16} color={t.accent} /> ESPELHO PDF
           </button>
-          <div>
-            <div style={{ fontSize: 19, fontWeight: 700, color: t.text, lineHeight: 1.2 }}>Olá, {firstName}! 👋</div>
-            <div style={{ fontSize: "12.5px", color: t.textSub, marginTop: 2, textTransform: "capitalize" }}>{dateStr}</div>
-          </div>
         </div>
-        <button
-          onClick={onLogout}
-          style={{
-            background: t.surfaceAlt,
-            border: `1px solid ${t.border}`,
-            borderRadius: 9,
-            padding: "7px 13px",
-            cursor: "pointer",
-            fontSize: 13,
-            fontWeight: 600,
-            color: t.textSub,
-            fontFamily: "inherit"
-          }}
-        >
-          Sair
-        </button>
+
+        {/* Alerta de Ponto Incompleto do Dia Anterior */}
+        {alertaOntemPendente && !alertaOntemDismissed && (
+          <div style={{
+            width: "100%",
+            background: t.dangerBg,
+            border: `1.5px solid ${t.dangerBorder}`,
+            borderRadius: 14,
+            padding: "12px 14px",
+            marginTop: 12,
+            boxSizing: "border-box",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            boxShadow: "0 4px 12px rgba(239, 68, 68, 0.12)"
+          }}>
+            <div style={{ fontSize: 20, lineHeight: 1 }}>⚠️</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: t.text, marginBottom: 2 }}>
+                Ponto Incompleto do Dia Anterior ({alertaOntemPendente.formattedDate})
+              </div>
+              <div style={{ fontSize: 11.5, color: t.textSub, lineHeight: 1.4 }}>
+                Identificamos apenas {alertaOntemPendente.count} registro(s) de ponto ontem. Solicite um ajuste ao seu gestor para regularizar.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAlertaOntemDismissed(true)}
+              style={{
+                background: "none",
+                border: "none",
+                color: t.textMuted,
+                cursor: "pointer",
+                fontSize: 14,
+                fontWeight: 700,
+                padding: 2
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Expandable History Calendar */}
@@ -2249,6 +2310,63 @@ export function EmployeePanel({
                 </div>
               </div>
             )}
+
+            {/* Prominent Correction Request Banner */}
+            <div
+              onClick={() => setSolicitarCorrecaoOpen(true)}
+              style={{
+                width: "100%",
+                maxWidth: 380,
+                background: `linear-gradient(135deg, ${t.surfaceAlt}, ${t.surface})`,
+                border: `1.5px solid ${t.borderFocus}`,
+                borderRadius: 16,
+                padding: "14px 18px",
+                marginTop: 12,
+                marginBottom: 20,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                cursor: "pointer",
+                boxShadow: "0 4px 14px rgba(0,0,0,0.04)",
+                transition: "all 0.2s ease"
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = "translateY(-2px)";
+                e.currentTarget.style.borderColor = t.accent;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = "translateY(0)";
+                e.currentTarget.style.borderColor = t.borderFocus;
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 10,
+                    background: t.accentGlow,
+                    border: `1px solid ${t.borderFocus}`,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0
+                  }}
+                >
+                  <SquarePen size={20} color={t.accent} />
+                </div>
+                <div style={{ textAlign: "left" }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 800, color: t.text }}>
+                    Esqueceu de bater o ponto?
+                  </div>
+                  <div style={{ fontSize: 11.5, color: t.textSub, marginTop: 1 }}>
+                    Clique para enviar solicitação de correção com GPS
+                  </div>
+                </div>
+              </div>
+              <span style={{ fontSize: 18, color: t.accent, fontWeight: "bold" }}>➔</span>
+            </div>
           </div>
         )
       )}
@@ -4451,6 +4569,19 @@ export function EmployeePanel({
         }}
         t={t}
         userName={currentUser.nome}
+      />
+
+      {/* Modal de Solicitação de Correção de Ponto */}
+      <ModalSolicitarCorrecao
+        isOpen={solicitarCorrecaoOpen}
+        onClose={() => setSolicitarCorrecaoOpen(false)}
+        currentUser={currentUser}
+        t={t}
+        onSubmit={async (data) => {
+          if (onSendSolicitacaoCorrecao) {
+            await onSendSolicitacaoCorrecao(data);
+          }
+        }}
       />
     </div>
   );

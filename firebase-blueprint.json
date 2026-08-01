@@ -155,10 +155,59 @@
         "respondidoEm": { "type": "string" }
       },
       "required": ["id", "userId", "userName", "matricula", "mes", "ano", "status", "enviadoEm"]
+    },
+    "Denuncia": {
+      "title": "Denuncia",
+      "description": "100% anonymous whistleblowing report submissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "texto": { "type": "string" },
+        "fotoUrl": { "type": "string" },
+        "criadoEm": { "type": "string" },
+        "status": { "type": "string", "enum": ["pendente", "em_analise", "resolvido", "arquivado"] },
+        "respostaAdm": { "type": "string" },
+        "atualizadoEm": { "type": "string" }
+      },
+      "required": ["id", "texto", "criadoEm", "status"]
+    },
+    "SolicitacaoCorrecao": {
+      "title": "SolicitacaoCorrecao",
+      "description": "Point adjustment correction requests submitted by employees with geolocation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "number" },
+        "userName": { "type": "string" },
+        "matricula": { "type": "string" },
+        "data": { "type": "string" },
+        "hora": { "type": "string" },
+        "slotIdx": { "type": "number" },
+        "motivo": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "status": { "type": "string", "enum": ["pendente", "aprovado", "rejeitado"] },
+        "motivoRejeicao": { "type": "string" },
+        "criadoEm": { "type": "string" },
+        "revisadoEm": { "type": "string" },
+        "revisadoPor": { "type": "string" }
+      },
+      "required": ["id", "userId", "userName", "matricula", "data", "hora", "slotIdx", "motivo", "status", "criadoEm"]
     }
   },
   "firestore": {
+    "/solicitacoesCorrecao/{solicitacaoId}": {
+      "schema": "SolicitacaoCorrecao",
+      "description": "Point adjustment requests needing manager approval"
+    },
+    "/denuncias/{denunciaId}": {
+
+      "schema": "Denuncia",
+      "description": "Anonymous report documents"
+    },
     "/folhasAceite/{folhaId}": {
+
       "schema": "FolhaAceite",
       "description": "Records of sent, approved or rejected point sheets"
     },

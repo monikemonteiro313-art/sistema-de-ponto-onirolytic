@@ -66,7 +66,7 @@ function updateDoc(docRef: any, data: any): Promise<any> {
   return runWithFallback(() => firestoreUpdateDoc(docRef, data));
 }
 
-import { User, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta } from "../types";
+import { User, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Denuncia, SolicitacaoCorrecao } from "../types";
 import { INITIAL_USERS, SEED_PONTOS } from "../data/mockData";
 
 export enum OperationType {
@@ -585,6 +585,162 @@ export async function markAlertaAsReadInDb(alertaId: string, matricula: string):
     console.warn(`[Firebase] Não foi possível atualizar leitura do alerta ${alertaId}:`, error);
   }
 }
+
+// ==================== DENÚNCIAS ANÔNIMAS ====================
+
+export async function fetchAllDenuncias(): Promise<Denuncia[]> {
+  try {
+    const querySnapshot = await getDocs(collection(db, "denuncias"));
+    const list: Denuncia[] = [];
+    querySnapshot.forEach((docSnap: any) => {
+      const data = docSnap.data();
+      list.push({
+        id: docSnap.id,
+        texto: data.texto || "",
+        fotoUrl: data.fotoUrl || null,
+        criadoEm: data.criadoEm || new Date().toISOString(),
+        status: data.status || "pendente",
+        respostaAdm: data.respostaAdm || null,
+        atualizadoEm: data.atualizadoEm || null
+      });
+    });
+    return list.sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
+  } catch (error) {
+    console.warn("[Firebase] Error fetching denuncias (offline?):", error);
+    return [];
+  }
+}
+
+export async function saveDenunciaToDb(denunciaInput: { id?: string; texto: string; fotoUrl?: string | null; criadoEm?: string }): Promise<Denuncia> {
+  const id = denunciaInput.id || `denuncia_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const criadoEm = denunciaInput.criadoEm || new Date().toISOString();
+  
+  // Clean object ensuring NO identification metadata is present
+  const newDenuncia: Denuncia = {
+    id,
+    texto: denunciaInput.texto.trim(),
+    fotoUrl: denunciaInput.fotoUrl || null,
+    criadoEm,
+    status: "pendente",
+    respostaAdm: null,
+    atualizadoEm: null
+  };
+
+  try {
+    await setDoc(doc(db, "denuncias", id), cleanObject(newDenuncia));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `denuncias/${id}`);
+  }
+
+  return newDenuncia;
+}
+
+export async function updateDenunciaInDb(id: string, updates: Partial<Denuncia>): Promise<void> {
+  try {
+    const payload = cleanObject({
+      ...updates,
+      atualizadoEm: new Date().toISOString()
+    });
+    await updateDoc(doc(db, "denuncias", id), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `denuncias/${id}`);
+  }
+}
+
+export async function deleteDenunciaFromDb(id: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, "denuncias", id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `denuncias/${id}`);
+  }
+}
+
+// ==================== SOLICITAÇÕES DE CORREÇÃO DE PONTO ====================
+
+export async function fetchAllSolicitacoesCorrecao(): Promise<SolicitacaoCorrecao[]> {
+  try {
+    const querySnapshot = await getDocs(collection(db, "solicitacoesCorrecao"));
+    const list: SolicitacaoCorrecao[] = [];
+    querySnapshot.forEach((docSnap: any) => {
+      const data = docSnap.data();
+      list.push({
+        id: docSnap.id,
+        userId: data.userId,
+        userName: data.userName || "",
+        matricula: data.matricula || "",
+        data: data.data || "",
+        hora: data.hora || "",
+        slotIdx: typeof data.slotIdx === "number" ? data.slotIdx : 0,
+        motivo: data.motivo || "",
+        latitude: data.latitude !== undefined ? data.latitude : null,
+        longitude: data.longitude !== undefined ? data.longitude : null,
+        accuracy: data.accuracy !== undefined ? data.accuracy : null,
+        status: data.status || "pendente",
+        motivoRejeicao: data.motivoRejeicao || null,
+        criadoEm: data.criadoEm || new Date().toISOString(),
+        revisadoEm: data.revisadoEm || null,
+        revisadoPor: data.revisadoPor || null
+      });
+    });
+    return list.sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
+  } catch (error) {
+    console.warn("[Firebase] Error fetching solicitacoesCorrecao (offline?):", error);
+    return [];
+  }
+}
+
+export async function saveSolicitacaoCorrecaoToDb(solicitationInput: Partial<SolicitacaoCorrecao>): Promise<SolicitacaoCorrecao> {
+  const id = solicitationInput.id || `correcao_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const criadoEm = solicitationInput.criadoEm || new Date().toISOString();
+
+  const newSolicitation: SolicitacaoCorrecao = {
+    id,
+    userId: solicitationInput.userId || 0,
+    userName: solicitationInput.userName || "",
+    matricula: solicitationInput.matricula || "",
+    data: solicitationInput.data || "",
+    hora: solicitationInput.hora || "",
+    slotIdx: solicitationInput.slotIdx !== undefined ? solicitationInput.slotIdx : 0,
+    motivo: solicitationInput.motivo ? solicitationInput.motivo.trim() : "",
+    latitude: solicitationInput.latitude !== undefined ? solicitationInput.latitude : null,
+    longitude: solicitationInput.longitude !== undefined ? solicitationInput.longitude : null,
+    accuracy: solicitationInput.accuracy !== undefined ? solicitationInput.accuracy : null,
+    status: solicitationInput.status || "pendente",
+    motivoRejeicao: solicitationInput.motivoRejeicao || null,
+    criadoEm,
+    revisadoEm: solicitationInput.revisadoEm || null,
+    revisadoPor: solicitationInput.revisadoPor || null
+  };
+
+  try {
+    await setDoc(doc(db, "solicitacoesCorrecao", id), cleanObject(newSolicitation));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `solicitacoesCorrecao/${id}`);
+  }
+
+  return newSolicitation;
+}
+
+export async function updateSolicitacaoCorrecaoInDb(id: string, updates: Partial<SolicitacaoCorrecao>): Promise<void> {
+  try {
+    const payload = cleanObject({
+      ...updates,
+      revisadoEm: updates.revisadoEm || new Date().toISOString()
+    });
+    await updateDoc(doc(db, "solicitacoesCorrecao", id), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `solicitacoesCorrecao/${id}`);
+  }
+}
+
+export async function deleteSolicitacaoCorrecaoFromDb(id: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, "solicitacoesCorrecao", id));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `solicitacoesCorrecao/${id}`);
+  }
+}
+
 
 
 

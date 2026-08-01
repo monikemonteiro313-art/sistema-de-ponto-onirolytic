@@ -1,14 +1,15 @@
-import React, { useState, HTMLAttributes } from "react";
+import React, { useState, ButtonHTMLAttributes } from "react";
 import { Eye, EyeOff, Check } from "lucide-react";
 import { ThemeColors } from "../types";
 
-export interface BtnProps extends Omit<HTMLAttributes<HTMLButtonElement>, "onClick"> {
+export interface BtnProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onClick"> {
   children: React.ReactNode;
-  onClick?: () => void;
+  onClick?: (e?: React.MouseEvent<HTMLButtonElement>) => void;
   variant?: "primary" | "ghost" | "danger" | "success" | "warning" | "gold";
   t: ThemeColors;
   disabled?: boolean;
   small?: boolean;
+  type?: "button" | "submit" | "reset";
 }
 
 export function Btn({ children, onClick, variant = "primary", t, disabled, style = {}, small, ...rest }: BtnProps) {

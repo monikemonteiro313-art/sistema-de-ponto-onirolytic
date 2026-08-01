@@ -1,10 +1,13 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map, FileText, Globe, Database, Server, HardDrive, RefreshCw, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote } from "lucide-react";
-import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta, Batida } from "../types";
+import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { PwModal, CreateModal, DeleteModal, EditMatriculaModal } from "./AdmModals";
 import { FeriasModal } from "./FeriasModal";
 import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
+import { DenunciasView } from "./DenunciasView";
+import { SolicitacoesCorrecaoView } from "./SolicitacoesCorrecaoView";
+
 import { genMatricula, timeAgo, resumoMesCalculado, calcularDia } from "../utils/hrHelpers";
 import { SUPERADMIN_MAT, getJornada } from "../data/mockData";
 import { fetchWizardDone, saveUserPontosToDb, saveAuditLogToDb } from "../lib/firebaseService";
@@ -85,6 +88,12 @@ interface AdmPanelProps {
   setAlertas?: React.Dispatch<React.SetStateAction<Alerta[]>>;
   saveAlertaToDb?: (alerta: Alerta) => Promise<void>;
   deleteAlertaFromDb?: (alertaId: string) => Promise<void>;
+  denuncias?: Denuncia[];
+  onUpdateDenunciaStatus?: (id: string, status: Denuncia["status"], respostaAdm?: string) => Promise<void>;
+  onDeleteDenuncia?: (id: string) => Promise<void>;
+  solicitacoesCorrecao?: SolicitacaoCorrecao[];
+  onAprovarSolicitacaoCorrecao?: (id: string, revisadoPor: string) => Promise<void>;
+  onRejeitarSolicitacaoCorrecao?: (id: string, motivoRejeicao: string, revisadoPor: string) => Promise<void>;
 }
 
 export function AdmPanel({
@@ -106,9 +115,16 @@ export function AdmPanel({
   alertas = [],
   setAlertas = () => {},
   saveAlertaToDb,
-  deleteAlertaFromDb
+  deleteAlertaFromDb,
+  denuncias = [],
+  onUpdateDenunciaStatus,
+  onDeleteDenuncia,
+  solicitacoesCorrecao = [],
+  onAprovarSolicitacaoCorrecao,
+  onRejeitarSolicitacaoCorrecao
 }: AdmPanelProps) {
-  const [tab, setTab] = useState<"colaboradores" | "gerenciar_marcacoes" | "adm" | "alertas" | "auditoria" | "feriados" | "arquivo_morto" | "armazenamento" | "guia_manutencao" | "aceites">("colaboradores");
+  const [tab, setTab] = useState<"colaboradores" | "gerenciar_marcacoes" | "solicitacoes_correcao" | "adm" | "alertas" | "denuncias" | "auditoria" | "feriados" | "arquivo_morto" | "armazenamento" | "guia_manutencao" | "aceites">("colaboradores");
+
   const [blocoNotas, setBlocoNotas] = useState(() => localStorage.getItem("bloco_notas_gestor") || "");
   const [blocoNotasSalvoMsg, setBlocoNotasSalvoMsg] = useState(false);
   const [alertaDestinoTipo, setAlertaDestinoTipo] = useState<"TODOS" | "ESPECIFICO">("TODOS");
@@ -1572,7 +1588,7 @@ export function AdmPanel({
           </div>
         </div>
         <div style={{ display: "flex", gap: 2, overflowX: "auto", whiteSpace: "nowrap", flexWrap: "nowrap" }} className="no-scrollbar">
-          {(["colaboradores", "gerenciar_marcacoes", "adm", "alertas", "auditoria", "feriados", "arquivo_morto", "armazenamento", "guia_manutencao", "aceites"] as const).map(key => (
+          {(["colaboradores", "gerenciar_marcacoes", "solicitacoes_correcao", "adm", "alertas", "denuncias", "auditoria", "feriados", "arquivo_morto", "armazenamento", "guia_manutencao", "aceites"] as const).map(key => (
             <button
               key={key}
               onClick={() => setTab(key)}
@@ -1590,17 +1606,22 @@ export function AdmPanel({
                 position: "relative",
                 display: "inline-flex",
                 alignItems: "center",
-                flexShrink: 0
+                flexShrink: 0,
+                gap: 6
               }}
             >
               {key === "colaboradores"
                 ? "Colaboradores"
                 : key === "gerenciar_marcacoes"
                 ? "Gerenciar Marcações"
+                : key === "solicitacoes_correcao"
+                ? "Solicitações de Correção"
                 : key === "adm"
                 ? "Credenciais ADMs"
                 : key === "alertas"
                 ? "Enviar Alertas"
+                : key === "denuncias"
+                ? "Denúncias Anônimas"
                 : key === "auditoria"
                 ? "Auditoria"
                 : key === "feriados"
@@ -1612,6 +1633,39 @@ export function AdmPanel({
                 : key === "aceites"
                 ? "Aceite de Folhas"
                 : "Arquivo Morto"}
+
+              {key === "solicitacoes_correcao" && solicitacoesCorrecao.filter(s => s.status === "pendente").length > 0 && (
+                <span
+                  style={{
+                    background: "#f59e0b",
+                    color: "#fff",
+                    fontSize: "10px",
+                    fontWeight: 800,
+                    borderRadius: 99,
+                    padding: "1px 6px",
+                    lineHeight: 1.2
+                  }}
+                >
+                  {solicitacoesCorrecao.filter(s => s.status === "pendente").length}
+                </span>
+              )}
+
+              {key === "denuncias" && denuncias.filter(d => d.status === "pendente").length > 0 && (
+                <span
+                  style={{
+                    background: t.warning,
+                    color: "#000",
+                    fontSize: "10px",
+                    fontWeight: 800,
+                    borderRadius: 99,
+                    padding: "1px 6px",
+                    lineHeight: 1.2
+                  }}
+                >
+                  {denuncias.filter(d => d.status === "pendente").length}
+                </span>
+              )}
+
               {key === "auditoria" && combinedAuditLogs.length > 0 && (
                 <span
                   style={{
@@ -1956,6 +2010,17 @@ export function AdmPanel({
           onSalvarPonto={handleSalvarPontoGerenciado}
           feriados={feriados}
           minimoHorasDia={minimoHorasDia}
+        />
+      )}
+
+      {/* Solicitações de Correção Tab Rendering */}
+      {tab === "solicitacoes_correcao" && (
+        <SolicitacoesCorrecaoView
+          t={t}
+          currentUser={currentUser}
+          solicitacoes={solicitacoesCorrecao}
+          onAprovar={onAprovarSolicitacaoCorrecao || (async () => {})}
+          onRejeitar={onRejeitarSolicitacaoCorrecao || (async () => {})}
         />
       )}
 
@@ -4295,8 +4360,19 @@ export function AdmPanel({
         </div>
       )}
 
+      {/* Stage 5 - Denúncias Anônimas Tab Rendering */}
+      {tab === "denuncias" && (
+        <DenunciasView
+          t={t}
+          denuncias={denuncias}
+          onUpdateStatus={onUpdateDenunciaStatus || (async () => {})}
+          onDelete={onDeleteDenuncia || (async () => {})}
+        />
+      )}
+
       {/* Modals rendering */}
       {modal?.type === "pw" && <PwModal modal={modal} setModal={setModal} t={t} onChangePw={changePw} />}
+
       {modal?.type === "create" && <CreateModal setModal={setModal} t={t} users={users} tab={tab} onCreate={createUser} />}
       {modal?.type === "delete" && <DeleteModal modal={modal} setModal={setModal} t={t} onDelete={deactivateUser} />}
       {modal?.type === "matricula" && modal?.user && (

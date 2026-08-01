@@ -1,8 +1,11 @@
 import React, { useState, useMemo } from "react";
-import { ThemeColors, User, PontosGlobal, Jornada, EmpresaConfig, PeriodoFerias, DiaPontos, PrePonto, Batida, AuditLogEntry } from "../types";
+import { ThemeColors, User, PontosGlobal, Jornada, EmpresaConfig, PeriodoFerias, DiaPontos, PrePonto, Batida, AuditLogEntry, Denuncia, SolicitacaoCorrecao } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { ModalJornada } from "./ModalJornada";
 import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
+import { DenunciasView } from "./DenunciasView";
+import { SolicitacoesCorrecaoView } from "./SolicitacoesCorrecaoView";
+
 import { saveUserPontosToDb, saveAuditLogToDb } from "../lib/firebaseService";
 import {
   calcularHorasDia,
@@ -547,6 +550,12 @@ interface AdmOperadorPanelProps {
   feriados?: string[];
   prePontos?: PrePonto[];
   onOpenGerenciarMarcacoes?: () => void;
+  denuncias?: Denuncia[];
+  onUpdateDenunciaStatus?: (id: string, status: Denuncia["status"], respostaAdm?: string) => Promise<void>;
+  onDeleteDenuncia?: (id: string) => Promise<void>;
+  solicitacoesCorrecao?: SolicitacaoCorrecao[];
+  onAprovarSolicitacaoCorrecao?: (id: string, revisadoPor: string) => Promise<void>;
+  onRejeitarSolicitacaoCorrecao?: (id: string, motivoRejeicao: string, revisadoPor: string) => Promise<void>;
 }
 
 export function AdmOperadorPanel({
@@ -565,10 +574,17 @@ export function AdmOperadorPanel({
   setEmpresaConfig,
   feriados = [],
   prePontos = [],
-  onOpenGerenciarMarcacoes
+  onOpenGerenciarMarcacoes,
+  denuncias = [],
+  onUpdateDenunciaStatus,
+  onDeleteDenuncia,
+  solicitacoesCorrecao = [],
+  onAprovarSolicitacaoCorrecao,
+  onRejeitarSolicitacaoCorrecao
 }: AdmOperadorPanelProps) {
   const [busca, setBusca] = useState("");
-  const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "gerenciar_marcacoes" | "alimentacao" | "atestados" | "pre_pontos" | "pontos_manuais">("frequencia");
+  const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "gerenciar_marcacoes" | "solicitacoes_correcao" | "alimentacao" | "atestados" | "pre_pontos" | "pontos_manuais" | "denuncias">("frequencia");
+
 
   const handleSalvarPontoGerenciado = async (
     userId: number,
@@ -3262,7 +3278,7 @@ export function AdmOperadorPanel({
         </div>
 
         {/* Navigation Tabs */}
-        <div style={{ display: "flex", gap: 8, borderBottom: `1.5px solid ${t.border}`, paddingBottom: 12, marginBottom: 20 }}>
+        <div className="no-scrollbar" style={{ display: "flex", gap: 8, borderBottom: `1.5px solid ${t.border}`, paddingBottom: 12, marginBottom: 20, overflowX: "auto", whiteSpace: "nowrap", maxWidth: "100%", WebkitOverflowScrolling: "touch" }}>
           <button
             onClick={() => setGuiaAtiva("frequencia")}
             style={{
@@ -3300,6 +3316,40 @@ export function AdmOperadorPanel({
             }}
           >
             ✍️ Gerenciar Marcações
+          </button>
+          <button
+            onClick={() => setGuiaAtiva("solicitacoes_correcao")}
+            style={{
+              background: guiaAtiva === "solicitacoes_correcao" ? t.accentGlow : "transparent",
+              border: `1.5px solid ${guiaAtiva === "solicitacoes_correcao" ? t.borderFocus : "transparent"}`,
+              color: guiaAtiva === "solicitacoes_correcao" ? t.accent : t.textSub,
+              fontSize: "13px",
+              fontWeight: 700,
+              padding: "7px 14px",
+              borderRadius: 8,
+              cursor: "pointer",
+              transition: "all 0.15s",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6
+            }}
+          >
+            <span>📝 Aprovar Correções</span>
+            {solicitacoesCorrecao.filter(s => s.status === "pendente").length > 0 && (
+              <span
+                style={{
+                  background: "#f59e0b",
+                  color: "#fff",
+                  fontSize: "10px",
+                  fontWeight: 800,
+                  borderRadius: 99,
+                  padding: "1px 6px",
+                  lineHeight: 1.2
+                }}
+              >
+                {solicitacoesCorrecao.filter(s => s.status === "pendente").length}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setGuiaAtiva("alimentacao")}
@@ -3365,6 +3415,41 @@ export function AdmOperadorPanel({
           >
             🛡️ Validação de Cliques (Pré-Pontos)
           </button>
+          <button
+            onClick={() => setGuiaAtiva("denuncias")}
+            style={{
+              background: guiaAtiva === "denuncias" ? t.accentGlow : "transparent",
+              border: `1.5px solid ${guiaAtiva === "denuncias" ? t.borderFocus : "transparent"}`,
+              color: guiaAtiva === "denuncias" ? t.accent : t.textSub,
+              fontSize: "13px",
+              fontWeight: 700,
+              padding: "7px 14px",
+              borderRadius: 8,
+              cursor: "pointer",
+              transition: "all 0.15s",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6
+            }}
+          >
+            🚨 Denúncias
+            {denuncias.filter(d => d.status === "pendente").length > 0 && (
+              <span
+                style={{
+                  background: t.warning,
+                  color: "#000",
+                  fontSize: "10px",
+                  fontWeight: 800,
+                  borderRadius: 99,
+                  padding: "1px 6px",
+                  lineHeight: 1.2
+                }}
+              >
+                {denuncias.filter(d => d.status === "pendente").length}
+              </span>
+            )}
+          </button>
+
         </div>
 
         {guiaAtiva === "frequencia" ? (
@@ -3428,6 +3513,14 @@ export function AdmOperadorPanel({
             onSalvarPonto={handleSalvarPontoGerenciado}
             feriados={feriados}
             minimoHorasDia={minimoHorasDia}
+          />
+        ) : guiaAtiva === "solicitacoes_correcao" ? (
+          <SolicitacoesCorrecaoView
+            t={t}
+            currentUser={currentUser}
+            solicitacoes={solicitacoesCorrecao}
+            onAprovar={onAprovarSolicitacaoCorrecao || (async () => {})}
+            onRejeitar={onRejeitarSolicitacaoCorrecao || (async () => {})}
           />
         ) : guiaAtiva === "alimentacao" ? (
           <>
@@ -4219,7 +4312,7 @@ export function AdmOperadorPanel({
               </div>
             )}
           </>
-        ) : (
+        ) : guiaAtiva === "pre_pontos" ? (
           <>
             {/* PRÉ-PONTOS / VALIDAÇÃO DE CLIQUES TAB CONTENT */}
             <div style={{ background: t.surfaceAlt, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: "20px", marginBottom: 20 }}>
@@ -4434,7 +4527,15 @@ export function AdmOperadorPanel({
               );
             })()}
           </>
+        ) : (
+          <DenunciasView
+            t={t}
+            denuncias={denuncias}
+            onUpdateStatus={onUpdateDenunciaStatus || (async () => {})}
+            onDelete={onDeleteDenuncia || (async () => {})}
+          />
         )}
+
       </div>
 
       {modalJornada && <ModalJornada t={t} userId={modalJornada} users={users} jornadaId={jornadaId} setJornadaId={setJornadaId} jornadaCustom={jornadaCustom} setJornadaCustom={setJornadaCustom} onSalvar={salvarJornada} onFechar={() => setModalJornada(null)} DIAS={DIAS} />}

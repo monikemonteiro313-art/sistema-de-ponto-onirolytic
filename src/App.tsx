@@ -1,6 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from "react";
 import { T } from "./components/Theme";
-import { User, ThemeColors, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Batida } from "./types";
+import { User, ThemeColors, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao } from "./types";
 import { LoginScreen } from "./components/LoginScreen";
 import { WizardScreen } from "./components/WizardScreen";
 import { TermoCienciaScreen } from "./components/TermoCienciaScreen";
@@ -56,8 +56,17 @@ import {
   fetchAllAlertas,
   saveAlertaToDb,
   deleteAlertaFromDb,
-  markAlertaAsReadInDb
+  markAlertaAsReadInDb,
+  fetchAllDenuncias,
+  saveDenunciaToDb,
+  updateDenunciaInDb,
+  deleteDenunciaFromDb,
+  fetchAllSolicitacoesCorrecao,
+  saveSolicitacaoCorrecaoToDb,
+  updateSolicitacaoCorrecaoInDb,
+  deleteSolicitacaoCorrecaoFromDb
 } from "./lib/firebaseService";
+
 
 function getSafeLocalStorageItem<T>(key: string, defaultValue: T): T {
   try {
@@ -203,7 +212,10 @@ export default function App() {
   const [prePontos, setPrePontos] = useState<PrePonto[]>([]);
   const [folhasAceite, setFolhasAceite] = useState<FolhaAceite[]>([]);
   const [alertas, setAlertas] = useState<Alerta[]>([]);
+  const [denuncias, setDenuncias] = useState<Denuncia[]>([]);
+  const [solicitacoesCorrecao, setSolicitacoesCorrecao] = useState<SolicitacaoCorrecao[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+
   const [screen, setScreen] = useState<"login" | "wizard" | "termo" | "main">("wizard");
   const [syncError, setSyncError] = useState<string | null>(null);
 
@@ -225,7 +237,7 @@ export default function App() {
           }
         };
 
-        const [rawDbUsers, dbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, wizardDone, dbPrePontos, dbFolhas, dbAlertas] = await Promise.all([
+        const [rawDbUsers, dbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, wizardDone, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
           safeFetch(() => fetchAllUsers(), [] as User[], "users"),
           safeFetch(() => fetchAllPontos(), {} as PontosGlobal, "pontos"),
           safeFetch(() => fetchAuditLogs(), [] as AuditLogEntry[], "auditLogs"),
@@ -235,8 +247,11 @@ export default function App() {
           safeFetch(() => fetchWizardDone(), false, "wizardDone"),
           safeFetch(() => fetchAllPrePontos(), [] as PrePonto[], "prePontos"),
           safeFetch(() => fetchAllFolhasAceite(), [] as FolhaAceite[], "folhasAceite"),
-          safeFetch(() => fetchAllAlertas(), [] as Alerta[], "alertas")
+          safeFetch(() => fetchAllAlertas(), [] as Alerta[], "alertas"),
+          safeFetch(() => fetchAllDenuncias(), [] as Denuncia[], "denuncias"),
+          safeFetch(() => fetchAllSolicitacoesCorrecao(), [] as SolicitacaoCorrecao[], "solicitacoesCorrecao")
         ]);
+
 
         const dbUsers = rawDbUsers;
         
@@ -257,6 +272,8 @@ export default function App() {
         setPrePontos(dbPrePontos || []);
         setFolhasAceite(dbFolhas || []);
         setAlertas(dbAlertas || []);
+        setDenuncias(dbDenuncias || []);
+        setSolicitacoesCorrecao(dbSolicitacoes || []);
 
         // Cache locally for offline survival
         setSafeLocalStorageItem("hr_cached_users", dbUsers);
@@ -269,6 +286,9 @@ export default function App() {
         setSafeLocalStorageItem("hr_cached_pre_pontos", dbPrePontos || []);
         setSafeLocalStorageItem("hr_cached_folhas_aceite", dbFolhas || []);
         setSafeLocalStorageItem("hr_cached_alertas", dbAlertas || []);
+        setSafeLocalStorageItem("hr_cached_denuncias", dbDenuncias || []);
+        setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", dbSolicitacoes || []);
+
 
         // Push reconciled punches to Firestore asynchronously
         for (const userId of changedUserIds) {
@@ -658,6 +678,192 @@ export default function App() {
     });
   };
 
+  const handleSendDenuncia = async (data: { texto: string; fotoUrl?: string | null }) => {
+    const id = `denuncia_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const criadoEm = new Date().toISOString();
+    const created: Denuncia = {
+      id,
+      texto: data.texto.trim(),
+      fotoUrl: data.fotoUrl || null,
+      criadoEm,
+      status: "pendente",
+      respostaAdm: null,
+      atualizadoEm: null
+    };
+
+    // Update local state IMMEDIATELY for instant UI feedback
+    setDenuncias(prev => {
+      const next = [created, ...prev];
+      setSafeLocalStorageItem("hr_cached_denuncias", next);
+      return next;
+    });
+
+    // Save to Firestore in background without blocking UI
+    saveDenunciaToDb({ id, texto: data.texto, fotoUrl: data.fotoUrl, criadoEm }).catch(err => {
+      console.warn("Error saving denuncia to Firestore in background:", err);
+    });
+  };
+
+  const handleUpdateDenunciaStatus = async (id: string, status: Denuncia["status"], respostaAdm?: string) => {
+    const atualizadoEm = new Date().toISOString();
+
+    // Update local state IMMEDIATELY for instant UI feedback
+    setDenuncias(prev => {
+      const next = prev.map(d => d.id === id ? { 
+        ...d, 
+        status, 
+        respostaAdm: respostaAdm !== undefined ? respostaAdm : d.respostaAdm, 
+        atualizadoEm 
+      } : d);
+      setSafeLocalStorageItem("hr_cached_denuncias", next);
+      return next;
+    });
+
+    // Update Firestore in background without blocking UI
+    updateDenunciaInDb(id, { status, respostaAdm }).catch(err => {
+      console.warn("Error updating denuncia in Firestore in background:", err);
+    });
+  };
+
+  const handleDeleteDenuncia = async (id: string) => {
+    // Update local state IMMEDIATELY
+    setDenuncias(prev => {
+      const next = prev.filter(d => d.id !== id);
+      setSafeLocalStorageItem("hr_cached_denuncias", next);
+      return next;
+    });
+
+    // Delete from Firestore in background
+    deleteDenunciaFromDb(id).catch(err => {
+      console.warn("Error deleting denuncia in Firestore in background:", err);
+    });
+  };
+
+  const handleSendSolicitacaoCorrecao = async (data: {
+    data: string;
+    hora: string;
+    slotIdx: number;
+    motivo: string;
+    latitude?: number | null;
+    longitude?: number | null;
+    accuracy?: number | null;
+  }) => {
+    if (!currentUser) return;
+    const id = `solic_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const criadoEm = new Date().toISOString();
+
+    const created: SolicitacaoCorrecao = {
+      id,
+      userId: currentUser.id,
+      userName: currentUser.nome,
+      matricula: currentUser.matricula,
+      data: data.data,
+      hora: data.hora,
+      slotIdx: data.slotIdx,
+      motivo: data.motivo,
+      latitude: data.latitude || null,
+      longitude: data.longitude || null,
+      accuracy: data.accuracy || null,
+      status: "pendente",
+      criadoEm
+    };
+
+    setSolicitacoesCorrecao(prev => {
+      const next = [created, ...prev];
+      setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", next);
+      return next;
+    });
+
+    handleAddLog("SOLICITACAO_CORRECAO", currentUser.nome, `Solicitou correção de ponto para ${data.data} às ${data.hora} (Motivo: ${data.motivo})`);
+
+    saveSolicitacaoCorrecaoToDb(created).catch(err => {
+      console.warn("Error saving solicitacao correcao to Firestore:", err);
+    });
+  };
+
+  const handleAprovarSolicitacaoCorrecao = async (id: string, revisadoPor: string) => {
+    const req = solicitacoesCorrecao.find(s => s.id === id);
+    if (!req) return;
+
+    const revisadoEm = new Date().toISOString();
+
+    // 1. Update request status in state
+    setSolicitacoesCorrecao(prev => {
+      const next = prev.map(s => s.id === id ? { ...s, status: "aprovado" as const, revisadoPor, revisadoEm } : s);
+      setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", next);
+      return next;
+    });
+
+    // 2. CRITICAL: Insert/Update punch directly in user's pontos and persist to Firestore!
+    const targetUserId = req.userId;
+    const targetDayKey = req.data;
+    const targetSlotIdx = req.slotIdx;
+    const targetHora = req.hora;
+
+    setPontos(prev => {
+      const userPontos = { ...(prev[targetUserId] || {}) };
+      const dayPunches = [...(userPontos[targetDayKey] || [null, null, null, null])];
+      while (dayPunches.length < 4) dayPunches.push(null);
+
+      const [hh, mm] = targetHora.split(":").map(Number);
+      const isoDateObj = new Date(`${targetDayKey}T00:00:00`);
+      isoDateObj.setHours(hh, mm, 0, 0);
+
+      const newPunch: Batida = {
+        hora: targetHora,
+        iso: isoDateObj.toISOString(),
+        editadoEm: revisadoEm,
+        editadoPor: revisadoPor,
+        justificativa: `Correção Aprovada por ${revisadoPor}: ${req.motivo}`,
+        tipo: "manual"
+      };
+
+      dayPunches[targetSlotIdx] = newPunch;
+      userPontos[targetDayKey] = dayPunches;
+
+      const nextGlobal = {
+        ...prev,
+        [targetUserId]: userPontos
+      };
+
+      setSafeLocalStorageItem("hr_cached_pontos", nextGlobal);
+
+      // Save user's updated points to Firestore
+      saveUserPontosToDb(targetUserId, userPontos).catch(err => {
+        console.error("Error saving approved correction punch to Firestore:", err);
+      });
+
+      return nextGlobal;
+    });
+
+    handleAddLog("APROVAR_CORRECAO", revisadoPor, `Aprovou correção de ponto de ${req.userName} para ${req.data} às ${req.hora}`);
+
+    // 3. Update request in Firestore
+    updateSolicitacaoCorrecaoInDb(id, { status: "aprovado", revisadoPor, revisadoEm }).catch(err => {
+      console.warn("Error updating solicitacao correcao in Firestore:", err);
+    });
+  };
+
+  const handleRejeitarSolicitacaoCorrecao = async (id: string, motivoRejeicao: string, revisadoPor: string) => {
+    const req = solicitacoesCorrecao.find(s => s.id === id);
+    if (!req) return;
+
+    const revisadoEm = new Date().toISOString();
+
+    setSolicitacoesCorrecao(prev => {
+      const next = prev.map(s => s.id === id ? { ...s, status: "rejeitado" as const, motivoRejeicao, revisadoPor, revisadoEm } : s);
+      setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", next);
+      return next;
+    });
+
+    handleAddLog("REJEITAR_CORRECAO", revisadoPor, `Recusou solicitação de correção de ${req.userName} (${motivoRejeicao})`);
+
+    updateSolicitacaoCorrecaoInDb(id, { status: "rejeitado", motivoRejeicao, revisadoPor, revisadoEm }).catch(err => {
+      console.warn("Error updating solicitacao correcao in Firestore:", err);
+    });
+  };
+
+
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
   const syncNow = async () => {
@@ -1033,25 +1239,27 @@ export default function App() {
         transition: "background-color 0.25s, color 0.25s"
       }}
     >
-      {/* Floating Theme Button (Corner Top-Right) */}
-      <div style={{ position: "absolute", top: 12, right: 18, zIndex: 100 }}>
-        <button
-          onClick={() => setThemeMode(v => (v === "light" ? "dark" : "light"))}
-          style={{
-            background: t.surface,
-            border: `1.5px solid ${t.border}`,
-            color: t.text,
-            padding: "8px 12px",
-            borderRadius: 10,
-            cursor: "pointer",
-            fontSize: "12px",
-            fontWeight: 700,
-            transition: "all 0.2s"
-          }}
-        >
-          {themeMode === "light" ? "🌙 Escuro" : "☀️ Claro"}
-        </button>
-      </div>
+      {/* Floating Theme Button (Corner Top-Right) - Hidden on login screen as LoginScreen has its own header theme toggle */}
+      {screen !== "login" && screen !== "main" && (
+        <div style={{ position: "absolute", top: 12, right: 18, zIndex: 100 }}>
+          <button
+            onClick={() => setThemeMode(v => (v === "light" ? "dark" : "light"))}
+            style={{
+              background: t.surface,
+              border: `1.5px solid ${t.border}`,
+              color: t.text,
+              padding: "8px 12px",
+              borderRadius: 10,
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 700,
+              transition: "all 0.2s"
+            }}
+          >
+            {themeMode === "light" ? "🌙 Escuro" : "☀️ Claro"}
+          </button>
+        </div>
+      )}
 
       {screen === "wizard" && (
         <WizardScreen t={t} onComplete={(nome, pw) => handleWizardDone({ nomeAdm: nome, senha: pw })} />
@@ -1067,8 +1275,10 @@ export default function App() {
           setIsAdminMode={setIsAdminMode}
           onToggleTheme={() => setThemeMode(v => (v === "light" ? "dark" : "light"))}
           onAddLog={handleAddLog}
+          onSendDenuncia={handleSendDenuncia}
         />
       )}
+
 
       {screen === "termo" && currentUser && (
         <TermoCienciaScreen t={t} currentUser={currentUser} onAceitar={handleAcceptTerm} onRecusar={handleLogout} />
@@ -1160,7 +1370,14 @@ export default function App() {
                     setAlertas={updateAlertas}
                     saveAlertaToDb={saveAlertaToDb}
                     deleteAlertaFromDb={deleteAlertaFromDb}
+                    denuncias={denuncias}
+                    onUpdateDenunciaStatus={handleUpdateDenunciaStatus}
+                    onDeleteDenuncia={handleDeleteDenuncia}
+                    solicitacoesCorrecao={solicitacoesCorrecao}
+                    onAprovarSolicitacaoCorrecao={handleAprovarSolicitacaoCorrecao}
+                    onRejeitarSolicitacaoCorrecao={handleRejeitarSolicitacaoCorrecao}
                     updateUserBloqueioAceite={async (userId, blocked) => {
+
                       await updateUserBloqueioAceite(userId, blocked);
                       updateUsers(prev => prev.map(u => u.id === userId ? { ...u, bloqueadoAceite: blocked } : u));
                       if (currentUser && currentUser.id === userId) {
@@ -1203,7 +1420,14 @@ export default function App() {
                     setEmpresaConfig={updateEmpresaConfig}
                     feriados={feriados}
                     prePontos={prePontos}
+                    denuncias={denuncias}
+                    onUpdateDenunciaStatus={handleUpdateDenunciaStatus}
+                    onDeleteDenuncia={handleDeleteDenuncia}
+                    solicitacoesCorrecao={solicitacoesCorrecao}
+                    onAprovarSolicitacaoCorrecao={handleAprovarSolicitacaoCorrecao}
+                    onRejeitarSolicitacaoCorrecao={handleRejeitarSolicitacaoCorrecao}
                   />
+
                 </Suspense>
               )}
             </>
@@ -1213,6 +1437,7 @@ export default function App() {
                 t={t}
                 currentUser={currentUser}
                 onLogout={handleLogout}
+                onToggleTheme={() => setThemeMode(v => (v === "light" ? "dark" : "light"))}
                 pontosGlobal={pontos}
                 setPontosGlobal={updatePontos}
                 onAddLog={handleAddLog}
@@ -1229,6 +1454,7 @@ export default function App() {
                 alertas={alertas}
                 setAlertas={updateAlertas}
                 markAlertaAsReadInDb={markAlertaAsReadInDb}
+                onSendSolicitacaoCorrecao={handleSendSolicitacaoCorrecao}
                 updateUserBloqueioAceite={async (userId, blocked) => {
                   await updateUserBloqueioAceite(userId, blocked);
                   updateUsers(prev => prev.map(u => u.id === userId ? { ...u, bloqueadoAceite: blocked } : u));

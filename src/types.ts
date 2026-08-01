@@ -53,8 +53,12 @@ export interface User {
 
 export interface Batida {
   hora?: string;
+  iso?: string;
   tipo?: "auto" | "manual";
   registradoEm?: string;
+  editadoEm?: string;
+  editadoPor?: string;
+  justificativa?: string;
   serverTime?: any;
   lancadoPorAdm?: boolean;
   modificadoPorGestor?: boolean;
@@ -202,6 +206,35 @@ export interface Alerta {
   criadoPor: string;
   lidoPorMatriculas?: string[];
   ativo?: boolean;
+}
+
+export interface Denuncia {
+  id: string;
+  texto: string;
+  fotoUrl?: string | null;
+  criadoEm: string;
+  status: "pendente" | "em_analise" | "resolvido" | "arquivado";
+  respostaAdm?: string | null;
+  atualizadoEm?: string | null;
+}
+
+export interface SolicitacaoCorrecao {
+  id: string;
+  userId: number;
+  userName: string;
+  matricula: string;
+  data: string; // YYYY-MM-DD
+  hora: string; // HH:mm
+  slotIdx: number; // 0, 1, 2, 3
+  motivo: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  accuracy?: number | null;
+  status: "pendente" | "aprovado" | "rejeitado";
+  motivoRejeicao?: string | null;
+  criadoEm: string;
+  revisadoEm?: string | null;
+  revisadoPor?: string | null;
 }
 
 

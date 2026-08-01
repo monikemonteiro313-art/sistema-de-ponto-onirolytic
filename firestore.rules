@@ -25,5 +25,12 @@ service cloud.firestore {
     match /alertas/{alertaId} {
       allow read, write: if true;
     }
+    match /denuncias/{denunciaId} {
+      allow read, write: if true;
+    }
+    match /solicitacoesCorrecao/{solicitacaoId} {
+      allow read, write: if true;
+    }
+
   }
 }

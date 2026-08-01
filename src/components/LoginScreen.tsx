@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
-import { Shield, Lock, Sun, Moon, Clock, ShieldCheck, Sparkles, RefreshCw, AlertTriangle } from "lucide-react";
+import { Shield, Lock, Sun, Moon, Clock, ShieldCheck, Sparkles, RefreshCw, AlertTriangle, ShieldAlert } from "lucide-react";
 import { ThemeColors, User } from "../types";
 import { Btn, PwInput } from "./SharedUI";
 import { LgpdModal } from "./LgpdModal";
+import { ModalDenunciaAnonima } from "./ModalDenunciaAnonima";
 
 interface LoginScreenProps {
   mode: string;
@@ -13,9 +14,10 @@ interface LoginScreenProps {
   setIsAdminMode: React.Dispatch<React.SetStateAction<boolean>>;
   onToggleTheme: () => void;
   onAddLog?: (acao: string, alvo: string, detalhe?: string) => void;
+  onSendDenuncia?: (data: { texto: string; fotoUrl?: string | null }) => Promise<void>;
 }
 
-export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMode, onToggleTheme, onAddLog }: LoginScreenProps) {
+export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMode, onToggleTheme, onAddLog, onSendDenuncia }: LoginScreenProps) {
   const [mat, setMat] = useState("");
   const [pw, setPw] = useState("");
   const [error, setError] = useState("");
@@ -23,7 +25,9 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
   const [focused, setFocused] = useState<string | null>(null);
   const [shieldAnim, setShieldAnim] = useState(false);
   const [isLgpdOpen, setIsLgpdOpen] = useState(false);
+  const [isDenunciaOpen, setIsDenunciaOpen] = useState(false);
   const [isHealingOpen, setIsHealingOpen] = useState(false);
+
   const [healingRunning, setHealingRunning] = useState(false);
   const [diagnosticLogs, setDiagnosticLogs] = useState<string[]>([]);
 
@@ -281,10 +285,13 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
         minHeight: "100vh",
         background: t.bg,
         display: "flex",
+        flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
         position: "relative",
-        overflow: "hidden"
+        overflowX: "hidden",
+        padding: "16px 12px 24px",
+        boxSizing: "border-box"
       }}
     >
       {/* Decorative gradients */}
@@ -307,143 +314,168 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
         }}
       />
 
-      {/* Admin Mode Toggle and LGPD Button */}
+      {/* Responsive Header Bar */}
       <div
         style={{
-          position: "absolute",
-          top: 18,
-          left: 18,
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          opacity: shieldAnim ? 0 : 1,
-          transition: "all 0.22s"
-        }}
-      >
-        <button
-          onClick={handleShield}
-          title={isAdminMode ? "Voltar ao login colaborador" : "Acesso ADM-Dev"}
-          style={{
-            background: isAdminMode ? t.accent : t.surfaceAlt,
-            border: `1.5px solid ${isAdminMode ? t.accent : t.border}`,
-            borderRadius: 11,
-            padding: "8px 11px",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: 7,
-            boxShadow: isAdminMode ? `0 0 20px ${t.accentGlow}` : "none",
-            transition: "all 0.22s"
-          }}
-        >
-          <Shield size={20} color={isAdminMode ? "#fff" : t.accent} fill={isAdminMode ? t.accent : "none"} />
-          {isAdminMode && (
-            <span style={{ color: "#fff", fontSize: "11.5px", fontWeight: 700, letterSpacing: "0.8px" }}>
-              ADM-DEV
-            </span>
-          )}
-        </button>
-
-        <button
-          onClick={() => setIsLgpdOpen(true)}
-          title="Ver conformidade com a LGPD"
-          style={{
-            background: t.surfaceAlt,
-            border: `1.5px solid ${t.border}`,
-            borderRadius: 11,
-            padding: "8px 11px",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            transition: "all 0.22s"
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.borderColor = t.accent; }}
-          onMouseLeave={(e) => { e.currentTarget.style.borderColor = t.border; }}
-        >
-          <ShieldCheck size={18} color="#22c55e" />
-          <span style={{ fontSize: "11.5px", fontWeight: 600, color: t.textSub }}>LGPD</span>
-        </button>
-      </div>
-
-      {/* Theme Toggle */}
-      <button
-        onClick={onToggleTheme}
-        style={{
-          position: "absolute",
-          top: 18,
-          right: 18,
-          background: t.surfaceAlt,
-          border: `1.5px solid ${t.border}`,
-          borderRadius: 9,
-          padding: "8px 11px",
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          color: t.textSub,
-          fontSize: "12.5px",
-          fontFamily: "inherit"
-        }}
-      >
-        {mode === "dark" ? <Sun size={15} color={t.textSub} /> : <Moon size={15} color={t.textSub} />}
-        {mode === "dark" ? "Claro" : "Escuro"}
-      </button>
-
-      {/* Mini Relógio Sincronizado Brasília */}
-      <div
-        onClick={() => setTriggerSync(prev => prev + 1)}
-        title="Clique para sincronizar o horário novamente"
-        style={{
-          position: "absolute",
-          top: 66,
-          right: 18,
-          background: t.surface,
-          border: `1.5px solid ${t.border}`,
-          borderRadius: 12,
-          padding: "10px 14px",
+          width: "100%",
+          maxWidth: 400,
           display: "flex",
           flexDirection: "column",
-          alignItems: "flex-end",
-          gap: 2,
-          boxShadow: t.shadow,
+          gap: 10,
+          marginBottom: 16,
           zIndex: 10,
-          minWidth: 140,
-          textAlign: "right",
-          cursor: "pointer",
-          userSelect: "none",
-          transition: "all 0.2s ease-in-out"
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.transform = "scale(1.03)";
-          e.currentTarget.style.borderColor = t.accent;
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.transform = "scale(1)";
-          e.currentTarget.style.borderColor = t.border;
+          boxSizing: "border-box"
         }}
       >
-        <span style={{ fontSize: "10px", color: t.textSub, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 4 }}>
-          <Clock size={11} color={t.accent} /> Brasília
-        </span>
-        <span style={{ fontSize: "20px", fontWeight: 800, color: t.text, fontFamily: "monospace", letterSpacing: "-0.5px", lineHeight: 1.1, fontVariantNumeric: "tabular-nums" }}>
-          {timeStr}
-        </span>
-        <span style={{ fontSize: "10.5px", color: t.textMuted, fontWeight: 500 }}>
-          {dateStr}
-        </span>
-        
-        {/* Status Indicator */}
-        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
-          <span style={{ position: "relative", display: "flex", height: 6, width: 6 }}>
-            {clockStatus === "synced" && (
-              <span className="animate-ping" style={{ position: "absolute", inlineSize: "100%", blockSize: "100%", borderRadius: "50%", background: "#4ade80", opacity: 0.75 }}></span>
-            )}
-            <span style={{ position: "relative", inlineSize: 6, blockSize: 6, borderRadius: "50%", background: clockStatus === "synced" ? "#22c55e" : clockStatus === "syncing" ? "#3b82f6" : "#f59e0b" }}></span>
-          </span>
-          <span style={{ fontSize: "9px", fontWeight: 600, color: clockStatus === "synced" ? "#16a34a" : clockStatus === "syncing" ? "#2563eb" : "#d97706" }}>
-            {clockStatus === "synced" ? "Hora Segura" : clockStatus === "syncing" ? "Sincronizando" : "⚠️ Gravado Offline (Aguardando Rede)"}
-          </span>
+        {/* Row 1: Actions & Theme Toggle */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, flexWrap: "wrap", width: "100%" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", opacity: shieldAnim ? 0 : 1, transition: "all 0.22s" }}>
+            <button
+              onClick={handleShield}
+              title={isAdminMode ? "Voltar ao login colaborador" : "Acesso ADM-Dev"}
+              style={{
+                background: isAdminMode ? t.accent : t.surfaceAlt,
+                border: `1.5px solid ${isAdminMode ? t.accent : t.border}`,
+                borderRadius: 10,
+                padding: "7px 10px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                boxShadow: isAdminMode ? `0 0 20px ${t.accentGlow}` : "none",
+                transition: "all 0.22s"
+              }}
+            >
+              <Shield size={18} color={isAdminMode ? "#fff" : t.accent} fill={isAdminMode ? t.accent : "none"} />
+              {isAdminMode && (
+                <span style={{ color: "#fff", fontSize: "11px", fontWeight: 700, letterSpacing: "0.5px" }}>
+                  ADM-DEV
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => setIsLgpdOpen(true)}
+              title="Ver conformidade com a LGPD"
+              style={{
+                background: t.surfaceAlt,
+                border: `1.5px solid ${t.border}`,
+                borderRadius: 10,
+                padding: "7px 10px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                transition: "all 0.22s"
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = t.accent; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = t.border; }}
+            >
+              <ShieldCheck size={16} color="#22c55e" />
+              <span style={{ fontSize: "11px", fontWeight: 600, color: t.textSub }}>LGPD</span>
+            </button>
+
+            <button
+              onClick={() => setIsDenunciaOpen(true)}
+              title="Fazer denúncia de irregularidade anônima"
+              style={{
+                background: t.surfaceAlt,
+                border: `1.5px solid ${t.border}`,
+                borderRadius: 10,
+                padding: "7px 10px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                transition: "all 0.22s"
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = t.warning; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = t.border; }}
+            >
+              <ShieldAlert size={16} color={t.warning} />
+              <span style={{ fontSize: "11px", fontWeight: 600, color: t.textSub }}>Denunciar</span>
+            </button>
+          </div>
+
+          {/* Theme Toggle */}
+          <button
+            onClick={onToggleTheme}
+            style={{
+              background: t.surfaceAlt,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 9,
+              padding: "7px 10px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              color: t.textSub,
+              fontSize: "12px",
+              fontWeight: 600,
+              fontFamily: "inherit"
+            }}
+          >
+            {mode === "dark" ? <Sun size={15} color={t.textSub} /> : <Moon size={15} color={t.textSub} />}
+            {mode === "dark" ? "Claro" : "Escuro"}
+          </button>
+        </div>
+
+        {/* Row 2: Mini Relógio Sincronizado Brasília */}
+        <div
+          onClick={() => setTriggerSync(prev => prev + 1)}
+          title="Clique para sincronizar o horário novamente"
+          style={{
+            background: t.surface,
+            border: `1.5px solid ${t.border}`,
+            borderRadius: 12,
+            padding: "8px 14px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            boxShadow: t.shadow,
+            width: "100%",
+            boxSizing: "border-box",
+            cursor: "pointer",
+            userSelect: "none",
+            transition: "all 0.2s ease-in-out"
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.transform = "scale(1.01)";
+            e.currentTarget.style.borderColor = t.accent;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = "scale(1)";
+            e.currentTarget.style.borderColor = t.border;
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Clock size={16} color={t.accent} />
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              <span style={{ fontSize: "10px", color: t.textSub, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase" }}>
+                HORÁRIO DE BRASÍLIA
+              </span>
+              <span style={{ fontSize: "9.5px", color: t.textMuted, fontWeight: 500 }}>
+                {dateStr}
+              </span>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+            <span style={{ fontSize: "18px", fontWeight: 800, color: t.text, fontFamily: "monospace", letterSpacing: "-0.5px", lineHeight: 1.1, fontVariantNumeric: "tabular-nums" }}>
+              {timeStr}
+            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+              <span style={{ position: "relative", display: "flex", height: 6, width: 6 }}>
+                {clockStatus === "synced" && (
+                  <span className="animate-ping" style={{ position: "absolute", inlineSize: "100%", blockSize: "100%", borderRadius: "50%", background: "#4ade80", opacity: 0.75 }}></span>
+                )}
+                <span style={{ position: "relative", inlineSize: 6, blockSize: 6, borderRadius: "50%", background: clockStatus === "synced" ? "#22c55e" : clockStatus === "syncing" ? "#3b82f6" : "#f59e0b" }}></span>
+              </span>
+              <span style={{ fontSize: "9px", fontWeight: 600, color: clockStatus === "synced" ? "#16a34a" : clockStatus === "syncing" ? "#2563eb" : "#d97706" }}>
+                {clockStatus === "synced" ? "Hora Segura" : clockStatus === "syncing" ? "Sincronizando" : "Offline"}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -452,10 +484,11 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
           background: t.surface,
           border: `1.5px solid ${t.border}`,
           borderRadius: 20,
-          padding: "44px 40px",
+          padding: "32px 24px",
           width: "100%",
           maxWidth: 400,
           boxShadow: t.shadow,
+          boxSizing: "border-box",
           zIndex: 1
         }}
       >
@@ -606,6 +639,17 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
       </div>
 
       <LgpdModal isOpen={isLgpdOpen} onClose={() => setIsLgpdOpen(false)} t={t} />
+
+      <ModalDenunciaAnonima
+        isOpen={isDenunciaOpen}
+        onClose={() => setIsDenunciaOpen(false)}
+        onSubmit={async (data) => {
+          if (onSendDenuncia) {
+            await onSendDenuncia(data);
+          }
+        }}
+        t={t}
+      />
 
       {isHealingOpen && (
         <div
