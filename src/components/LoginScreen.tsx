@@ -18,7 +18,18 @@ interface LoginScreenProps {
 }
 
 export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMode, onToggleTheme, onAddLog, onSendDenuncia }: LoginScreenProps) {
-  const [mat, setMat] = useState("");
+  const [mat, setMat] = useState(() => {
+    try {
+      const lastUser = localStorage.getItem("hr_current_user");
+      if (lastUser) {
+        const parsed = JSON.parse(lastUser);
+        if (parsed && parsed.matricula) return parsed.matricula;
+      }
+      const lastMat = localStorage.getItem("hr_last_matricula");
+      if (lastMat) return lastMat;
+    } catch (_) {}
+    return "";
+  });
   const [pw, setPw] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -27,6 +38,17 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
   const [isLgpdOpen, setIsLgpdOpen] = useState(false);
   const [isDenunciaOpen, setIsDenunciaOpen] = useState(false);
   const [isHealingOpen, setIsHealingOpen] = useState(false);
+
+  const [inactivityNotice, setInactivityNotice] = useState<string | null>(() => {
+    try {
+      const msg = localStorage.getItem("hr_auto_logout_msg");
+      if (msg) {
+        localStorage.removeItem("hr_auto_logout_msg");
+        return msg;
+      }
+    } catch (_) {}
+    return null;
+  });
 
   const [healingRunning, setHealingRunning] = useState(false);
   const [diagnosticLogs, setDiagnosticLogs] = useState<string[]>([]);
@@ -255,6 +277,9 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
     }
 
     setLoading(true);
+    try {
+      localStorage.setItem("hr_last_matricula", mat.trim());
+    } catch (_) {}
     setTimeout(() => {
       setLoading(false);
       onLogin(user.matricula);
@@ -566,6 +591,28 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
           </label>
           <PwInput value={pw} onChange={setPw} placeholder={isAdminMode ? "Senha ADM-Dev" : "Senha"} t={t} />
         </div>
+
+        {inactivityNotice && (
+          <div
+            style={{
+              background: mode === "dark" ? "rgba(217, 119, 6, 0.15)" : "#fffbeb",
+              border: `1.5px solid ${mode === "dark" ? "#b45309" : "#fde68a"}`,
+              borderRadius: 10,
+              padding: "10px 14px",
+              marginBottom: 14,
+              color: mode === "dark" ? "#fcd34d" : "#b45309",
+              fontSize: 12.5,
+              fontWeight: 500,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginTop: 10
+            }}
+          >
+            <Clock size={16} color={mode === "dark" ? "#fcd34d" : "#d97706"} style={{ flexShrink: 0 }} />
+            <span>{inactivityNotice}</span>
+          </div>
+        )}
 
         {error && (
           <div

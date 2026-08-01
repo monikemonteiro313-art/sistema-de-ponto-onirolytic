@@ -7,6 +7,7 @@ import { LgpdModal } from "./LgpdModal";
 import { PontinhoTourModal } from "./PontinhoTourModal";
 import { ModalSolicitarCorrecao } from "./ModalSolicitarCorrecao";
 import { getCidInfo } from "../utils/cidHelper";
+import { savePunchToIndexedDB } from "../lib/indexedDbService";
 
 function resizeAndCompressImage(base64Str: string, maxWidth = 1800, maxHeight = 1800, quality = 0.88): Promise<string> {
   return new Promise((resolve) => {
@@ -1022,6 +1023,8 @@ export function EmployeePanel({
           dispositivoLocalHora: new Date().toISOString(),
           gravadoOffline: isOffline ? true : undefined
         };
+        // Instantly save punch locally in IndexedDB before network response
+        savePunchToIndexedDB(currentUser.id, dayKey, reg).catch(e => console.warn("[InstantPunch] IndexedDB save failed:", e));
         setPontosGlobal(prev => {
           const userRegs = prev[currentUser.id] || {};
           const day = [...(userRegs[dayKey] || [null, null, null, null])];
@@ -1060,6 +1063,8 @@ export function EmployeePanel({
           gravadoOffline: isOffline ? true : undefined,
           statusAprovacao: "pendente"
         };
+        // Instantly save punch locally in IndexedDB before network response
+        savePunchToIndexedDB(currentUser.id, dayKey, reg).catch(e => console.warn("[InstantPunch] IndexedDB save failed:", e));
         setPontosGlobal(prev => {
           const userRegs = prev[currentUser.id] || {};
           const day = [...(userRegs[dayKey] || [null, null, null, null])];

@@ -66,6 +66,10 @@ import {
   updateSolicitacaoCorrecaoInDb,
   deleteSolicitacaoCorrecaoFromDb
 } from "./lib/firebaseService";
+import { savePontosToIndexedDB, getPontosFromIndexedDB, saveUsersToIndexedDB, getUsersFromIndexedDB, saveAuthSessionToIndexedDB, getAuthSessionFromIndexedDB } from "./lib/indexedDbService";
+import { PwaInstallPrompt } from "./components/PwaInstallPrompt";
+
+const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos sem interação para auto-logout
 
 
 function getSafeLocalStorageItem<T>(key: string, defaultValue: T): T {
@@ -200,33 +204,53 @@ export default function App() {
   const [themeMode, setThemeMode] = useState<"light" | "dark">("dark");
   const t: ThemeColors = T[themeMode];
   const [isAdminMode, setIsAdminMode] = useState<boolean>(false);
-  const [isDbLoading, setIsDbLoading] = useState<boolean>(true);
 
-  // Core Global States
-  const [users, setUsers] = useState<User[]>([]);
-  const [pontos, setPontos] = useState<PontosGlobal>({});
-  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
-  const [minimoHorasDia, setMinimoHorasDia] = useState<number>(7);
-  const [empresaConfig, setEmpresaConfig] = useState<EmpresaConfig>({ nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" });
-  const [feriados, setFeriados] = useState<string[]>([]);
-  const [prePontos, setPrePontos] = useState<PrePonto[]>([]);
-  const [folhasAceite, setFolhasAceite] = useState<FolhaAceite[]>([]);
-  const [alertas, setAlertas] = useState<Alerta[]>([]);
-  const [denuncias, setDenuncias] = useState<Denuncia[]>([]);
-  const [solicitacoesCorrecao, setSolicitacoesCorrecao] = useState<SolicitacaoCorrecao[]>([]);
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // Load cached values synchronously for instant initial rendering (Stale-While-Revalidate pattern)
+  const initialCachedUsers = getSafeLocalStorageItem<User[]>("hr_cached_users", []);
+  const initialCachedPontos = getSafeLocalStorageItem<PontosGlobal>("hr_cached_pontos", {});
+  const initialCachedLogs = getSafeLocalStorageItem<AuditLogEntry[]>("hr_cached_audit_logs", []);
+  const initialCachedMin = getSafeLocalStorageItem<number>("hr_cached_minimo_horas_dia", 7);
+  const initialCachedEmpresa = getSafeLocalStorageItem<EmpresaConfig>("hr_cached_empresa_config", { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" });
+  const initialCachedFeriados = getSafeLocalStorageItem<string[]>("hr_cached_feriados", []);
+  const initialCachedPrePontos = getSafeLocalStorageItem<PrePonto[]>("hr_cached_pre_pontos", []);
+  const initialCachedFolhas = getSafeLocalStorageItem<FolhaAceite[]>("hr_cached_folhas_aceite", []);
+  const initialCachedAlertas = getSafeLocalStorageItem<Alerta[]>("hr_cached_alertas", []);
+  const initialCachedDenuncias = getSafeLocalStorageItem<Denuncia[]>("hr_cached_denuncias", []);
+  const initialCachedSolicitacoes = getSafeLocalStorageItem<SolicitacaoCorrecao[]>("hr_cached_solicitacoes_correcao", []);
+  const initialCachedWizardDone = getSafeLocalStorageItem<boolean>("hr_cached_wizard_done", false);
+  const initialSavedUser = getSafeLocalStorageItem<User | null>("hr_current_user", null);
 
-  const [screen, setScreen] = useState<"login" | "wizard" | "termo" | "main">("wizard");
+  const hasCache = initialCachedUsers.length > 0;
+
+  const [isDbLoading, setIsDbLoading] = useState<boolean>(!hasCache);
+
+  // Core Global States initialized with cache
+  const [users, setUsers] = useState<User[]>(initialCachedUsers);
+  const [pontos, setPontos] = useState<PontosGlobal>(initialCachedPontos);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(initialCachedLogs);
+  const [minimoHorasDia, setMinimoHorasDia] = useState<number>(initialCachedMin);
+  const [empresaConfig, setEmpresaConfig] = useState<EmpresaConfig>(initialCachedEmpresa);
+  const [feriados, setFeriados] = useState<string[]>(initialCachedFeriados);
+  const [prePontos, setPrePontos] = useState<PrePonto[]>(initialCachedPrePontos);
+  const [folhasAceite, setFolhasAceite] = useState<FolhaAceite[]>(initialCachedFolhas);
+  const [alertas, setAlertas] = useState<Alerta[]>(initialCachedAlertas);
+  const [denuncias, setDenuncias] = useState<Denuncia[]>(initialCachedDenuncias);
+  const [solicitacoesCorrecao, setSolicitacoesCorrecao] = useState<SolicitacaoCorrecao[]>(initialCachedSolicitacoes);
+
+  const initialFreshUser = initialSavedUser ? (initialCachedUsers.find(x => x.id === initialSavedUser.id) || initialSavedUser) : null;
+  const [currentUser, setCurrentUser] = useState<User | null>(initialFreshUser);
+
+  const initialScreen = initialSavedUser
+    ? (initialFreshUser && !initialFreshUser.desativado ? (initialFreshUser.termoAceito ? "main" : "termo") : "login")
+    : (initialCachedWizardDone ? "login" : "wizard");
+
+  const [screen, setScreen] = useState<"login" | "wizard" | "termo" | "main">(initialScreen);
   const [syncError, setSyncError] = useState<string | null>(null);
 
-  // Load initial data from Firestore
+  // Load initial data from Firestore in background
   useEffect(() => {
     async function loadData() {
       try {
-        setIsDbLoading(true);
-        // Seed if first time
-        await initializeDbIfEmpty();
-        
         // Fetch all database records safely to prevent any single collection error from crashing the entire initial load
         const safeFetch = async <T,>(fn: () => Promise<T>, fallback: T, name: string): Promise<T> => {
           try {
@@ -239,7 +263,7 @@ export default function App() {
 
         const [rawDbUsers, dbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, wizardDone, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
           safeFetch(() => fetchAllUsers(), [] as User[], "users"),
-          safeFetch(() => fetchAllPontos(), {} as PontosGlobal, "pontos"),
+          safeFetch(() => fetchAllPontos(5), {} as PontosGlobal, "pontos"),
           safeFetch(() => fetchAuditLogs(), [] as AuditLogEntry[], "auditLogs"),
           safeFetch(() => fetchMinimoHoras(), 7, "minimoHoras"),
           safeFetch(() => fetchEmpresaConfig(), { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" } as EmpresaConfig, "empresaConfig"),
@@ -252,18 +276,24 @@ export default function App() {
           safeFetch(() => fetchAllSolicitacoesCorrecao(), [] as SolicitacaoCorrecao[], "solicitacoesCorrecao")
         ]);
 
-
-        const dbUsers = rawDbUsers;
+        let dbUsers = rawDbUsers;
+        if (dbUsers.length === 0) {
+          // If Firestore is completely empty on first initialization, seed initial database
+          await initializeDbIfEmpty();
+          dbUsers = await safeFetch(() => fetchAllUsers(), [] as User[], "users");
+        }
         
-        // Reconcile Pontos (Offline -> Online)
+        // Reconcile Pontos (IndexedDB + LocalStorage Offline Cache -> Online)
+        const idbPontos = await getPontosFromIndexedDB().catch(() => ({}));
         const cachedPontos = getSafeLocalStorageItem<PontosGlobal | null>("hr_cached_pontos", null);
-        const { merged: reconciledPontos, changedUserIds } = reconcilePontos(cachedPontos, dbPontos);
+        const combinedLocalPontos = { ...(cachedPontos || {}), ...idbPontos };
+        const { merged: reconciledPontos, changedUserIds } = reconcilePontos(combinedLocalPontos, dbPontos);
 
         // Reconcile Audit Logs (Offline -> Online)
         const cachedLogs = getSafeLocalStorageItem<AuditLogEntry[]>("hr_cached_audit_logs", []);
         const { merged: reconciledLogs, pending: pendingLogs } = reconcileAuditLogs(cachedLogs, dbLogs);
 
-        setUsers(dbUsers);
+        if (dbUsers.length > 0) setUsers(dbUsers);
         setPontos(reconciledPontos);
         setAuditLogs(reconciledLogs);
         setMinimoHorasDia(dbMin);
@@ -276,7 +306,10 @@ export default function App() {
         setSolicitacoesCorrecao(dbSolicitacoes || []);
 
         // Cache locally for offline survival
-        setSafeLocalStorageItem("hr_cached_users", dbUsers);
+        if (dbUsers.length > 0) {
+          setSafeLocalStorageItem("hr_cached_users", dbUsers);
+          saveUsersToIndexedDB(dbUsers).catch(e => console.warn("[IndexedDB] saveUsersToIndexedDB error:", e));
+        }
         setSafeLocalStorageItem("hr_cached_pontos", reconciledPontos);
         setSafeLocalStorageItem("hr_cached_audit_logs", reconciledLogs);
         setSafeLocalStorageItem("hr_cached_minimo_horas_dia", dbMin);
@@ -288,7 +321,6 @@ export default function App() {
         setSafeLocalStorageItem("hr_cached_alertas", dbAlertas || []);
         setSafeLocalStorageItem("hr_cached_denuncias", dbDenuncias || []);
         setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", dbSolicitacoes || []);
-
 
         // Push reconciled punches to Firestore asynchronously
         for (const userId of changedUserIds) {
@@ -307,33 +339,59 @@ export default function App() {
         }
         
         // Determine starting screen based on session and wizard completion
-        const u = getSafeLocalStorageItem<User | null>("hr_current_user", null);
-        if (u) {
-          const freshUser = dbUsers.find(x => x.id === u.id);
+        const lsSavedUser = getSafeLocalStorageItem<User | null>("hr_current_user", null);
+        const idbSavedUser = await getAuthSessionFromIndexedDB().catch(() => null);
+        const u = lsSavedUser || idbSavedUser;
+
+        const lastActivityTime = getSafeLocalStorageItem<number | null>("hr_last_activity_time", null);
+        const isExpired = lastActivityTime ? (Date.now() - lastActivityTime >= INACTIVITY_TIMEOUT_MS) : false;
+
+        if (u && !isExpired) {
+          const freshUser = dbUsers.find(x => x.id === u.id) || u;
           if (freshUser && !freshUser.desativado) {
             setCurrentUser(freshUser);
+            setSafeLocalStorageItem("hr_current_user", freshUser);
+            setSafeLocalStorageItem("hr_last_activity_time", Date.now());
+            saveAuthSessionToIndexedDB(freshUser).catch(() => {});
             setScreen(freshUser.termoAceito ? "main" : "termo");
-          } else {
+          } else if (freshUser && freshUser.desativado) {
             setCurrentUser(null);
+            setSafeLocalStorageItem("hr_current_user", null);
+            saveAuthSessionToIndexedDB(null).catch(() => {});
             setScreen("login");
           }
         } else {
+          if (u && isExpired) {
+            setSafeLocalStorageItem("hr_auto_logout_msg", "Sua sessão foi encerrada por inatividade (30 minutos sem interação).");
+          }
+          setCurrentUser(null);
+          setSafeLocalStorageItem("hr_current_user", null);
+          saveAuthSessionToIndexedDB(null).catch(() => {});
           setScreen(wizardDone ? "login" : "wizard");
         }
       } catch (error) {
-        console.error("Failed to load database from Firestore, falling back to local storage cache:", error);
+        console.error("Failed to load database from Firestore, falling back to local storage and IndexedDB cache:", error);
         try {
-          const finalUsers = getSafeLocalStorageItem<User[]>("hr_cached_users", []);
+          const lsUsers = getSafeLocalStorageItem<User[]>("hr_cached_users", []);
+          const idbUsers = await getUsersFromIndexedDB().catch(() => []);
+          const usersMap = new Map<number, User>();
+          for (const user of lsUsers) usersMap.set(user.id, user);
+          for (const user of idbUsers) usersMap.set(user.id, user);
+          const finalUsers = Array.from(usersMap.values());
+
           if (finalUsers.length > 0) {
             setUsers(finalUsers);
+            saveUsersToIndexedDB(finalUsers).catch(() => {});
           } else {
             const { INITIAL_USERS } = await import("./data/mockData");
             setUsers(INITIAL_USERS);
           }
           
           const cachedPontos = getSafeLocalStorageItem<PontosGlobal | null>("hr_cached_pontos", null);
-          if (cachedPontos) {
-            setPontos(cachedPontos);
+          const idbPontos = await getPontosFromIndexedDB().catch(() => ({}));
+          const combinedPontos = { ...(cachedPontos || {}), ...idbPontos };
+          if (Object.keys(combinedPontos).length > 0) {
+            setPontos(combinedPontos);
           } else {
             const { SEED_PONTOS } = await import("./data/mockData");
             setPontos(SEED_PONTOS);
@@ -361,17 +419,34 @@ export default function App() {
           setAlertas(cachedAlertas);
           
           const isWizardDone = getSafeLocalStorageItem<boolean>("hr_cached_wizard_done", false);
-          const u = getSafeLocalStorageItem<User | null>("hr_current_user", null);
-          if (u) {
-            const freshUser = (finalUsers.length > 0 ? finalUsers : []).find(x => x.id === u.id);
+          const lsSavedUser = getSafeLocalStorageItem<User | null>("hr_current_user", null);
+          const idbSavedUser = await getAuthSessionFromIndexedDB().catch(() => null);
+          const u = lsSavedUser || idbSavedUser;
+
+          const lastActivityTime = getSafeLocalStorageItem<number | null>("hr_last_activity_time", null);
+          const isExpired = lastActivityTime ? (Date.now() - lastActivityTime >= INACTIVITY_TIMEOUT_MS) : false;
+
+          if (u && !isExpired) {
+            const freshUser = (finalUsers.length > 0 ? finalUsers : []).find(x => x.id === u.id) || u;
             if (freshUser && !freshUser.desativado) {
               setCurrentUser(freshUser);
+              setSafeLocalStorageItem("hr_current_user", freshUser);
+              setSafeLocalStorageItem("hr_last_activity_time", Date.now());
+              saveAuthSessionToIndexedDB(freshUser).catch(() => {});
               setScreen(freshUser.termoAceito ? "main" : "termo");
             } else {
               setCurrentUser(null);
+              setSafeLocalStorageItem("hr_current_user", null);
+              saveAuthSessionToIndexedDB(null).catch(() => {});
               setScreen("login");
             }
           } else {
+            if (u && isExpired) {
+              setSafeLocalStorageItem("hr_auto_logout_msg", "Sua sessão foi encerrada por inatividade (30 minutos sem interação).");
+            }
+            setCurrentUser(null);
+            setSafeLocalStorageItem("hr_current_user", null);
+            saveAuthSessionToIndexedDB(null).catch(() => {});
             setScreen(isWizardDone ? "login" : "wizard");
           }
         } catch (innerErr) {
@@ -464,8 +539,9 @@ export default function App() {
     setUsers((prev) => {
       const next = typeof newUsersOrFn === "function" ? newUsersOrFn(prev) : newUsersOrFn;
       
-      // Cache locally immediately for offline-first resilience
+      // Cache locally immediately in LocalStorage and IndexedDB for offline-first resilience
       setSafeLocalStorageItem("hr_cached_users", next);
+      saveUsersToIndexedDB(next).catch(err => console.warn("[IndexedDB] saveUsersToIndexedDB error:", err));
 
       // Determine differences and sync asynchronously to Firestore
       const prevMap = new Map(prev.map(u => [u.id, u]));
@@ -492,8 +568,9 @@ export default function App() {
     setPontos((prev) => {
       const next = typeof newPontosOrFn === "function" ? newPontosOrFn(prev) : newPontosOrFn;
       
-      // Cache locally immediately for offline-first resilience
+      // Cache locally immediately in LocalStorage and IndexedDB for offline-first resilience
       setSafeLocalStorageItem("hr_cached_pontos", next);
+      savePontosToIndexedDB(next).catch(err => console.warn("[IndexedDB] savePontosToIndexedDB error:", err));
 
       // Determine updated user points and sync to Firestore
       for (const userIdStr of Object.keys(next)) {
@@ -925,51 +1002,77 @@ export default function App() {
     }
   };
 
-  // Automatic online synchronization when network is restored
+  // Automatic synchronization when network is restored or tab/screen becomes visible again
   useEffect(() => {
-    function handleOnline() {
-      console.log("[Network] Connection restored. Triggering automatic background sync...");
-      
-      fetchAllPontos().then(async (dbPontos) => {
-        if (!dbPontos) return;
-        const cached = getSafeLocalStorageItem<PontosGlobal | null>("hr_cached_pontos", null);
-        const { merged: reconciled, changedUserIds } = reconcilePontos(cached, dbPontos);
-        
-        if (changedUserIds.length > 0) {
-          for (const userId of changedUserIds) {
-            try {
-              const prepared = await saveUserPontosToDb(userId, reconciled[userId]);
-              if (prepared) {
-                reconciled[userId] = prepared;
+    const performBackgroundSync = async () => {
+      console.log("[Sync] Triggering background synchronization (online / visibilitychange)...");
+      try {
+        const dbPontos = await fetchAllPontos(5);
+        if (dbPontos) {
+          const idbPontos = await getPontosFromIndexedDB().catch(() => ({}));
+          const cached = getSafeLocalStorageItem<PontosGlobal | null>("hr_cached_pontos", null);
+          const combinedLocal = { ...(cached || {}), ...idbPontos };
+          const { merged: reconciled, changedUserIds } = reconcilePontos(combinedLocal, dbPontos);
+
+          if (changedUserIds.length > 0) {
+            for (const userId of changedUserIds) {
+              try {
+                const prepared = await saveUserPontosToDb(userId, reconciled[userId]);
+                if (prepared) {
+                  reconciled[userId] = prepared;
+                }
+              } catch (err) {
+                console.error(`[Sync] Background sync failed for user ${userId}:`, err);
               }
-            } catch (err) {
-              console.error(`[Sync] Background sync failed for user ${userId}:`, err);
             }
           }
           setPontos(reconciled);
           setSafeLocalStorageItem("hr_cached_pontos", reconciled);
+          savePontosToIndexedDB(reconciled).catch(e => console.warn("[Sync] IDB save error:", e));
         }
-      }).catch(err => console.warn("[Sync] Network online trigger failed to fetch points:", err));
+      } catch (err) {
+        console.warn("[Sync] Network/Visibility trigger failed to fetch points:", err);
+      }
 
-      fetchAuditLogs().then(dbLogs => {
-        if (!dbLogs) return;
-        const cached = getSafeLocalStorageItem<AuditLogEntry[]>("hr_cached_audit_logs", []);
-        const { merged: reconciled, pending } = reconcileAuditLogs(cached, dbLogs);
-        
-        if (pending.length > 0) {
-          setAuditLogs(reconciled);
-          setSafeLocalStorageItem("hr_cached_audit_logs", reconciled);
-          pending.forEach(log => {
-            saveAuditLogToDb(log).catch(err => {
-              console.error("[Sync] Background sync failed for log:", err);
+      try {
+        const dbLogs = await fetchAuditLogs();
+        if (dbLogs) {
+          const cached = getSafeLocalStorageItem<AuditLogEntry[]>("hr_cached_audit_logs", []);
+          const { merged: reconciled, pending } = reconcileAuditLogs(cached, dbLogs);
+
+          if (pending.length > 0) {
+            setAuditLogs(reconciled);
+            setSafeLocalStorageItem("hr_cached_audit_logs", reconciled);
+            pending.forEach(log => {
+              saveAuditLogToDb(log).catch(err => {
+                console.error("[Sync] Background sync failed for log:", err);
+              });
             });
-          });
+          }
         }
-      }).catch(err => console.warn("[Sync] Network online trigger failed to fetch logs:", err));
-    }
+      } catch (err) {
+        console.warn("[Sync] Network/Visibility trigger failed to fetch logs:", err);
+      }
+    };
+
+    const handleOnline = () => {
+      performBackgroundSync();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        console.log("[App Visibility] App became visible. Forcing IndexedDB and server sync...");
+        performBackgroundSync();
+      }
+    };
 
     window.addEventListener("online", handleOnline);
-    return () => window.removeEventListener("online", handleOnline);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -1161,6 +1264,10 @@ export default function App() {
     if (!user) return;
 
     setCurrentUser(user);
+    setSafeLocalStorageItem("hr_current_user", user);
+    setSafeLocalStorageItem("hr_last_activity_time", Date.now());
+    saveAuthSessionToIndexedDB(user).catch(err => console.warn("[IndexedDB] saveAuthSessionToIndexedDB error:", err));
+
     if (!user.termoAceito) {
       setScreen("termo");
     } else {
@@ -1179,6 +1286,10 @@ export default function App() {
     };
     updateUsers(prev => prev.map(u => (u.id === currentUser.id ? updated : u)));
     setCurrentUser(updated);
+    setSafeLocalStorageItem("hr_current_user", updated);
+    setSafeLocalStorageItem("hr_last_activity_time", Date.now());
+    saveAuthSessionToIndexedDB(updated).catch(err => console.warn("[IndexedDB] saveAuthSessionToIndexedDB error:", err));
+
     setScreen("main");
     handleAddLog(
       "Aceitou Termo de Ciência",
@@ -1192,8 +1303,56 @@ export default function App() {
       handleAddLog("Efetuou Logout", `${currentUser.nome} (${currentUser.matricula})`);
     }
     setCurrentUser(null);
+    setSafeLocalStorageItem("hr_current_user", null);
+    removeSafeLocalStorageItem("hr_last_activity_time");
+    saveAuthSessionToIndexedDB(null).catch(err => console.warn("[IndexedDB] saveAuthSessionToIndexedDB error:", err));
+
     setScreen("login");
   }
+
+  // Auto-logout por inatividade (30 minutos sem interação)
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const recordActivity = () => {
+      setSafeLocalStorageItem("hr_last_activity_time", Date.now());
+    };
+
+    recordActivity();
+
+    const intervalId = setInterval(() => {
+      const lastActivity = getSafeLocalStorageItem<number>("hr_last_activity_time", Date.now());
+      if (Date.now() - lastActivity >= INACTIVITY_TIMEOUT_MS) {
+        console.warn("[Auto-Logout] 30 minutos de inatividade detectados. Encerrando sessão automaticamente...");
+        handleAddLog(
+          "Logout Automático por Inatividade",
+          `${currentUser.nome} (${currentUser.matricula}) - Sessão encerrada após 30 min sem resposta/interação.`
+        );
+        setSafeLocalStorageItem("hr_auto_logout_msg", "Sua sessão foi encerrada automaticamente após 30 minutos de inatividade.");
+        handleLogout();
+      }
+    }, 10000);
+
+    const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll", "click"];
+    let throttleTimeout: any = null;
+
+    const handleUserInteraction = () => {
+      if (!throttleTimeout) {
+        recordActivity();
+        throttleTimeout = setTimeout(() => {
+          throttleTimeout = null;
+        }, 3000);
+      }
+    };
+
+    events.forEach(evt => window.addEventListener(evt, handleUserInteraction, { passive: true }));
+
+    return () => {
+      clearInterval(intervalId);
+      if (throttleTimeout) clearTimeout(throttleTimeout);
+      events.forEach(evt => window.removeEventListener(evt, handleUserInteraction));
+    };
+  }, [currentUser]);
 
   if (isDbLoading) {
     return (
@@ -1469,6 +1628,7 @@ export default function App() {
           )}
         </div>
       )}
+      <PwaInstallPrompt t={t} />
     </div>
   );
 }

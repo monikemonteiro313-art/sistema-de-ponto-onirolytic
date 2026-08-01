@@ -152,7 +152,10 @@ function cleanObject(obj: any): any {
   return obj;
 }
 
-export async function initializeDbIfEmpty() {
+export async function initializeDbIfEmpty(existingUsers?: User[]) {
+  if (existingUsers && existingUsers.length > 0) {
+    return;
+  }
   const usersColl = collection(db, "users");
   let usersSnapshot;
   try {
@@ -301,7 +304,7 @@ function resolveTimestamps(days: any): any {
 }
 
 // Pontos functions
-export async function fetchAllPontos(): Promise<PontosGlobal> {
+export async function fetchAllPontos(limitRecentDays: number = 5): Promise<PontosGlobal> {
   try {
     const snapshot = await getDocs(collection(db, "pontos"));
     const pontos: PontosGlobal = {};
@@ -309,12 +312,39 @@ export async function fetchAllPontos(): Promise<PontosGlobal> {
       const userId = Number(docSnap.id);
       const data = docSnap.data();
       if (data && data.days) {
-        pontos[userId] = resolveTimestamps(data.days);
+        const resolved = resolveTimestamps(data.days);
+        if (limitRecentDays && limitRecentDays > 0) {
+          const sortedKeys = Object.keys(resolved).sort().reverse().slice(0, limitRecentDays);
+          const limitedDays: Record<string, any> = {};
+          for (const k of sortedKeys) {
+            limitedDays[k] = resolved[k];
+          }
+          pontos[userId] = limitedDays;
+        } else {
+          pontos[userId] = resolved;
+        }
       }
     });
     return pontos;
   } catch (error) {
     console.warn("[Firebase] Error fetching pontos (offline?):", error);
+    return {};
+  }
+}
+
+export async function fetchUserFullPontos(userId: number): Promise<Record<string, any>> {
+  try {
+    const docRef = doc(db, "pontos", String(userId));
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      if (data && data.days) {
+        return resolveTimestamps(data.days);
+      }
+    }
+    return {};
+  } catch (error) {
+    console.warn(`[Firebase] Error fetching full points for user ${userId}:`, error);
     return {};
   }
 }
