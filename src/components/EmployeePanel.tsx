@@ -338,43 +338,56 @@ export function EmployeePanel({
       try {
         const start = performance.now();
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3500);
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-        const res = await fetch(url, { 
+        let res = await fetch(url, { 
           method: "HEAD",
+          cache: "no-store",
           signal: controller.signal 
-        });
+        }).catch(() => null);
+
+        let dateHeader = res && res.ok ? (res.headers.get("date") || res.headers.get("Date")) : null;
+
+        // If HEAD was stripped or blocked by SW/Proxy without Date header, attempt fast GET
+        if (!dateHeader && active) {
+          const resGet = await fetch(url, {
+            method: "GET",
+            cache: "no-store",
+            signal: controller.signal
+          }).catch(() => null);
+          if (resGet && resGet.ok) {
+            dateHeader = resGet.headers.get("date") || resGet.headers.get("Date");
+          }
+        }
+
         clearTimeout(timeoutId);
 
-        if (res.ok && active) {
-          const dateHeader = res.headers.get("date");
-          if (dateHeader) {
-            const apiEpoch = new Date(dateHeader).getTime();
-            const rtt = performance.now() - start;
-            const realEpoch = apiEpoch + rtt / 2;
-            const offset = realEpoch - Date.now();
-            
-            try {
-              localStorage.setItem("hr_clock_offset", String(offset));
-            } catch (_) {}
+        if (dateHeader && active) {
+          const apiEpoch = new Date(dateHeader).getTime();
+          const rtt = performance.now() - start;
+          const realEpoch = apiEpoch + rtt / 2;
+          const offset = realEpoch - Date.now();
+          
+          try {
+            localStorage.setItem("hr_clock_offset", String(offset));
+          } catch (_) {}
 
-            setBaseRealTime(realEpoch);
-            setBasePerfTime(performance.now());
-            setClockStatus("synced");
-            resolved = true;
-            console.log(`[Clock Sync] Sincronizado com o servidor. Offset: ${offset.toFixed(0)}ms. RTT: ${rtt.toFixed(1)}ms.`);
+          setBaseRealTime(realEpoch);
+          setBasePerfTime(performance.now());
+          setClockStatus("synced");
+          resolved = true;
+          console.log(`[Clock Sync] Sincronizado com o servidor. Offset: ${offset.toFixed(0)}ms. RTT: ${rtt.toFixed(1)}ms.`);
 
-            // Audit log if offset is abnormally high (more than 3 minutes, indicating local clock manipulation)
-            if (Math.abs(offset) > 3 * 60 * 1000) {
-              const offsetMinutes = Math.round(offset / 60000);
-              console.warn(`[Audit] Grande desvio de relógio detectado no painel: ${offsetMinutes} min.`);
-              if (onAddLog) {
-                onAddLog(
-                  "Suspeita de Manipulação de Horário",
-                  `${currentUser.nome} (${currentUser.matricula})`,
-                  `Relógio do dispositivo desviado em ${offsetMinutes} min em relação ao servidor.`
-                );
-              }
+          // Audit log if offset is abnormally high (more than 3 minutes, indicating local clock manipulation)
+          if (Math.abs(offset) > 3 * 60 * 1000) {
+            const offsetMinutes = Math.round(offset / 60000);
+            console.warn(`[Audit] Grande desvio de relógio detectado no painel: ${offsetMinutes} min.`);
+            if (onAddLog) {
+              onAddLog(
+                "Suspeita de Manipulação de Horário",
+                `${currentUser.nome} (${currentUser.matricula})`,
+                `Relógio do dispositivo desviado em ${offsetMinutes} min em relação ao servidor.`
+              );
             }
           }
         }
@@ -1008,7 +1021,7 @@ export function EmployeePanel({
       const acc = geoCoords?.accuracy !== undefined ? geoCoords.accuracy : undefined;
       const timestamp = getSyncDate().toISOString();
 
-      const isOffline = clockStatus === "local";
+      const isOffline = !navigator.onLine;
 
       if (tipo === "auto") {
         const reg: Batida = {
@@ -1890,8 +1903,8 @@ export function EmployeePanel({
                       <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "monospace", color: batida ? s.color : t.textMuted }}>{fmt(batida)}</span>
                       {!batida && calDay === todayKey() && (
                         <button
-                          onClick={() => abrirManual(i, calDay)}
-                          title="Inserir horário"
+                          onClick={() => setSolicitarCorrecaoOpen(true)}
+                          title="Solicitar Ajuste ou Correção"
                           style={{
                             background: t.surfaceAlt,
                             border: `1.5px solid ${t.border}`,
@@ -1903,12 +1916,12 @@ export function EmployeePanel({
                             gap: 4,
                             fontFamily: "inherit",
                             fontSize: 12,
-                            color: t.textSub,
+                            color: "#d97706",
                             fontWeight: 600
                           }}
                         >
-                          <SquarePen size={12} />
-                          Inserir
+                          <SquarePen size={12} color="#d97706" />
+                          Solicitar Ajuste
                         </button>
                       )}
                     </div>
@@ -1972,10 +1985,10 @@ export function EmployeePanel({
             gap: 6, 
             padding: "5px 12px", 
             borderRadius: 20, 
-            background: clockStatus === "synced" ? "rgba(34,197,94,0.08)" : clockStatus === "syncing" ? "rgba(59,130,246,0.08)" : "rgba(245,158,11,0.08)",
-            border: `1px solid ${clockStatus === "synced" ? "rgba(34,197,94,0.25)" : clockStatus === "syncing" ? "rgba(59,130,246,0.25)" : "rgba(245,158,11,0.25)"}`,
+            background: clockStatus === "synced" ? "rgba(34,197,94,0.08)" : clockStatus === "syncing" ? "rgba(59,130,246,0.08)" : navigator.onLine ? "rgba(59,130,246,0.08)" : "rgba(245,158,11,0.08)",
+            border: `1px solid ${clockStatus === "synced" ? "rgba(34,197,94,0.25)" : clockStatus === "syncing" ? "rgba(59,130,246,0.25)" : navigator.onLine ? "rgba(59,130,246,0.25)" : "rgba(245,158,11,0.25)"}`,
             fontSize: 11,
-            color: clockStatus === "synced" ? "#16a34a" : clockStatus === "syncing" ? "#2563eb" : "#d97706",
+            color: clockStatus === "synced" ? "#16a34a" : clockStatus === "syncing" ? "#2563eb" : navigator.onLine ? "#2563eb" : "#d97706",
             fontWeight: 600,
             boxShadow: "0 2px 8px rgba(0,0,0,0.02)",
             cursor: "pointer",
@@ -2004,10 +2017,15 @@ export function EmployeePanel({
               <div className="animate-spin" style={{ width: 10, height: 10, border: "2px solid currentColor", borderTopColor: "transparent", borderRadius: "50%" }} />
               Sincronizando com relógio atômico...
             </>
+          ) : !navigator.onLine ? (
+            <>
+              <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#ef4444" }} />
+              📱 Modo Offline (Salvação Local)
+            </>
           ) : (
             <>
-              <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#d97706" }} />
-              ⚠️ Gravado Offline (Aguardando Rede)
+              <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#3b82f6" }} />
+              🕒 Relógio do Dispositivo (Offset Sincronizado)
             </>
           )}
         </div>
@@ -3409,23 +3427,29 @@ export function EmployeePanel({
               </div>
             </button>
 
-            {/* Manual missed-punches options */}
+            {/* Option to request correction for missed punch */}
             <button
-              onClick={() => abrirManual(confirmModal.idx, confirmModal.dayKey)}
+              onClick={() => {
+                setConfirmModal(null);
+                setSolicitarCorrecaoOpen(true);
+              }}
               style={{
                 width: "100%",
                 background: t.surfaceAlt,
                 border: `1.5px solid ${t.border}`,
                 borderRadius: 14,
-                padding: "16px 16px",
+                padding: "14px 16px",
                 cursor: "pointer",
                 fontFamily: "inherit",
                 transition: "all 0.18s"
               }}
             >
-              <div style={{ fontSize: 15, fontWeight: 700, color: t.text }}>Incorp. manual de ponto</div>
-              <div style={{ fontSize: "12.5px", color: t.textSub, marginTop: 4 }}>
-                Insira o horário em que realmente cumpriu a batida.
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#d97706", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                <SquarePen size={16} color="#d97706" />
+                <span>Solicitar Correção de Ponto</span>
+              </div>
+              <div style={{ fontSize: "12px", color: t.textSub, marginTop: 3 }}>
+                Esqueceu o horário ou precisa de ajuste? Envie uma solicitação para o gestor.
               </div>
             </button>
 
@@ -3445,164 +3469,6 @@ export function EmployeePanel({
             >
               Cancelar
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* Manual Input modal */}
-      {manualModal && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
-            backdropFilter: "blur(5px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 600,
-            padding: 20
-          }}
-          onClick={() => setManualModal(null)}
-        >
-          <div
-            style={{
-              background: t.surface,
-              border: `1.5px solid ${t.border}`,
-              borderRadius: 20,
-              padding: "32px 28px",
-              width: "100%",
-              maxWidth: 340,
-              boxShadow: t.shadow
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div style={{ textAlign: "center", marginBottom: 20 }}>
-              <div
-                style={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: "50%",
-                  background: "rgba(245,158,11,0.12)",
-                  border: "2.5px solid rgba(245,158,11,0.35)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  margin: "0 auto 12px"
-                }}
-              >
-                <SquarePen size={20} color="#F59E0B" />
-              </div>
-              <h3 style={{ margin: "0 0 4px", color: t.text, fontSize: 17, fontWeight: 700 }}>Horário manual</h3>
-              <p style={{ margin: 0, color: t.textSub, fontSize: 13 }}>
-                {steps[manualModal.idx].done}
-                {manualModal.dayKey !== todayKey() ? ` · ${dayLabel(manualModal.dayKey)}` : ""}
-              </p>
-            </div>
-
-            <div style={{ background: "rgba(245,158,11,0.09)", border: "1.5px solid rgba(245,158,11,0.28)", borderRadius: 8, padding: "9px 12px", marginBottom: 16, fontSize: 12, color: "#F59E0B", lineHeight: 1.5 }}>
-              ⚠️ Marcado como Manual (M). A justificativa é obrigatória e o ponto será enviado para aprovação do seu gestor.
-            </div>
-
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: t.textSub, marginBottom: 7, letterSpacing: "0.5px", textTransform: "uppercase" }}>
-                Horário realizado
-              </label>
-              <input
-                type="time"
-                value={manualHora}
-                onChange={e => {
-                  setManualHora(e.target.value);
-                  setManualError("");
-                }}
-                style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  background: t.inputBg,
-                  border: `1.5px solid ${manualError ? "#F59E0B" : t.border}`,
-                  borderRadius: 9,
-                  color: t.text,
-                  fontSize: 28,
-                  fontWeight: 700,
-                  padding: "12px",
-                  outline: "none",
-                  fontFamily: "monospace",
-                  textAlign: "center",
-                  letterSpacing: "3px"
-                }}
-              />
-              {manualError && (
-                <span style={{ fontSize: 12, color: "#F59E0B", marginTop: 4, display: "block" }}>
-                  {manualError}
-                </span>
-              )}
-            </div>
-
-            <div style={{ marginBottom: 20 }}>
-              <label style={{ display: "block", fontSize: "11.5px", fontWeight: 700, color: manualError && !manualJust.trim() ? t.danger : t.textSub, marginBottom: 7, letterSpacing: "0.5px", textTransform: "uppercase" }}>
-                Justificativa * <span style={{ fontWeight: 700, color: manualError && !manualJust.trim() ? t.danger : "#D97706" }}>(Obrigatória)</span>
-              </label>
-              <textarea
-                value={manualJust}
-                onChange={e => {
-                  setManualJust(e.target.value);
-                  setManualError("");
-                }}
-                placeholder="Ex: Esqueci de registrar o ponto no horário de entrada..."
-                rows={2}
-                style={{
-                  width: "100%",
-                  boxSizing: "border-box",
-                  background: t.inputBg,
-                  border: `1.5px solid ${t.border}`,
-                  borderRadius: 9,
-                  color: t.text,
-                  fontSize: "13.5px",
-                  padding: "10px 13px",
-                  outline: "none",
-                  fontFamily: "inherit",
-                  resize: "none"
-                }}
-              />
-            </div>
-
-            <div style={{ display: "flex", gap: 10 }}>
-              <button
-                onClick={() => setManualModal(null)}
-                style={{
-                  flex: 1,
-                  background: t.surfaceAlt,
-                  border: `1px solid ${t.border}`,
-                  borderRadius: 10,
-                  padding: "11px",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  fontWeight: 600,
-                  fontSize: 14,
-                  color: t.textSub
-                }}
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={confirmarManual}
-                style={{
-                  flex: 2,
-                  background: "linear-gradient(135deg, #F59E0B, #D97706)",
-                  border: "none",
-                  borderRadius: 10,
-                  padding: "11px",
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  fontWeight: 700,
-                  fontSize: 14,
-                  color: "#fff",
-                  boxShadow: "0 4px 16px rgba(245,158,11,0.3)"
-                }}
-              >
-                Confirmar
-              </button>
-            </div>
           </div>
         </div>
       )}

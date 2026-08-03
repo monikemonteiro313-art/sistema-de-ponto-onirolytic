@@ -96,44 +96,57 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
       try {
         const start = performance.now();
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3500);
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-        const res = await fetch(url, { 
+        let res = await fetch(url, { 
           method: "HEAD",
+          cache: "no-store",
           signal: controller.signal 
-        });
+        }).catch(() => null);
+
+        let dateHeader = res && res.ok ? (res.headers.get("date") || res.headers.get("Date")) : null;
+
+        // If HEAD was stripped or blocked by SW/Proxy without Date header, attempt fast GET
+        if (!dateHeader && active) {
+          const resGet = await fetch(url, {
+            method: "GET",
+            cache: "no-store",
+            signal: controller.signal
+          }).catch(() => null);
+          if (resGet && resGet.ok) {
+            dateHeader = resGet.headers.get("date") || resGet.headers.get("Date");
+          }
+        }
+
         clearTimeout(timeoutId);
 
-        if (res.ok && active) {
-          const dateHeader = res.headers.get("date");
-          if (dateHeader) {
-            const apiEpoch = new Date(dateHeader).getTime();
-            const rtt = performance.now() - start;
-            const realEpoch = apiEpoch + rtt / 2;
-            const offset = realEpoch - Date.now();
-            
-            try {
-              localStorage.setItem("hr_clock_offset", String(offset));
-            } catch (_) {}
+        if (dateHeader && active) {
+          const apiEpoch = new Date(dateHeader).getTime();
+          const rtt = performance.now() - start;
+          const realEpoch = apiEpoch + rtt / 2;
+          const offset = realEpoch - Date.now();
+          
+          try {
+            localStorage.setItem("hr_clock_offset", String(offset));
+          } catch (_) {}
 
-            setBaseRealTime(realEpoch);
-            setBasePerfTime(performance.now());
-            setClockStatus("synced");
-            setNow(new Date(realEpoch));
-            resolved = true;
-            console.log(`[Login Clock Sync] Sincronizado com o servidor. Offset: ${offset.toFixed(0)}ms. RTT: ${rtt.toFixed(1)}ms.`);
+          setBaseRealTime(realEpoch);
+          setBasePerfTime(performance.now());
+          setClockStatus("synced");
+          setNow(new Date(realEpoch));
+          resolved = true;
+          console.log(`[Login Clock Sync] Sincronizado com o servidor. Offset: ${offset.toFixed(0)}ms. RTT: ${rtt.toFixed(1)}ms.`);
 
-            // Audit log if offset is abnormally high (more than 3 minutes, indicating local clock manipulation)
-            if (Math.abs(offset) > 3 * 60 * 1000) {
-              const offsetMinutes = Math.round(offset / 60000);
-              console.warn(`[Audit] Grande desvio de relógio detectado no login: ${offsetMinutes} min.`);
-              if (onAddLog) {
-                onAddLog(
-                  "Suspeita de Manipulação de Horário",
-                  "Sistema / Login",
-                  `Relógio do dispositivo desviado em ${offsetMinutes} min em relação ao servidor.`
-                );
-              }
+          // Audit log if offset is abnormally high (more than 3 minutes, indicating local clock manipulation)
+          if (Math.abs(offset) > 3 * 60 * 1000) {
+            const offsetMinutes = Math.round(offset / 60000);
+            console.warn(`[Audit] Grande desvio de relógio detectado no login: ${offsetMinutes} min.`);
+            if (onAddLog) {
+              onAddLog(
+                "Suspeita de Manipulação de Horário",
+                "Sistema / Login",
+                `Relógio do dispositivo desviado em ${offsetMinutes} min em relação ao servidor.`
+              );
             }
           }
         }
@@ -494,10 +507,10 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
                 {clockStatus === "synced" && (
                   <span className="animate-ping" style={{ position: "absolute", inlineSize: "100%", blockSize: "100%", borderRadius: "50%", background: "#4ade80", opacity: 0.75 }}></span>
                 )}
-                <span style={{ position: "relative", inlineSize: 6, blockSize: 6, borderRadius: "50%", background: clockStatus === "synced" ? "#22c55e" : clockStatus === "syncing" ? "#3b82f6" : "#f59e0b" }}></span>
+                <span style={{ position: "relative", inlineSize: 6, blockSize: 6, borderRadius: "50%", background: clockStatus === "synced" ? "#22c55e" : clockStatus === "syncing" ? "#3b82f6" : navigator.onLine ? "#3b82f6" : "#f59e0b" }}></span>
               </span>
-              <span style={{ fontSize: "9px", fontWeight: 600, color: clockStatus === "synced" ? "#16a34a" : clockStatus === "syncing" ? "#2563eb" : "#d97706" }}>
-                {clockStatus === "synced" ? "Hora Segura" : clockStatus === "syncing" ? "Sincronizando" : "Offline"}
+              <span style={{ fontSize: "9px", fontWeight: 600, color: clockStatus === "synced" ? "#16a34a" : clockStatus === "syncing" ? "#2563eb" : navigator.onLine ? "#2563eb" : "#d97706" }}>
+                {clockStatus === "synced" ? "Hora Segura" : clockStatus === "syncing" ? "Sincronizando" : navigator.onLine ? "Relógio Local" : "Offline"}
               </span>
             </div>
           </div>
