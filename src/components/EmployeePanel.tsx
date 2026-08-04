@@ -8,6 +8,7 @@ import { PontinhoTourModal } from "./PontinhoTourModal";
 import { ModalSolicitarCorrecao } from "./ModalSolicitarCorrecao";
 import { getCidInfo } from "../utils/cidHelper";
 import { savePunchToIndexedDB } from "../lib/indexedDbService";
+import { getBestCurrentPosition, watchBestPosition } from "../utils/geolocationHelper";
 
 function resizeAndCompressImage(base64Str: string, maxWidth = 1800, maxHeight = 1800, quality = 0.88): Promise<string> {
   return new Promise((resolve) => {
@@ -115,6 +116,133 @@ export function EmployeePanel({
   const [now, setNow] = useState(new Date());
   const [isLgpdOpen, setIsLgpdOpen] = useState(false);
   const [solicitarCorrecaoOpen, setSolicitarCorrecaoOpen] = useState(false);
+  const [offlineModalOpen, setOfflineModalOpen] = useState(false);
+  const [alertaOntemDismissed, setAlertaOntemDismissed] = useState(false);
+
+  // Lista de marcações pendentes salvas localmente (Biblioteca Offline)
+  const pendingOfflinePunchesList = useMemo(() => {
+    const list: {
+      dayKey: string;
+      slotIdx: number;
+      slotLabel: string;
+      batida: Batida;
+    }[] = [];
+
+    if (!pontosGlobal || !currentUser?.id) return list;
+    const userRegs = pontosGlobal[currentUser.id];
+    if (!userRegs) return list;
+
+    const stepLabels = ["Entrada", "Saída Almoço", "Retorno Almoço", "Saída"];
+
+    for (const dayKey of Object.keys(userRegs)) {
+      const day = userRegs[dayKey];
+      if (day) {
+        day.forEach((b, idx) => {
+          if (b && (b.gravadoOffline || b.serverTime === "pending")) {
+            list.push({
+              dayKey,
+              slotIdx: idx,
+              slotLabel: stepLabels[idx] || `Batida #${idx + 1}`,
+              batida: b
+            });
+          }
+        });
+      }
+    }
+
+    return list.sort((a, b) => b.dayKey.localeCompare(a.dayKey) || b.slotIdx - a.slotIdx);
+  }, [pontosGlobal, currentUser?.id]);
+
+  const atestadoRecusadoPendente = useMemo(() => {
+    if (!pontosGlobal || !currentUser?.id) return null;
+    const userDays = pontosGlobal[currentUser.id];
+    if (!userDays) return null;
+
+    for (const dayKey of Object.keys(userDays)) {
+      const dayArray = userDays[dayKey];
+      if (!dayArray) continue;
+      for (let idx = 0; idx < dayArray.length; idx++) {
+        const b = dayArray[idx];
+        if (b && b.ocorrencia === "atestado" && b.statusAtestado === "recusado" && !b.vistoPeloColaborador) {
+          return { dayKey, batidaIdx: idx, batida: b };
+        }
+      }
+    }
+    return null;
+  }, [pontosGlobal, currentUser?.id]);
+
+  const meusAtestadosList = useMemo(() => {
+    const list: {
+      dayKey: string;
+      cid: string;
+      statusAtestado: "pendente" | "aceito" | "recusado";
+      motivoRecusaAtestado?: string;
+      revisadoPor?: string;
+      revisadoEm?: string;
+      parcial?: boolean;
+      obs?: string;
+      fotoAtestado?: string;
+    }[] = [];
+
+    if (!pontosGlobal || !currentUser?.id) return list;
+    const userDays = pontosGlobal[currentUser.id];
+    if (!userDays) return list;
+
+    Object.keys(userDays).forEach(dayKey => {
+      const dayArray = userDays[dayKey];
+      if (!dayArray) return;
+      dayArray.forEach(b => {
+        if (b && b.ocorrencia === "atestado") {
+          list.push({
+            dayKey,
+            cid: b.cid || "N/A",
+            statusAtestado: b.statusAtestado || "pendente",
+            motivoRecusaAtestado: b.motivoRecusaAtestado,
+            revisadoPor: b.revisadoPor,
+            revisadoEm: b.revisadoEm,
+            parcial: b.parcial,
+            obs: b.obs,
+            fotoAtestado: b.fotoAtestado
+          });
+        }
+      });
+    });
+
+    return list.sort((a, b) => b.dayKey.localeCompare(a.dayKey));
+  }, [pontosGlobal, currentUser?.id]);
+
+  // Alerta de Ponto Incompleto do Dia Anterior (só aparece a partir do dia seguinte)
+  const alertaOntemPendente = useMemo(() => {
+    if (!pontosGlobal || !currentUser?.id) return null;
+    const hoje = new Date();
+    let prevDate = new Date(hoje);
+    prevDate.setDate(prevDate.getDate() - 1);
+    let prevKey = prevDate.toISOString().slice(0, 10);
+
+    if (prevDate.getDay() === 0) {
+      prevDate.setDate(prevDate.getDate() - 2);
+      prevKey = prevDate.toISOString().slice(0, 10);
+    } else if (prevDate.getDay() === 6) {
+      prevDate.setDate(prevDate.getDate() - 1);
+      prevKey = prevDate.toISOString().slice(0, 10);
+    }
+
+    const userDays = pontosGlobal[currentUser.id];
+    if (!userDays || !userDays[prevKey]) return null;
+
+    const rawArray = userDays[prevKey] || [null, null, null, null];
+    const validBatidas = rawArray.filter(b => b && b.hora && !b.duplicadoOculto);
+
+    // Se possui batidas porém número ímpar (ponto incompleto sem saída ou retorno)
+    if (validBatidas.length > 0 && validBatidas.length % 2 !== 0) {
+      return {
+        dayKey: prevKey,
+        count: validBatidas.length,
+        formattedDate: prevKey.split("-").reverse().join("/")
+      };
+    }
+    return null;
+  }, [pontosGlobal, currentUser?.id]);
 
   // Alert Pop-up logic for active unread alerts directed to this user
   const activeAlertsForUser = useMemo(() => {
@@ -878,7 +1006,7 @@ export function EmployeePanel({
     return `${h}h ${String(m).padStart(2, "0")}min`;
   }
 
-  function capturarLocalizacao() {
+  async function capturarLocalizacao() {
     setGeoLoading(true);
     setGeoError(null);
     setGeoConsentAccepted(true);
@@ -886,23 +1014,17 @@ export function EmployeePanel({
     setBestGeoCoords(null);
     setGeoCoords(null);
 
-    if (!navigator.geolocation) {
-      setGeoError("Geolocalização não é suportada por este navegador.");
-      setGeoLoading(false);
-      return;
-    }
-
     let bestCoords: { latitude: number; longitude: number; accuracy?: number } | null = null;
     let samples = 0;
-    let watchId: number | null = null;
+    let stopWatchFn: (() => void) | null = null;
     let intervalId: any = null;
 
     const totalDuration = 10;
     setGeoCountdown(totalDuration);
 
-    function stopAndSelectBest(wId: number, coords: typeof bestCoords) {
-      if (wId !== null) {
-        navigator.geolocation.clearWatch(wId);
+    async function stopAndSelectBest(coords: typeof bestCoords) {
+      if (stopWatchFn) {
+        try { stopWatchFn(); } catch (_) {}
       }
       if (intervalId !== null) {
         clearInterval(intervalId);
@@ -917,37 +1039,28 @@ export function EmployeePanel({
         setBestGeoCoords(coords);
       } else {
         // Fallback to rapid single query if watch did not return anything
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            const finalCoords = {
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-              accuracy: pos.coords.accuracy
-            };
-            setGeoCoords(finalCoords);
-            setBestGeoCoords(finalCoords);
-          },
-          (err) => {
-            console.warn("Erro ao obter localização:", err);
-            setGeoError("Tempo limite atingido e nenhum sinal de geolocalização válido foi recebido.");
-          },
-          {
+        try {
+          const pos = await getBestCurrentPosition({
             enableHighAccuracy: true,
             timeout: 10000,
             maximumAge: 0
-          }
-        );
+          });
+          const finalCoords = {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy
+          };
+          setGeoCoords(finalCoords);
+          setBestGeoCoords(finalCoords);
+        } catch (err) {
+          console.warn("Erro ao obter localização no fallback:", err);
+          setGeoError("Tempo limite atingido e nenhum sinal de geolocalização válido foi recebido.");
+        }
       }
     }
 
-    const options = {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 0
-    };
-
     try {
-      watchId = navigator.geolocation.watchPosition(
+      stopWatchFn = await watchBestPosition(
         (position) => {
           samples++;
           setGeoSamplesCount(samples);
@@ -965,47 +1078,50 @@ export function EmployeePanel({
 
           // Strict filter: accuracy <= 30 meters
           if (curAcc !== undefined && curAcc <= 30) {
-            stopAndSelectBest(watchId!, newCoords);
+            stopAndSelectBest(newCoords);
           }
         },
         (error) => {
-          console.warn("Localizacao erro no watchPosition:", error);
+          console.warn("Localizacao erro no watchBestPosition:", error);
           if (bestCoords) {
-            stopAndSelectBest(watchId!, bestCoords);
+            stopAndSelectBest(bestCoords);
             return;
           }
 
           let msg = "Não foi possível obter a sua localização.";
-          if (error.code === error.PERMISSION_DENIED) {
-            msg = "Acesso à geolocalização recusado pelo navegador. O registro de ponto eletrônico exige a comprovação de presença física do colaborador, em conformidade com as diretrizes da Portaria 671/MTE e a LGPD. Sem essa comprovação, o ponto não pode ser validado juridicamente.";
-          } else if (error.code === error.POSITION_UNAVAILABLE) {
-            msg = "Sinal de localização indisponível. Certifique-se de que o GPS ou o sinal de Wi-Fi de triangulação do aparelho estão ativados e tente novamente.";
-          } else if (error.code === error.TIMEOUT) {
-            msg = "Tempo limite excedido ao obter sinal de GPS. Fique próximo a uma janela ou área aberta e tente novamente.";
+          const errStr = String(error?.message || error?.code || "").toLowerCase();
+          if (error?.code === 1 || errStr.includes("denied") || errStr.includes("recusado") || errStr.includes("permission")) {
+            msg = "Acesso à geolocalização recusado pelo dispositivo ou aplicativo. O registro de ponto eletrônico exige a comprovação de presença física do colaborador (Portaria 671/MTE).";
+          } else if (error?.code === 2 || errStr.includes("unavailable")) {
+            msg = "Sinal de localização indisponível. Certifique-se de que o GPS do celular está ativado e tente novamente.";
+          } else if (error?.code === 3 || errStr.includes("timeout")) {
+            msg = "Tempo limite excedido ao obter sinal de GPS. Fique próximo a uma área aberta e tente novamente.";
           }
           setGeoError(msg);
           setGeoLoading(false);
-          if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+          if (stopWatchFn) { try { stopWatchFn(); } catch (_) {} }
           if (intervalId !== null) clearInterval(intervalId);
         },
-        options
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        }
       );
-
-      setGeoWatchId(watchId);
 
       let remaining = totalDuration;
       intervalId = setInterval(() => {
         remaining--;
         setGeoCountdown(remaining);
         if (remaining <= 0) {
-          stopAndSelectBest(watchId!, bestCoords);
+          stopAndSelectBest(bestCoords);
         }
       }, 1000);
 
       setGeoIntervalId(intervalId);
     } catch (e) {
       console.error(e);
-      setGeoError("Erro ao iniciar o watchPosition de geolocalização.");
+      setGeoError("Erro ao iniciar captura de geolocalização.");
       setGeoLoading(false);
     }
   }
@@ -1287,97 +1403,7 @@ export function EmployeePanel({
     return acc;
   }, { dias: 0, horas: 0 });
 
-  const calBatidas = calDay ? pontosGlobal[currentUser.id]?.[calDay] || [null, null, null, null] : null;
-
-  const atestadoRecusadoPendente = useMemo(() => {
-    const userDays = pontosGlobal[currentUser.id];
-    if (!userDays) return null;
-
-    for (const dayKey of Object.keys(userDays)) {
-      const dayArray = userDays[dayKey];
-      if (!dayArray) continue;
-      for (let idx = 0; idx < dayArray.length; idx++) {
-        const b = dayArray[idx];
-        if (b && b.ocorrencia === "atestado" && b.statusAtestado === "recusado" && !b.vistoPeloColaborador) {
-          return { dayKey, batidaIdx: idx, batida: b };
-        }
-      }
-    }
-    return null;
-  }, [pontosGlobal, currentUser.id]);
-
-  const meusAtestadosList = useMemo(() => {
-    const list: {
-      dayKey: string;
-      cid: string;
-      statusAtestado: "pendente" | "aceito" | "recusado";
-      motivoRecusaAtestado?: string;
-      revisadoPor?: string;
-      revisadoEm?: string;
-      parcial?: boolean;
-      obs?: string;
-      fotoAtestado?: string;
-    }[] = [];
-
-    const userDays = pontosGlobal[currentUser.id];
-    if (!userDays) return list;
-
-    Object.keys(userDays).forEach(dayKey => {
-      const dayArray = userDays[dayKey];
-      if (!dayArray) return;
-      dayArray.forEach(b => {
-        if (b && b.ocorrencia === "atestado") {
-          list.push({
-            dayKey,
-            cid: b.cid || "N/A",
-            statusAtestado: b.statusAtestado || "pendente",
-            motivoRecusaAtestado: b.motivoRecusaAtestado,
-            revisadoPor: b.revisadoPor,
-            revisadoEm: b.revisadoEm,
-            parcial: b.parcial,
-            obs: b.obs,
-            fotoAtestado: b.fotoAtestado
-          });
-        }
-      });
-    });
-
-    return list.sort((a, b) => b.dayKey.localeCompare(a.dayKey));
-  }, [pontosGlobal, currentUser.id]);
-
-  // Alerta de Ponto Incompleto do Dia Anterior (só aparece a partir do dia seguinte)
-  const alertaOntemPendente = useMemo(() => {
-    const hoje = getSyncDate();
-    let prevDate = new Date(hoje);
-    prevDate.setDate(prevDate.getDate() - 1);
-    let prevKey = prevDate.toISOString().slice(0, 10);
-
-    if (prevDate.getDay() === 0) {
-      prevDate.setDate(prevDate.getDate() - 2);
-      prevKey = prevDate.toISOString().slice(0, 10);
-    } else if (prevDate.getDay() === 6) {
-      prevDate.setDate(prevDate.getDate() - 1);
-      prevKey = prevDate.toISOString().slice(0, 10);
-    }
-
-    const userDays = pontosGlobal[currentUser.id];
-    if (!userDays || !userDays[prevKey]) return null;
-
-    const rawArray = userDays[prevKey] || [null, null, null, null];
-    const validBatidas = rawArray.filter(b => b && b.hora && !b.duplicadoOculto);
-
-    // Se possui batidas porém número ímpar (ponto incompleto sem saída ou retorno)
-    if (validBatidas.length > 0 && validBatidas.length % 2 !== 0) {
-      return {
-        dayKey: prevKey,
-        count: validBatidas.length,
-        formattedDate: prevKey.split("-").reverse().join("/")
-      };
-    }
-    return null;
-  }, [pontosGlobal, currentUser.id]);
-
-  const [alertaOntemDismissed, setAlertaOntemDismissed] = useState(false);
+  const calBatidas = calDay ? pontosGlobal[currentUser?.id]?.[calDay] || [null, null, null, null] : null;
 
   return (
     <div
@@ -1671,6 +1697,63 @@ export function EmployeePanel({
             }}
           >
             <Folder size={16} color={t.accent} /> ESPELHO PDF
+          </button>
+
+          {/* Botão Guia Registros sem Internet (Biblioteca Offline) */}
+          <button
+            onClick={() => setOfflineModalOpen(true)}
+            title="Acessar Biblioteca de Registros sem Internet"
+            style={{
+              gridColumn: "span 2",
+              background: pendingOfflinePunchesList.length > 0
+                ? "linear-gradient(135deg, rgba(245,158,11,0.2), rgba(217,119,6,0.18))"
+                : t.surfaceAlt,
+              border: `1.5px solid ${pendingOfflinePunchesList.length > 0 ? "rgba(245,158,11,0.6)" : t.border}`,
+              borderRadius: 12,
+              padding: "10px 14px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              fontSize: 11.5,
+              fontWeight: 800,
+              color: pendingOfflinePunchesList.length > 0 ? "#d97706" : t.text,
+              width: "100%",
+              boxSizing: "border-box",
+              boxShadow: pendingOfflinePunchesList.length > 0 ? "0 2px 10px rgba(245,158,11,0.15)" : "none",
+              transition: "all 0.2s ease"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 16 }}>📡</span>
+              <span>REGISTROS SEM INTERNET</span>
+            </div>
+            {pendingOfflinePunchesList.length > 0 ? (
+              <span style={{
+                background: "#d97706",
+                color: "#ffffff",
+                fontSize: 10.5,
+                fontWeight: 900,
+                padding: "3px 9px",
+                borderRadius: 20,
+                boxShadow: "0 2px 6px rgba(217,119,6,0.3)"
+              }}>
+                {pendingOfflinePunchesList.length} PENDENTE(S)
+              </span>
+            ) : (
+              <span style={{
+                background: "rgba(34,197,94,0.15)",
+                color: "#16a34a",
+                fontSize: 10.5,
+                fontWeight: 700,
+                padding: "3px 9px",
+                borderRadius: 20,
+                border: "1px solid rgba(34,197,94,0.3)"
+              }}>
+                Sincronizado ✓
+              </span>
+            )}
           </button>
         </div>
 
@@ -2502,6 +2585,289 @@ export function EmployeePanel({
       </div>
 
       <LgpdModal isOpen={isLgpdOpen} onClose={() => setIsLgpdOpen(false)} t={t} />
+
+      {/* Modal de Registros sem Internet (Biblioteca Offline) */}
+      {offlineModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 16
+          }}
+        >
+          <div
+            style={{
+              background: t.surface,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 20,
+              width: "100%",
+              maxWidth: 480,
+              padding: "24px 20px",
+              boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              position: "relative"
+            }}
+          >
+            {/* Botão Fechar */}
+            <button
+              onClick={() => setOfflineModalOpen(false)}
+              style={{
+                position: "absolute",
+                top: 18,
+                right: 18,
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                color: t.textSub
+              }}
+            >
+              <X size={20} />
+            </button>
+
+            {/* Modal Header */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+              <div style={{
+                width: 44,
+                height: 44,
+                borderRadius: 12,
+                background: "rgba(245,158,11,0.15)",
+                border: "1.5px solid rgba(245,158,11,0.35)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0
+              }}>
+                <span style={{ fontSize: 22 }}>📡</span>
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: t.text }}>
+                  Registros sem Internet
+                </h3>
+                <span style={{ fontSize: 12, color: t.textSub }}>
+                  Biblioteca local de batidas e geolocalização
+                </span>
+              </div>
+            </div>
+
+            {/* Network Status Badge */}
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              background: navigator.onLine ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
+              border: `1px solid ${navigator.onLine ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
+              borderRadius: 12,
+              padding: "10px 14px",
+              marginBottom: 16
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: navigator.onLine ? "#22c55e" : "#ef4444"
+                }} className="animate-pulse" />
+                <span style={{ fontSize: 12, fontWeight: 700, color: navigator.onLine ? "#16a34a" : "#dc2626" }}>
+                  {navigator.onLine ? "Conexão com a Internet Ativa" : "Modo Offline (Dispositivo sem Rede)"}
+                </span>
+              </div>
+              <span style={{ fontSize: 11, color: t.textSub, fontWeight: 600 }}>
+                {navigator.onLine ? "Pronto p/ Enviar" : "Aguardando Sinal"}
+              </span>
+            </div>
+
+            {/* Information Box explaining the clearing/emptying behavior */}
+            <div style={{
+              background: t.surfaceAlt,
+              border: `1px solid ${t.border}`,
+              borderRadius: 12,
+              padding: "12px 14px",
+              fontSize: 12,
+              color: t.textSub,
+              lineHeight: 1.5,
+              marginBottom: 18
+            }}>
+              💡 <strong>Como funciona a biblioteca offline?</strong>
+              <br />
+              Suas batidas de ponto e coordenadas GPS gravadas sem internet ficam salvas em segurança neste dispositivo. Quando a internet é restaurada (ou ao clicar no botão abaixo), o sistema envia essas marcações para o servidor. <strong>Assim que a marcação sobe com sucesso, esta biblioteca é automaticamente esvaziada</strong> e o ponto passa para seu histórico oficial.
+            </div>
+
+            {/* Sync Button */}
+            {pendingOfflinePunchesList.length > 0 && (
+              <button
+                onClick={async () => {
+                  if (syncNow) {
+                    await syncNow();
+                  }
+                }}
+                disabled={isSyncing}
+                style={{
+                  width: "100%",
+                  background: "linear-gradient(135deg, #d97706, #b45309)",
+                  border: "none",
+                  borderRadius: 12,
+                  padding: "12px 16px",
+                  color: "#ffffff",
+                  fontSize: 13.5,
+                  fontWeight: 800,
+                  cursor: isSyncing ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  boxShadow: "0 4px 14px rgba(217,119,6,0.25)",
+                  marginBottom: 20,
+                  transition: "all 0.2s"
+                }}
+              >
+                <RefreshCw size={16} className={isSyncing ? "animate-spin" : ""} />
+                {isSyncing ? "Sincronizando Biblioteca com o Servidor..." : "🔄 Sincronizar Biblioteca Agora"}
+              </button>
+            )}
+
+            {/* List of Offline Punches */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {pendingOfflinePunchesList.length === 0 ? (
+                <div style={{
+                  textAlign: "center",
+                  padding: "32px 16px",
+                  background: t.surfaceAlt,
+                  borderRadius: 16,
+                  border: `1.5px dashed ${t.border}`
+                }}>
+                  <div style={{ fontSize: 42, marginBottom: 10 }}>✅</div>
+                  <h4 style={{ fontSize: 15, fontWeight: 800, color: t.text, margin: "0 0 6px 0" }}>
+                    Biblioteca Offline Esvaziada!
+                  </h4>
+                  <p style={{ fontSize: 12.5, color: t.textSub, margin: 0, lineHeight: 1.5 }}>
+                    Não há marcações pendentes. Todos os seus registros de ponto e localizações GPS subiram e foram sincronizados com sucesso na nuvem.
+                  </p>
+                </div>
+              ) : (
+                pendingOfflinePunchesList.map((item, i) => {
+                  const b = item.batida;
+                  const regTime = b.registradoEm ? new Date(b.registradoEm) : b.hora ? new Date(b.hora) : new Date();
+                  const dataFmt = regTime.toLocaleDateString("pt-BR");
+                  const horaFmt = regTime.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        background: t.surfaceAlt,
+                        border: `1.5px solid rgba(245,158,11,0.35)`,
+                        borderRadius: 14,
+                        padding: "14px 16px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 8
+                      }}
+                    >
+                      {/* Header item: Slot + Badge */}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{
+                            background: "#d97706",
+                            color: "#fff",
+                            fontSize: 11,
+                            fontWeight: 800,
+                            padding: "3px 8px",
+                            borderRadius: 6
+                          }}>
+                            {item.slotLabel}
+                          </span>
+                          <span style={{ fontSize: 13, fontWeight: 800, color: t.text }}>
+                            {dataFmt} às {horaFmt}
+                          </span>
+                        </div>
+                        <span style={{
+                          fontSize: 10.5,
+                          fontWeight: 700,
+                          color: "#d97706",
+                          background: "rgba(245,158,11,0.12)",
+                          padding: "2px 8px",
+                          borderRadius: 12,
+                          border: "1px solid rgba(245,158,11,0.3)"
+                        }}>
+                          ⏳ PENDENTE
+                        </span>
+                      </div>
+
+                      {/* Location Details */}
+                      <div style={{
+                        background: t.surface,
+                        border: `1px solid ${t.border}`,
+                        borderRadius: 10,
+                        padding: "10px 12px",
+                        fontSize: 11.5,
+                        color: t.textSub,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, color: t.text, fontWeight: 700 }}>
+                          <span>📍 Localização GPS Registrada:</span>
+                        </div>
+                        {b.latitude && b.longitude ? (
+                          <>
+                            <div>
+                              Coordenadas: <strong style={{ color: t.text, fontFamily: "monospace" }}>{b.latitude.toFixed(6)}, {b.longitude.toFixed(6)}</strong>
+                            </div>
+                            {b.accuracy !== undefined && (
+                              <div>
+                                Precisão do Sinal: <strong style={{ color: "#16a34a" }}>±{b.accuracy.toFixed(1)} metros</strong>
+                              </div>
+                            )}
+                            <div>
+                              Consentimento de Geolocalização: <strong style={{ color: "#16a34a" }}>Aceito e Anexado</strong>
+                            </div>
+                          </>
+                        ) : (
+                          <div style={{ color: t.textMuted, fontStyle: "italic" }}>
+                            Coordenadas de GPS em processamento no aparelho.
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Extra information (Tipo, Observação) */}
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: t.textMuted }}>
+                        <span>Tipo: {b.tipo === "manual" ? "Manual / Inclusão" : "Automático"}</span>
+                        {b.obs && <span>Obs: "{b.obs}"</span>}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{ marginTop: 20, textAlign: "center" }}>
+              <button
+                onClick={() => setOfflineModalOpen(false)}
+                style={{
+                  background: t.surfaceAlt,
+                  border: `1.5px solid ${t.border}`,
+                  borderRadius: 10,
+                  padding: "10px 20px",
+                  color: t.text,
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  cursor: "pointer"
+                }}
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Lançar Atestado Médico Modal */}
       {atestadoModalOpen && (

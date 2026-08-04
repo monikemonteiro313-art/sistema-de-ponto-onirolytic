@@ -3,8 +3,8 @@ import { initializeApp } from "firebase/app";
 import { Firestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, setLogLevel } from "firebase/firestore";
 import firebaseAppletConfig from "../../firebase-applet-config.json";
 
-// Configure Firestore SDK log level to suppress harmless connection warnings during offline/intermittent network mode
-setLogLevel("error");
+// Configure Firestore SDK log level to suppress connection warnings during offline/intermittent network mode
+setLogLevel("silent");
 
 // Configuração do Firebase carregada dinamicamente das configurações da plataforma
 const firebaseConfig = {

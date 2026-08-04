@@ -5,6 +5,8 @@ import { LoginScreen } from "./components/LoginScreen";
 import { WizardScreen } from "./components/WizardScreen";
 import { TermoCienciaScreen } from "./components/TermoCienciaScreen";
 import { GerenciarMarcacoesView } from "./components/GerenciarMarcacoesView";
+import { watchBestPosition } from "./utils/geolocationHelper";
+import { requestAllNativePermissions } from "./utils/nativePermissions";
 
 function lazyWithRetry(
   componentImport: () => Promise<any>,
@@ -503,13 +505,10 @@ export default function App() {
     dayPunches[batidaIdx] = updatedPunch;
     userDays[dayKey] = dayPunches;
 
-    const nextPontosGlobal = {
-      ...pontos,
+    updatePontos((prev) => ({
+      ...prev,
       [userId]: userDays,
-    };
-
-    updatePontos(nextPontosGlobal);
-    await saveUserPontosToDb(userId, userDays);
+    }));
 
     const log: AuditLogEntry = {
       id: Date.now(),
@@ -528,7 +527,7 @@ export default function App() {
       justificativa,
     };
 
-    await saveAuditLogToDb(log).catch((err) =>
+    saveAuditLogToDb(log).catch((err) =>
       console.warn("Erro ao salvar log de auditoria:", err)
     );
     handleAddLog(log.acao, log.quem, log.detalhe || "");
@@ -572,33 +571,14 @@ export default function App() {
       setSafeLocalStorageItem("hr_cached_pontos", next);
       savePontosToIndexedDB(next).catch(err => console.warn("[IndexedDB] savePontosToIndexedDB error:", err));
 
-      // Determine updated user points and sync to Firestore
+      // Sync updated user points to Firestore asynchronously in background
       for (const userIdStr of Object.keys(next)) {
         const userId = Number(userIdStr);
         const nextDays = next[userId];
         const prevDays = prev[userId];
         if (!prevDays || JSON.stringify(nextDays) !== JSON.stringify(prevDays)) {
-          saveUserPontosToDb(userId, nextDays).then((preparedDays) => {
-            if (preparedDays) {
-              setPontos((current) => {
-                const updated = {
-                  ...current,
-                  [userId]: preparedDays
-                };
-                setSafeLocalStorageItem("hr_cached_pontos", updated);
-                return updated;
-              });
-            }
-          }).catch(err => {
+          saveUserPontosToDb(userId, nextDays).catch(err => {
             console.warn("Failed to save pontos to Firestore (offline?):", err);
-            const errStr = String(err);
-            let errMsg = "Instabilidade de conexão detectada.";
-            if (errStr.includes("quota") || errStr.includes("Quota") || errStr.includes("QUOTA")) {
-              errMsg = "Limite temporário de requisições excedido. Seus dados continuam 100% seguros de forma local no seu aparelho.";
-            } else if (errStr.includes("offline") || errStr.includes("network") || errStr.includes("Network")) {
-              errMsg = "Seu dispositivo parece estar sem internet ou com sinal fraco. O ponto foi gravado de forma segura no aparelho.";
-            }
-            setSyncError(errMsg);
           });
         }
       }
@@ -1069,6 +1049,11 @@ export default function App() {
     window.addEventListener("online", handleOnline);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
+    // Solicita permissões nativas se estiver rodando em APK/Capacitor
+    requestAllNativePermissions().catch((err) => {
+      console.warn("[App Mount] Erro ao solicitar permissões nativas:", err);
+    });
+
     return () => {
       window.removeEventListener("online", handleOnline);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -1087,68 +1072,52 @@ export default function App() {
   const [userCoords, setUserCoords] = useState<{ latitude: number; longitude: number; accuracy?: number } | null>(null);
 
   useEffect(() => {
-    if (typeof window !== "undefined" && navigator.geolocation) {
-      let watchId: number | null = null;
-      let timeoutId: any = null;
+    let stopFn: (() => void) | null = null;
+    let timeoutId: any = null;
 
-      const clearGeoWatch = () => {
-        if (watchId !== null) {
-          navigator.geolocation.clearWatch(watchId);
-          watchId = null;
+    let bestCoords: { latitude: number; longitude: number; accuracy?: number } | null = null;
+
+    watchBestPosition(
+      (pos) => {
+        const curAcc = pos.coords.accuracy;
+        const newCoords = {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: curAcc
+        };
+
+        if (!bestCoords || (curAcc !== undefined && (bestCoords.accuracy === undefined || curAcc < bestCoords.accuracy))) {
+          bestCoords = newCoords;
         }
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
+
+        if (curAcc !== undefined && curAcc <= 30) {
+          setUserCoords(newCoords);
+          if (stopFn) { try { stopFn(); } catch (_) {} }
+          if (timeoutId) clearTimeout(timeoutId);
         }
-      };
-
-      const options = {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
-      };
-
-      let bestCoords: { latitude: number; longitude: number; accuracy?: number } | null = null;
-
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          const curAcc = pos.coords.accuracy;
-          const newCoords = {
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: curAcc
-          };
-
-          if (!bestCoords || (curAcc !== undefined && (bestCoords.accuracy === undefined || curAcc < bestCoords.accuracy))) {
-            bestCoords = newCoords;
-          }
-
-          if (curAcc !== undefined && curAcc <= 30) {
-            setUserCoords(newCoords);
-            clearGeoWatch();
-          }
-        },
-        (err) => {
-          console.warn("Erro ao obter localização:", err);
-          if (bestCoords) {
-            setUserCoords(bestCoords);
-          }
-          clearGeoWatch();
-        },
-        options
-      );
-
-      timeoutId = setTimeout(() => {
+      },
+      (err) => {
+        console.warn("Erro ao obter localização no App:", err);
         if (bestCoords) {
           setUserCoords(bestCoords);
         }
-        clearGeoWatch();
-      }, 10000);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    ).then((unwatch) => {
+      stopFn = unwatch;
+    });
 
-      return () => {
-        clearGeoWatch();
-      };
-    }
+    timeoutId = setTimeout(() => {
+      if (bestCoords) {
+        setUserCoords(bestCoords);
+      }
+      if (stopFn) { try { stopFn(); } catch (_) {} }
+    }, 10000);
+
+    return () => {
+      if (stopFn) { try { stopFn(); } catch (_) {} }
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [currentUser]);
 
   function handleAddLog(acao: string, alvo: string, detalhe = "") {
@@ -1169,75 +1138,58 @@ export default function App() {
     updateAuditLogs(prev => [newEntry, ...prev]);
 
     // Asynchronously update coordinates if available
-    if (typeof window !== "undefined" && navigator.geolocation) {
-      let watchId: number | null = null;
-      let timeoutId: any = null;
+    let stopFn: (() => void) | null = null;
+    let timeoutId: any = null;
 
-      const clearGeoWatch = () => {
-        if (watchId !== null) {
-          navigator.geolocation.clearWatch(watchId);
-          watchId = null;
-        }
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-          timeoutId = null;
-        }
-      };
+    let bestCoords: { latitude: number; longitude: number; accuracy?: number } | null = null;
 
-      const options = {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0
-      };
-
-      let bestCoords: { latitude: number; longitude: number; accuracy?: number } | null = null;
-
-      const updateLogWithCoords = (coords: { latitude: number; longitude: number; accuracy?: number }) => {
-        setUserCoords(coords);
-        updateAuditLogs(prev =>
-          prev.map(item =>
-            item.id === entryId
-              ? { ...item, latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy }
-              : item
-          )
-        );
-      };
-
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          const curAcc = pos.coords.accuracy;
-          const newCoords = {
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: curAcc
-          };
-
-          if (!bestCoords || (curAcc !== undefined && (bestCoords.accuracy === undefined || curAcc < bestCoords.accuracy))) {
-            bestCoords = newCoords;
-          }
-
-          if (curAcc !== undefined && curAcc <= 30) {
-            updateLogWithCoords(newCoords);
-            clearGeoWatch();
-          }
-        },
-        (err) => {
-          console.warn("Erro ao obter localização:", err);
-          if (bestCoords) {
-            updateLogWithCoords(bestCoords);
-          }
-          clearGeoWatch();
-        },
-        options
+    const updateLogWithCoords = (coords: { latitude: number; longitude: number; accuracy?: number }) => {
+      setUserCoords(coords);
+      updateAuditLogs(prev =>
+        prev.map(item =>
+          item.id === entryId
+            ? { ...item, latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy }
+            : item
+        )
       );
+    };
 
-      timeoutId = setTimeout(() => {
+    watchBestPosition(
+      (pos) => {
+        const curAcc = pos.coords.accuracy;
+        const newCoords = {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: curAcc
+        };
+
+        if (!bestCoords || (curAcc !== undefined && (bestCoords.accuracy === undefined || curAcc < bestCoords.accuracy))) {
+          bestCoords = newCoords;
+        }
+
+        if (curAcc !== undefined && curAcc <= 30) {
+          updateLogWithCoords(newCoords);
+          if (stopFn) { try { stopFn(); } catch (_) {} }
+          if (timeoutId) clearTimeout(timeoutId);
+        }
+      },
+      (err) => {
+        console.warn("Erro ao obter localização no log:", err);
         if (bestCoords) {
           updateLogWithCoords(bestCoords);
         }
-        clearGeoWatch();
-      }, 10000);
-    }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    ).then((unwatch) => {
+      stopFn = unwatch;
+    });
+
+    timeoutId = setTimeout(() => {
+      if (bestCoords) {
+        updateLogWithCoords(bestCoords);
+      }
+      if (stopFn) { try { stopFn(); } catch (_) {} }
+    }, 10000);
   }
 
   // Auth flow callbacks

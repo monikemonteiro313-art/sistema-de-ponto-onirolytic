@@ -1,0 +1,19 @@
+{
+  "appId": "com.pontodigital.app",
+  "appName": "Ponto Digital Pro",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "plugins": {
+    "Geolocation": {
+      "permissions": ["location"]
+    },
+    "Camera": {
+      "permissions": ["camera", "photos"]
+    }
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  }
+}

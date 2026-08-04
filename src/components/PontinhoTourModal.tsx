@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { ThemeColors } from "../types";
-import { Clock, FileText, Calendar, SquarePen, ArrowLeft, CheckCircle, VolumeX, Upload, MapPin, Check, X, Stethoscope, Folder } from "lucide-react";
+import { Clock, FileText, Calendar, SquarePen, ArrowLeft, CheckCircle, VolumeX, Upload, MapPin, Check, X, Stethoscope, Folder, Wifi, RefreshCw } from "lucide-react";
 
 interface PontinhoTourModalProps {
   isOpen: boolean;
@@ -10,7 +10,7 @@ interface PontinhoTourModalProps {
   initialStep?: number;
 }
 
-type GuideOption = null | "bater_ponto" | "atestado" | "marcacoes" | "correcao";
+type GuideOption = null | "bater_ponto" | "atestado" | "marcacoes" | "correcao" | "offline";
 
 export const PontinhoTourModal: React.FC<PontinhoTourModalProps> = ({
   isOpen,
@@ -261,6 +261,12 @@ export const PontinhoTourModal: React.FC<PontinhoTourModalProps> = ({
                   "ESQUECEU DE BATER O PONTO? VEJA COMO SOLICITAR UMA CORREÇÃO DE HORÁRIO PARA AVALIAÇÃO DO SEU GESTOR:"
                 </div>
               )}
+
+              {selectedOption === "offline" && (
+                <div style={{ fontSize: 16, fontWeight: 800, color: t.text, lineHeight: 1.45 }}>
+                  "FIQUE TRANQUILO(A)! SE O SEU CELULAR FICAR SEM INTERNET, SEU PONTO É SALVO NO APARELHO E ENVIADO ASSIM QUE O SINAL VOLTAR:"
+                </div>
+              )}
             </div>
           </div>
 
@@ -460,6 +466,54 @@ export const PontinhoTourModal: React.FC<PontinhoTourModalProps> = ({
                     </div>
                   </div>
                   <div style={{ background: "#f59e0b", color: "#ffffff", padding: "8px 14px", borderRadius: 12, fontSize: 13, fontWeight: 900, whiteSpace: "nowrap" }}>
+                    VER GUIA ➔
+                  </div>
+                </button>
+
+                {/* Option 5 - Registros sem Internet */}
+                <button
+                  type="button"
+                  onClick={() => setSelectedOption("offline")}
+                  style={{
+                    background: "rgba(217,119,6,0.08)",
+                    border: "2.5px solid #d97706",
+                    borderRadius: 18,
+                    padding: "16px 20px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 14,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    transition: "all 0.2s"
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                    <div
+                      style={{
+                        background: "#d97706",
+                        color: "#ffffff",
+                        width: 44,
+                        height: 44,
+                        borderRadius: 14,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0
+                      }}
+                    >
+                      <Wifi size={24} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 18, fontWeight: 900, color: "#d97706", textTransform: "uppercase" }}>
+                        5. REGISTROS SEM INTERNET (MODO OFFLINE)
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: t.text, marginTop: 2 }}>
+                        Sem Wi-Fi ou sinal no celular? Veja como suas batidas ficam guardadas com segurança no aparelho.
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ background: "#d97706", color: "#ffffff", padding: "8px 14px", borderRadius: 12, fontSize: 13, fontWeight: 900, whiteSpace: "nowrap" }}>
                     VER GUIA ➔
                   </div>
                 </button>
@@ -790,6 +844,72 @@ export const PontinhoTourModal: React.FC<PontinhoTourModalProps> = ({
                     <CheckCircle size={20} />
                     <span>📤 Enviar Solicitação para a Chefia</span>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* DETAIL VIEW 5: REGISTROS SEM INTERNET */}
+          {selectedOption === "offline" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div style={{ fontSize: 18, fontWeight: 900, color: "#d97706", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 8 }}>
+                📡 PASSO A PASSO: MARCAÇÃO SEM INTERNET (MODO OFFLINE)
+              </div>
+
+              {/* Step 1 */}
+              <div style={{ background: t.surfaceAlt, border: `2px solid ${t.border}`, borderRadius: 18, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 16, fontWeight: 900, color: t.text, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ background: "#d97706", color: "#fff", width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 900 }}>1</span>
+                  PODE BATER O PONTO NORMALMENTE:
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: t.textSub, lineHeight: 1.5 }}>
+                  Se você estiver sem Wi-Fi ou sem 4G/5G, não tem problema! Clique no botão de ponto como faria normalmente. O aplicativo grava a **hora exata** e suas **coordenadas de GPS** no momento do clique.
+                </div>
+              </div>
+
+              {/* Step 2 */}
+              <div style={{ background: t.surfaceAlt, border: `2px solid ${t.border}`, borderRadius: 18, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 16, fontWeight: 900, color: t.text, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ background: "#d97706", color: "#fff", width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 900 }}>2</span>
+                  SUA MARCAÇÃO FICA NO "COFRE DE SEGURANÇA":
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: t.textSub, lineHeight: 1.5 }}>
+                  Enquanto não há conexão, a batida fica salva na sua aba <strong>"REGISTROS SEM INTERNET"</strong> (Biblioteca Offline). Você pode clicar nessa aba a qualquer momento para ver quais batidas estão aguardando sinal.
+                </div>
+
+                {/* Button Mockup */}
+                <div style={{ display: "flex", justifyContent: "center", margin: "6px 0" }}>
+                  <div
+                    style={{
+                      background: "rgba(245,158,11,0.15)",
+                      border: "1.5px solid #d97706",
+                      borderRadius: 12,
+                      padding: "10px 20px",
+                      fontSize: 14,
+                      fontWeight: 800,
+                      color: "#d97706",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8
+                    }}
+                  >
+                    <span>📡 REGISTROS SEM INTERNET (1 PENDENTE)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 3 */}
+              <div style={{ background: t.surfaceAlt, border: `2px solid ${t.border}`, borderRadius: 18, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 16, fontWeight: 900, color: t.text, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ background: "#d97706", color: "#fff", width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 900 }}>3</span>
+                  ENVIO AUTOMÁTICO E ESVAZIAMENTO DA BIBLIOTECA:
+                </div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: t.textSub, lineHeight: 1.5 }}>
+                  Assim que o seu celular reconectar à internet (ou quando você abrir a aba e clicar em Sincronizar), a batida sobe para o servidor da empresa. <strong>Assim que a batida sobe, a biblioteca offline é esvaziada automaticamente!</strong>
+                </div>
+
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#16a34a", background: "rgba(34,197,94,0.1)", padding: "10px 14px", borderRadius: 12, border: "1px solid rgba(34,197,94,0.3)" }}>
+                  ✅ Pronto! Você não perde nenhuma marcação e nem a sua localização de GPS mesmo em locais sem sinal.
                 </div>
               </div>
             </div>

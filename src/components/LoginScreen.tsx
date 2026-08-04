@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Shield, Lock, Sun, Moon, Clock, ShieldCheck, Sparkles, RefreshCw, AlertTriangle, ShieldAlert } from "lucide-react";
+import { Shield, Lock, Sun, Moon, Clock, ShieldCheck, Sparkles, RefreshCw, AlertTriangle, ShieldAlert, KeyRound } from "lucide-react";
 import { ThemeColors, User } from "../types";
 import { Btn, PwInput } from "./SharedUI";
 import { LgpdModal } from "./LgpdModal";
@@ -18,6 +18,14 @@ interface LoginScreenProps {
 }
 
 export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMode, onToggleTheme, onAddLog, onSendDenuncia }: LoginScreenProps) {
+  const [rememberPw, setRememberPw] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("hr_remember_pw") === "true";
+    } catch (_) {
+      return false;
+    }
+  });
+
   const [mat, setMat] = useState(() => {
     try {
       const lastUser = localStorage.getItem("hr_current_user");
@@ -25,12 +33,29 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
         const parsed = JSON.parse(lastUser);
         if (parsed && parsed.matricula) return parsed.matricula;
       }
+      const savedMat = localStorage.getItem("hr_saved_mat");
+      if (savedMat) return savedMat;
       const lastMat = localStorage.getItem("hr_last_matricula");
       if (lastMat) return lastMat;
     } catch (_) {}
     return "";
   });
-  const [pw, setPw] = useState("");
+
+  const [pw, setPw] = useState(() => {
+    try {
+      const isRemembered = localStorage.getItem("hr_remember_pw") === "true";
+      if (isRemembered) {
+        const savedMat = localStorage.getItem("hr_saved_mat") || localStorage.getItem("hr_last_matricula");
+        if (savedMat) {
+          const savedPwForMat = localStorage.getItem(`hr_saved_pw_${savedMat}`);
+          if (savedPwForMat) return savedPwForMat;
+        }
+        const savedPw = localStorage.getItem("hr_saved_pw");
+        if (savedPw) return savedPw;
+      }
+    } catch (_) {}
+    return "";
+  });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [focused, setFocused] = useState<string | null>(null);
@@ -291,7 +316,19 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
 
     setLoading(true);
     try {
-      localStorage.setItem("hr_last_matricula", mat.trim());
+      const cleanMat = mat.trim();
+      localStorage.setItem("hr_last_matricula", cleanMat);
+      if (rememberPw) {
+        localStorage.setItem("hr_remember_pw", "true");
+        localStorage.setItem("hr_saved_mat", cleanMat);
+        localStorage.setItem("hr_saved_pw", pw);
+        localStorage.setItem(`hr_saved_pw_${cleanMat}`, pw);
+      } else {
+        localStorage.setItem("hr_remember_pw", "false");
+        localStorage.removeItem("hr_saved_pw");
+        localStorage.removeItem("hr_saved_mat");
+        localStorage.removeItem(`hr_saved_pw_${cleanMat}`);
+      }
     } catch (_) {}
     setTimeout(() => {
       setLoading(false);
@@ -578,8 +615,17 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
             placeholder={isAdminMode ? "Ex: ADM001" : "Ex: 100100 ou 200100"}
             value={mat}
             onChange={e => {
-              setMat(e.target.value);
+              const val = e.target.value;
+              setMat(val);
               setError("");
+              if (rememberPw && val.trim()) {
+                try {
+                  const savedForMat = localStorage.getItem(`hr_saved_pw_${val.trim()}`) || localStorage.getItem("hr_saved_pw");
+                  if (savedForMat) {
+                    setPw(savedForMat);
+                  }
+                } catch (_) {}
+              }
             }}
             onFocus={() => setFocused("mat")}
             onBlur={() => setFocused(null)}
@@ -588,7 +634,7 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
           />
         </div>
 
-        <div style={{ marginBottom: 6 }}>
+        <div style={{ marginBottom: 12 }}>
           <label
             style={{
               display: "block",
@@ -603,6 +649,51 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
             Senha
           </label>
           <PwInput value={pw} onChange={setPw} placeholder={isAdminMode ? "Senha ADM-Dev" : "Senha"} t={t} />
+
+          {/* Botão / Checkbox para Lembrar Senha em Dispositivos Mobile / Offline */}
+          <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
+                userSelect: "none",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                color: rememberPw ? t.accent : t.textSub,
+                transition: "color 0.2s"
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={rememberPw}
+                onChange={e => {
+                  const checked = e.target.checked;
+                  setRememberPw(checked);
+                  if (!checked) {
+                    try {
+                      localStorage.setItem("hr_remember_pw", "false");
+                      localStorage.removeItem("hr_saved_pw");
+                      localStorage.removeItem("hr_saved_mat");
+                      if (mat.trim()) localStorage.removeItem(`hr_saved_pw_${mat.trim()}`);
+                    } catch (_) {}
+                  }
+                }}
+                style={{
+                  width: 17,
+                  height: 17,
+                  accentColor: t.accent,
+                  cursor: "pointer",
+                  borderRadius: 4
+                }}
+              />
+              <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <KeyRound size={14} color={rememberPw ? t.accent : t.textMuted} />
+                Lembrar a senha neste celular (Offline/Mobile)
+              </span>
+            </label>
+          </div>
         </div>
 
         {inactivityNotice && (

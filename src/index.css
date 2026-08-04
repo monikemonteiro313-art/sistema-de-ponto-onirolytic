@@ -12,6 +12,39 @@ body {
   padding: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  min-height: 100vh;
+  min-height: -webkit-fill-available;
+}
+
+/* Smooth inertial momentum scrolling for mobile devices and WebViews */
+* {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Prevent auto-zoom on mobile (iOS Safari & Android WebView) when focusing inputs */
+input, select, textarea {
+  font-size: 16px;
+}
+@media (max-width: 768px) {
+  input:not([type="checkbox"]):not([type="radio"]), 
+  select, 
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Modal safe area spacing & touch scrolling */
+div[style*="position: fixed"] > div,
+div[style*="position:fixed"] > div {
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Tabular numbers for clean clock rendering */

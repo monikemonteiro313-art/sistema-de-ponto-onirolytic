@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Registro de Ponto</string>
+    <string name="title_activity_main">Registro de Ponto</string>
+    <string name="package_name">com.empresa.ponto</string>
+    <string name="custom_url_scheme">com.empresa.ponto</string>
+</resources>

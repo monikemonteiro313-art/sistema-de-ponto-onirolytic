@@ -136,9 +136,16 @@ function cleanObject(obj: any): any {
     )) {
       return obj;
     }
-    // Also check if it's a Firestore Timestamp
+    // Convert Firestore Timestamp or serialized Timestamp object to ISO string
     if (obj.toDate && typeof obj.toDate === "function") {
-      return obj;
+      try {
+        return obj.toDate().toISOString();
+      } catch {
+        return new Date().toISOString();
+      }
+    }
+    if (typeof obj.seconds === "number" && typeof obj.nanoseconds === "number" && Object.keys(obj).length === 2) {
+      return new Date(obj.seconds * 1000).toISOString();
     }
     const cleaned: any = {};
     for (const key of Object.keys(obj)) {
@@ -247,7 +254,17 @@ async function prepareDaysForFirestore(days: any): Promise<any> {
           if (!punch) return null;
           const newPunch = { ...punch };
           if (newPunch.serverTime === "pending" || !newPunch.serverTime) {
-            newPunch.serverTime = Timestamp.now();
+            newPunch.serverTime = new Date().toISOString();
+          } else if (typeof newPunch.serverTime === "object") {
+            if (typeof newPunch.serverTime.toDate === "function") {
+              try {
+                newPunch.serverTime = newPunch.serverTime.toDate().toISOString();
+              } catch {
+                newPunch.serverTime = new Date().toISOString();
+              }
+            } else if (typeof newPunch.serverTime.seconds === "number") {
+              newPunch.serverTime = new Date(newPunch.serverTime.seconds * 1000).toISOString();
+            }
           }
           // Quando vai para o Firestore, o ponto deixa de ser considerado offline/local pendente
           if (newPunch.gravadoOffline) {
@@ -383,7 +400,8 @@ export async function saveUserPontosToDb(userId: number, days: any): Promise<any
     await setDoc(doc(db, "pontos", String(userId)), cleanObject({ days: preparedDays }));
     return preparedDays;
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `pontos/${userId}`);
+    console.warn(`[Firebase] Error saving pontos for user ${userId} to Firestore (offline?):`, error);
+    return days;
   }
 }
 

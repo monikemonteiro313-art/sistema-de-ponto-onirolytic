@@ -202,7 +202,7 @@ export function GerenciarMarcacoesView({
       setTimeout(() => {
         setModalData(null);
         setSaveSuccessMsg("");
-      }, 1200);
+      }, 350);
     } catch (err: any) {
       console.error("Erro ao salvar marcação:", err);
       setModalError("Ocorreu um erro ao salvar no banco de dados. Tente novamente.");

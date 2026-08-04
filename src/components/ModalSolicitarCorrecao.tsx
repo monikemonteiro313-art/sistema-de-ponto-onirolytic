@@ -19,6 +19,8 @@ interface ModalSolicitarCorrecaoProps {
   }) => Promise<void>;
 }
 
+import { getBestCurrentPosition } from "../utils/geolocationHelper";
+
 export function ModalSolicitarCorrecao({
   isOpen,
   onClose,
@@ -66,40 +68,31 @@ export function ModalSolicitarCorrecao({
     }
   }, [isOpen]);
 
-  const captureLocation = () => {
-    if (!navigator.geolocation) {
-      setGeoStatus("error");
-      setGeoErrorMsg("Geolocalização não é suportada neste navegador.");
-      return;
-    }
-
+  const captureLocation = async () => {
     setGeoStatus("loading");
     setGeoErrorMsg(null);
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLat(pos.coords.latitude);
-        setLng(pos.coords.longitude);
-        setAccuracy(Math.round(pos.coords.accuracy));
-        setGeoStatus("success");
-      },
-      (err) => {
-        console.warn("[GPS] Erro ao obter localização:", err);
-        setGeoStatus("error");
-        if (err.code === err.PERMISSION_DENIED) {
-          setGeoErrorMsg("Permissão de localização negada pelo usuário.");
-        } else if (err.code === err.POSITION_UNAVAILABLE) {
-          setGeoErrorMsg("Sinal de GPS indisponível no momento.");
-        } else {
-          setGeoErrorMsg("Não foi possível obter a localização exata.");
-        }
-      },
-      {
+    try {
+      const pos = await getBestCurrentPosition({
         enableHighAccuracy: true,
         timeout: 10000,
         maximumAge: 0
+      });
+      setLat(pos.coords.latitude);
+      setLng(pos.coords.longitude);
+      setAccuracy(Math.round(pos.coords.accuracy));
+      setGeoStatus("success");
+    } catch (err: any) {
+      console.warn("[GPS] Erro ao obter localização:", err);
+      setGeoStatus("error");
+      if (err?.code === 1 || String(err?.message || "").includes("denied") || String(err?.message || "").includes("recusado")) {
+        setGeoErrorMsg("Permissão de localização negada pelo usuário ou pelo aplicativo.");
+      } else if (err?.code === 2) {
+        setGeoErrorMsg("Sinal de GPS indisponível no momento.");
+      } else {
+        setGeoErrorMsg("Não foi possível obter a localização exata.");
       }
-    );
+    }
   };
 
   const resetForm = () => {

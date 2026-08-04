@@ -627,13 +627,10 @@ export function AdmOperadorPanel({
     dayPunches[batidaIdx] = updatedPunch;
     userDays[dayKey] = dayPunches;
 
-    const nextPontosGlobal = {
-      ...pontosGlobal,
+    setPontosGlobal((prev) => ({
+      ...prev,
       [userId]: userDays,
-    };
-
-    setPontosGlobal(nextPontosGlobal);
-    await saveUserPontosToDb(userId, userDays);
+    }));
 
     const log: AuditLogEntry = {
       id: Date.now(),
