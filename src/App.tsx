@@ -265,7 +265,7 @@ export default function App() {
 
         const [rawDbUsers, dbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, wizardDone, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
           safeFetch(() => fetchAllUsers(), [] as User[], "users"),
-          safeFetch(() => fetchAllPontos(5), {} as PontosGlobal, "pontos"),
+          safeFetch(() => fetchAllPontos(0), {} as PontosGlobal, "pontos"),
           safeFetch(() => fetchAuditLogs(), [] as AuditLogEntry[], "auditLogs"),
           safeFetch(() => fetchMinimoHoras(), 7, "minimoHoras"),
           safeFetch(() => fetchEmpresaConfig(), { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" } as EmpresaConfig, "empresaConfig"),

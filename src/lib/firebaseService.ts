@@ -321,7 +321,7 @@ function resolveTimestamps(days: any): any {
 }
 
 // Pontos functions
-export async function fetchAllPontos(limitRecentDays: number = 5): Promise<PontosGlobal> {
+export async function fetchAllPontos(limitRecentDays: number = 0): Promise<PontosGlobal> {
   try {
     const snapshot = await getDocs(collection(db, "pontos"));
     const pontos: PontosGlobal = {};
@@ -369,14 +369,28 @@ export async function fetchUserFullPontos(userId: number): Promise<Record<string
 export async function saveUserPontosToDb(userId: number, days: any): Promise<any> {
   try {
     const preparedDays = await prepareDaysForFirestore(days);
-    const payload = cleanObject({ days: preparedDays });
+
+    // Fetch existing document from Firestore to merge days so no historical days are overwritten or lost
+    let existingDays: Record<string, any> = {};
+    try {
+      const docRef = doc(db, "pontos", String(userId));
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists() && docSnap.data()?.days) {
+        existingDays = resolveTimestamps(docSnap.data().days);
+      }
+    } catch (fetchErr) {
+      console.warn(`[FirebaseService] Pre-fetch of points for user ${userId} skipped (offline?):`, fetchErr);
+    }
+
+    const mergedDays = { ...existingDays, ...preparedDays };
+    const payload = cleanObject({ days: mergedDays });
 
     // Safety guard for Firestore 1MB document limit (1,048,576 bytes)
     const jsonStr = JSON.stringify(payload);
     if (jsonStr.length > 850000) {
       console.warn(`[FirebaseService] Payload size for user ${userId} is large (${jsonStr.length} bytes). Applying extra compression...`);
-      for (const dayKey of Object.keys(preparedDays)) {
-        const dayArr = preparedDays[dayKey];
+      for (const dayKey of Object.keys(mergedDays)) {
+        const dayArr = mergedDays[dayKey];
         if (Array.isArray(dayArr)) {
           for (const punch of dayArr) {
             if (punch && punch.fotoAtestado && typeof punch.fotoAtestado === "string") {
@@ -397,8 +411,8 @@ export async function saveUserPontosToDb(userId: number, days: any): Promise<any
       }
     }
 
-    await setDoc(doc(db, "pontos", String(userId)), cleanObject({ days: preparedDays }));
-    return preparedDays;
+    await setDoc(doc(db, "pontos", String(userId)), cleanObject({ days: mergedDays }));
+    return mergedDays;
   } catch (error) {
     console.warn(`[Firebase] Error saving pontos for user ${userId} to Firestore (offline?):`, error);
     return days;
@@ -530,7 +544,7 @@ export async function fetchAllPrePontos(): Promise<PrePonto[]> {
 
 export async function savePrePontoToDb(prePonto: PrePonto): Promise<void> {
   try {
-    await setDoc(doc(db, "prePontos", prePonto.id), cleanObject(prePonto));
+    await setDoc(doc(db, "prePontos", prePonto.id), cleanObject(prePonto), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `prePontos/${prePonto.id}`);
   }

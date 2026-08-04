@@ -229,16 +229,7 @@ export function AdmPanel({
       for (const dayKey of Object.keys(userDays)) {
         const dayPoints = userDays[dayKey] || [];
         
-        // Count odd punches (any day with an odd number of valid non-duplicate punches, or has pendenteJustificativa)
-        const validPunches = dayPoints.filter(p => p && p.hora && !p.duplicadoOculto);
-        if (validPunches.length > 0 && validPunches.length % 2 !== 0) {
-          oddPunches++;
-        } else {
-          const hasPending = dayPoints.some(p => p && p.pendenteJustificativa);
-          if (hasPending) {
-            oddPunches++;
-          }
-        }
+        // Odd punches check removed (no longer valid)
 
         for (const p of dayPoints) {
           if (!p) continue;
@@ -305,25 +296,18 @@ export function AdmPanel({
           const dayPoints = [...(userDays[dayKey] || [])];
           let dayPointsChanged = false;
           
-          // 1. Check Odd Punches (Batidas Ímpares) - ANY day in history!
-          const validPunches = dayPoints.filter(p => p && p.hora && !p.duplicadoOculto);
-          if (validPunches.length > 0 && validPunches.length % 2 !== 0) {
-            let dayChanged = false;
-            const updatedPunches = dayPoints.map(p => {
-              if (p && !p.pendenteJustificativa) {
-                dayChanged = true;
-                return { ...p, pendenteJustificativa: true };
-              }
-              return p;
-            });
-            
-            if (dayChanged) {
-              dayPoints.splice(0, dayPoints.length, ...updatedPunches);
+          // 1. Clear any legacy pendenteJustificativa flags (Autocura Batida Impar is disabled)
+          const updatedPunches = dayPoints.map(p => {
+            if (p && p.pendenteJustificativa) {
+              const cleaned = { ...p };
+              delete cleaned.pendenteJustificativa;
               dayPointsChanged = true;
-              oddPunchesCount++;
-              logs.push(`⚠️ [Batida Ímpar] Identificada inconsistência para ${u.nome} em ${dayKey}. Flag de pendência criada para justificativa.`);
-              addLog("Autocura: Batida Ímpar", `${u.nome} (${u.matricula})`, `Identificada batida ímpar em ${dayKey}. Solicitada justificativa.`);
+              return cleaned;
             }
+            return p;
+          });
+          if (dayPointsChanged) {
+            dayPoints.splice(0, dayPoints.length, ...updatedPunches);
           }
           
           // 2. Double Clicks (< 60 seconds interval)

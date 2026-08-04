@@ -632,6 +632,10 @@ export function AdmOperadorPanel({
       [userId]: userDays,
     }));
 
+    await saveUserPontosToDb(userId, userDays).catch((err) =>
+      console.warn("Erro ao salvar pontos no Firestore:", err)
+    );
+
     const log: AuditLogEntry = {
       id: Date.now(),
       quando: new Date().toISOString(),
@@ -656,7 +660,7 @@ export function AdmOperadorPanel({
       onAddLog(log.acao, log.quem, log.detalhe || "");
     }
   };
-  const [preFilter, setPreFilter] = useState<"todos" | "sucesso" | "fantasma" | "cancelado" | "ativo">("todos");
+  const [preFilter, setPreFilter] = useState<"todos" | "sucesso" | "offline" | "cancelado" | "ativo">("todos");
   const [atestadoAmpliado, setAtestadoAmpliado] = useState<{ userName: string; dayKey: string; cid: string; foto: string } | null>(null);
   const [atestadoZoom, setAtestadoZoom] = useState<number>(1);
   const [atestadoRotacao, setAtestadoRotacao] = useState<number>(0);
@@ -670,11 +674,42 @@ export function AdmOperadorPanel({
   } | null>(null);
   const [justificativaRecusaInput, setJustificativaRecusaInput] = useState("");
 
+  const computedPrePontos = useMemo(() => {
+    return prePontos.map(pre => {
+      // Cross-reference with real points supporting string/number user IDs
+      const userRegs = pontosGlobal[pre.userId] || pontosGlobal[String(pre.userId)];
+      const dayPunches = userRegs?.[pre.dayKey];
+      
+      // A real punch matches if there is an item at pre.idx or any punch registered on that dayKey
+      let realBatida: any = null;
+      if (Array.isArray(dayPunches) && dayPunches.length > 0) {
+        realBatida = dayPunches[pre.idx] || dayPunches[0];
+      }
+      
+      let calcStatus: "sucesso" | "cancelado" | "offline" | "ativo" = "offline";
+      if (realBatida) {
+        calcStatus = "sucesso";
+      } else if (pre.status === "cancelado") {
+        calcStatus = "cancelado";
+      } else if (pre.status === "pendente") {
+        calcStatus = "ativo";
+      } else {
+        calcStatus = "offline";
+      }
+
+      return {
+        ...pre,
+        calcStatus,
+        realBatida
+      };
+    }).sort((a, b) => new Date(b.quando).getTime() - new Date(a.quando).getTime());
+  }, [prePontos, pontosGlobal]);
+
   const pendenciasCalculadas = useMemo(() => {
     let atestadosPendentes = 0;
     let pontosManuaisPendentes = 0;
     Object.keys(pontosGlobal).forEach(uId => {
-      const days = pontosGlobal[Number(uId)];
+      const days = pontosGlobal[uId] || pontosGlobal[Number(uId)] || pontosGlobal[String(uId)];
       if (days) {
         Object.keys(days).forEach(dKey => {
           const arr = days[dKey];
@@ -692,7 +727,7 @@ export function AdmOperadorPanel({
       }
     });
 
-    const prePontosPendentes = (prePontos || []).filter(p => p.status === "pendente").length;
+    const prePontosPendentes = computedPrePontos.filter(p => p.calcStatus === "offline" || p.calcStatus === "ativo").length;
 
     const hoje = new Date().toISOString().slice(0, 10);
     let prevDate = new Date();
@@ -702,7 +737,7 @@ export function AdmOperadorPanel({
     let batidasIncompletas = 0;
     const colabs = users.filter(u => u.tipo !== "adm-dev" && !u.desativado);
     colabs.forEach(colab => {
-      const userDays = pontosGlobal[colab.id];
+      const userDays = pontosGlobal[colab.id] || pontosGlobal[String(colab.id)];
       if (userDays) {
         [hoje, ontem].forEach(dk => {
           const arr = userDays[dk];
@@ -723,7 +758,7 @@ export function AdmOperadorPanel({
       batidasIncompletas,
       total: atestadosPendentes + pontosManuaisPendentes + prePontosPendentes + batidasIncompletas
     };
-  }, [pontosGlobal, prePontos, users]);
+  }, [pontosGlobal, computedPrePontos, users]);
 
   function handleAceitarAtestado(item: { userId: number; userName: string; dayKey: string; batidaIdx: number; cid: string }) {
     const userRegs = pontosGlobal[item.userId] || {};
@@ -1763,35 +1798,165 @@ export function AdmOperadorPanel({
 
   const colaboradores = useMemo(() => users.filter(u => u.tipo !== "adm-dev" && !u.desativado), [users]);
 
-  const computedPrePontos = useMemo(() => {
-    return prePontos.map(pre => {
-      // Cross-reference with real points
-      const userRegs = pontosGlobal[pre.userId];
-      const realBatida = userRegs?.[pre.dayKey]?.[pre.idx];
-      
-      // Check timing
-      const elapsedMinutes = (Date.now() - new Date(pre.quando).getTime()) / 60000;
-      
-      let calcStatus: "sucesso" | "cancelado" | "fantasma" | "ativo" = "ativo";
-      if (realBatida) {
-        calcStatus = "sucesso";
-      } else if (pre.status === "cancelado") {
-        calcStatus = "cancelado";
-      } else if (pre.status === "sucesso" && !realBatida) {
-        calcStatus = "fantasma"; // clicked confirm but did not reach database!
-      } else if (pre.status === "pendente" && elapsedMinutes > 2) {
-        calcStatus = "fantasma"; // pending for more than 2 minutes -> ghost click/dropped!
-      } else {
-        calcStatus = "ativo"; // pending but fresh click (< 2 min)
+  const handleIncorporarPrePonto = async (pre: PrePonto) => {
+    try {
+      const userId = pre.userId;
+      const userRegs = { ...(pontosGlobal[userId] || pontosGlobal[String(userId)] || {}) };
+      const dayArr = [...(userRegs[pre.dayKey] || [null, null, null, null])];
+      while (dayArr.length < 4) dayArr.push(null);
+
+      // Duplicate check: skip if a punch exists on this day within 10 minutes
+      const preTime = new Date(pre.quando).getTime();
+      const isDuplicateTime = dayArr.some(b => {
+        if (!b || !b.hora) return false;
+        const bTime = new Date(b.hora).getTime();
+        return Math.abs(bTime - preTime) < 10 * 60 * 1000;
+      });
+
+      if (isDuplicateTime) {
+        showToast("Já existe uma marcação na folha neste horário (duplicada ignorada).", "warning");
+        return;
       }
 
-      return {
-        ...pre,
-        calcStatus,
-        realBatida
+      let targetIdx = pre.idx;
+      if (targetIdx < 0 || targetIdx >= 4 || dayArr[targetIdx] !== null) {
+        const firstEmpty = dayArr.findIndex(s => s === null);
+        if (firstEmpty !== -1) {
+          targetIdx = firstEmpty;
+        } else {
+          showToast("Cartão de ponto do colaborador já possui as 4 marcações preenchidas.", "warning");
+          return;
+        }
+      }
+
+      const novaBatida: Batida = {
+        hora: pre.quando,
+        tipo: pre.tipo || "auto",
+        registradoEm: pre.quando,
+        dispositivoLocalHora: pre.quando,
+        gravadoOffline: true,
+        obs: "Incorporado da biblioteca offline (Pré-Ponto " + (pre.id || "") + ")"
       };
-    }).sort((a, b) => new Date(b.quando).getTime() - new Date(a.quando).getTime());
-  }, [prePontos, pontosGlobal]);
+
+      dayArr[targetIdx] = novaBatida;
+      const nextUserDays = { ...userRegs, [pre.dayKey]: dayArr };
+
+      setPontosGlobal(prev => ({
+        ...prev,
+        [userId]: nextUserDays
+      }));
+
+      await saveUserPontosToDb(userId, nextUserDays);
+
+      onAddLog(
+        "Resgatou Ponto Offline",
+        `${currentUser.nome} (${currentUser.matricula})`,
+        `Resgatou clique de intenção de ${pre.userName} (Mat. ${pre.matricula}) do dia ${pre.dayKey} às ${new Date(pre.quando).toLocaleTimeString("pt-BR")} diretamente para o cartão de ponto.`
+      );
+
+      showToast(`Ponto de ${pre.userName} resgatado e gravado com sucesso!`);
+    } catch (err) {
+      console.error("Erro ao resgatar pré-ponto:", err);
+      showToast("Erro ao resgatar ponto offline.", "error");
+    }
+  };
+
+  const handleIncorporarTodosSemDuplicidade = async () => {
+    try {
+      const pendentesOuOffline = computedPrePontos.filter(
+        p => p.calcStatus === "offline" || p.calcStatus === "ativo"
+      );
+
+      if (pendentesOuOffline.length === 0) {
+        showToast("Não há cliques offline pendentes para resgate no momento.", "info");
+        return;
+      }
+
+      let resgatadosCount = 0;
+      let duplicadosIgnorados = 0;
+
+      const updatedGlobal: PontosGlobal = { ...pontosGlobal };
+
+      // Sort pre-points chronologically
+      const sortedPre = [...pendentesOuOffline].sort(
+        (a, b) => new Date(a.quando).getTime() - new Date(b.quando).getTime()
+      );
+
+      const userIdsModificados = new Set<number | string>();
+
+      for (const pre of sortedPre) {
+        const uId = pre.userId;
+        const userRegs = { ...(updatedGlobal[uId] || updatedGlobal[String(uId)] || {}) };
+        const dayArr = [...(userRegs[pre.dayKey] || [null, null, null, null])];
+        while (dayArr.length < 4) dayArr.push(null);
+
+        const preTime = new Date(pre.quando).getTime();
+
+        // Check duplicate within 10 minutes
+        const isDuplicateTime = dayArr.some(b => {
+          if (!b || !b.hora) return false;
+          const bTime = new Date(b.hora).getTime();
+          return Math.abs(bTime - preTime) < 10 * 60 * 1000;
+        });
+
+        if (isDuplicateTime) {
+          duplicadosIgnorados++;
+          continue;
+        }
+
+        let targetIdx = pre.idx;
+        if (targetIdx < 0 || targetIdx >= 4 || dayArr[targetIdx] !== null) {
+          const emptyIndex = dayArr.findIndex(slot => slot === null);
+          if (emptyIndex !== -1) {
+            targetIdx = emptyIndex;
+          } else {
+            duplicadosIgnorados++;
+            continue;
+          }
+        }
+
+        const novaBatida: Batida = {
+          hora: pre.quando,
+          tipo: pre.tipo || "auto",
+          registradoEm: pre.quando,
+          dispositivoLocalHora: pre.quando,
+          gravadoOffline: true,
+          obs: "Resgatado de Pré-Ponto Offline"
+        };
+
+        dayArr[targetIdx] = novaBatida;
+        userRegs[pre.dayKey] = dayArr;
+        updatedGlobal[uId] = userRegs;
+        userIdsModificados.add(uId);
+        resgatadosCount++;
+      }
+
+      setPontosGlobal(updatedGlobal);
+
+      for (const uId of userIdsModificados) {
+        const uNum = typeof uId === "number" ? uId : parseInt(uId, 10);
+        const userDays = updatedGlobal[uId] || updatedGlobal[String(uId)];
+        if (userDays && !isNaN(uNum)) {
+          await saveUserPontosToDb(uNum, userDays).catch(err =>
+            console.warn(`[BulkSync] Erro ao salvar user ${uId}:`, err)
+          );
+        }
+      }
+
+      onAddLog(
+        "Sincronizou Ponto Offline em Lote",
+        `${currentUser.nome} (${currentUser.matricula})`,
+        `Subiu ${resgatadosCount} marcação(ões) offline para o sistema e descartou ${duplicadosIgnorados} tentativas duplicadas.`
+      );
+
+      showToast(
+        `Sucesso! ${resgatadosCount} marcação(ões) subida(s) para a folha. ${duplicadosIgnorados} duplicada(s) ignorada(s).`
+      );
+    } catch (err) {
+      console.error("Erro no resgate em lote de pré-pontos:", err);
+      showToast("Erro ao processar resgate de pontos offline.", "error");
+    }
+  };
 
   function seed100Colaboradores() {
     if (!window.confirm("Deseja gerar 100 novos colaboradores com diferentes jornadas (todas as categorias) e pontos diversificados (sem marcação britânica, com faltas, atestados e férias) para o mês de " + MESES_FULL[mesAtual.mes] + "? Isso substituirá os registros de ponto e colaboradores existentes.")) {
@@ -4314,13 +4479,44 @@ export function AdmOperadorPanel({
             {/* PRÉ-PONTOS / VALIDAÇÃO DE CLIQUES TAB CONTENT */}
             <div style={{ background: t.surfaceAlt, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: "20px", marginBottom: 20 }}>
               <h3 style={{ margin: "0 0 6px 0", color: t.text, fontSize: "16px", fontWeight: 800, display: "flex", alignItems: "center", gap: 8 }}>
-                🛡️ Monitoramento de Cliques de Intenção (Pré-Pontos)
+                🛡️ Biblioteca Offline e Registro de Intenções (Pré-Pontos)
               </h3>
               <p style={{ margin: 0, color: t.textSub, fontSize: "13px", lineHeight: "1.5" }}>
-                Para evitar <strong>marcações fantasmas</strong> e diagnosticar falhas de rede, cada clique no botão de bater ponto é registrado instantaneamente como um "Pré-Ponto" (Intenção). 
-                Abaixo, nosso motor de conciliação cruza as intenções de clique com as batidas de ponto reais gravadas na folha de frequência. 
-                Se houver um clique registrado mas a batida correspondente não chegou, o sistema aponta uma anomalia de comunicação.
+                Zero perda de dados: todo clique no botão de bater ponto é capturado instantaneamente na <strong>Biblioteca Offline Local</strong>.
+                Abaixo você visualiza todos os cliques. Se por instabilidade de rede um clique ficou guardado offline, você pode clicar em <strong>"📥 Resgatar Ponto"</strong> para gravá-lo diretamente no cartão de ponto do colaborador.
               </p>
+            </div>
+
+            {/* Batch Rescue Action Banner */}
+            <div style={{ background: "rgba(37,99,235,0.06)", border: "1.5px solid rgba(37,99,235,0.25)", borderRadius: 14, padding: "16px 20px", marginBottom: 20, display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 14 }}>
+              <div>
+                <h4 style={{ margin: "0 0 4px 0", color: "#1d4ed8", fontSize: "14.5px", fontWeight: 800 }}>
+                  ⚡ Sincronização e Resgate Automático de Pontos Offline
+                </h4>
+                <p style={{ margin: 0, color: t.textSub, fontSize: "12.5px" }}>
+                  Clique no botão ao lado para incorporar todos os pontos guardados offline para as folhas de ponto. O sistema <strong>descarta automaticamente duplicidades</strong> de cliques repetidos num intervalo de até 10 minutos.
+                </p>
+              </div>
+              <button
+                onClick={handleIncorporarTodosSemDuplicidade}
+                style={{
+                  background: "#2563eb",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: 10,
+                  padding: "10px 18px",
+                  fontSize: "13.5px",
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  boxShadow: "0 2px 8px rgba(37,99,235,0.3)",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                📥 Subir Todos os Pontos Offline (Sem Duplicados)
+              </button>
             </div>
 
             {/* Metrics */}
@@ -4330,12 +4526,12 @@ export function AdmOperadorPanel({
                 <div style={{ fontSize: "24px", fontWeight: 800, color: t.text, marginTop: 4 }}>{computedPrePontos.length} <span style={{ fontSize: "13px", fontWeight: 500, color: t.textMuted }}>cliques</span></div>
               </div>
               <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "16px 20px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: t.textMuted, textTransform: "uppercase", letterSpacing: "0.5px" }}>Batidas Confirmadas</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: t.textMuted, textTransform: "uppercase", letterSpacing: "0.5px" }}>Batidas na Folha</div>
                 <div style={{ fontSize: "24px", fontWeight: 800, color: "#16a34a", marginTop: 4 }}>{computedPrePontos.filter(x => x.calcStatus === "sucesso").length} <span style={{ fontSize: "13px", fontWeight: 500, color: t.textMuted }}>conciliadas</span></div>
               </div>
-              <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "16px 20px", borderLeft: `4px solid #dc2626` }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#dc2626", textTransform: "uppercase", letterSpacing: "0.5px" }}>Anomalias / Fantasmas</div>
-                <div style={{ fontSize: "24px", fontWeight: 800, color: "#dc2626", marginTop: 4 }}>{computedPrePontos.filter(x => x.calcStatus === "fantasma").length} <span style={{ fontSize: "13px", fontWeight: 500, color: t.textMuted }}>não chegaram</span></div>
+              <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "16px 20px", borderLeft: `4px solid #3b82f6` }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#2563eb", textTransform: "uppercase", letterSpacing: "0.5px" }}>📱 Guardados Offline</div>
+                <div style={{ fontSize: "24px", fontWeight: 800, color: "#2563eb", marginTop: 4 }}>{computedPrePontos.filter(x => x.calcStatus === "offline").length} <span style={{ fontSize: "13px", fontWeight: 500, color: t.textMuted }}>para resgate</span></div>
               </div>
               <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "16px 20px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: t.textMuted, textTransform: "uppercase", letterSpacing: "0.5px" }}>Cancelados ou Ativos</div>
@@ -4348,8 +4544,8 @@ export function AdmOperadorPanel({
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {[
                   ["todos", "Todos os Cliques"],
-                  ["sucesso", "✓ Confirmados"],
-                  ["fantasma", "⚠️ Anomalias (Fantasmas)"],
+                  ["sucesso", "✓ Gravados na Folha"],
+                  ["offline", "📱 Guardados Offline"],
                   ["cancelado", "✕ Cancelados"],
                   ["ativo", "⏳ Em andamento"]
                 ].map(([val, label]) => (
@@ -4425,14 +4621,14 @@ export function AdmOperadorPanel({
               return (
                 <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 14, overflow: "hidden" }}>
                   <div style={{ overflowX: "auto" }} className="no-scrollbar">
-                    <table style={{ minWidth: 800, width: "100%", borderCollapse: "collapse", textAlign: "left", fontFamily: "inherit" }}>
+                    <table style={{ minWidth: 840, width: "100%", borderCollapse: "collapse", textAlign: "left", fontFamily: "inherit" }}>
                       <thead>
                         <tr style={{ background: t.surfaceAlt, borderBottom: `1.5px solid ${t.border}` }}>
                           <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Colaborador</th>
                           <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Momento do Clique</th>
                           <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Tipo de Batida</th>
                           <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Modo</th>
-                          <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Status de Conciliação</th>
+                          <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Status / Ação de Resgate</th>
                           <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Carimbo Técnico</th>
                         </tr>
                       </thead>
@@ -4483,17 +4679,37 @@ export function AdmOperadorPanel({
                                 </span>
                               </td>
 
-                              {/* Status Conciliação */}
+                              {/* Status Conciliação / Ação */}
                               <td style={{ padding: "14px 18px" }}>
                                 {pre.calcStatus === "sucesso" ? (
                                   <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(34,197,94,0.11)", border: "1px solid rgba(34,197,94,0.3)", borderRadius: 8, padding: "4px 10px" }}>
                                     <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e" }} />
-                                    <strong style={{ color: "#16a34a", fontSize: "12px" }}>✓ Batida Gravada</strong>
+                                    <strong style={{ color: "#16a34a", fontSize: "12px" }}>✓ Batida Gravada na Folha</strong>
                                   </div>
-                                ) : pre.calcStatus === "fantasma" ? (
-                                  <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(220,38,38,0.11)", border: "1px solid rgba(220,38,38,0.3)", borderRadius: 8, padding: "4px 10px" }}>
-                                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#dc2626" }} />
-                                    <strong style={{ color: "#dc2626", fontSize: "12px" }}>⚠️ Clique Sem Batida (Fantasma)</strong>
+                                ) : pre.calcStatus === "offline" ? (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(59,130,246,0.11)", border: "1px solid rgba(59,130,246,0.3)", borderRadius: 8, padding: "4px 10px" }}>
+                                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#2563eb" }} />
+                                      <strong style={{ color: "#2563eb", fontSize: "12px" }}>📱 Guardado em Biblioteca Offline</strong>
+                                    </div>
+                                    <button
+                                      onClick={() => handleIncorporarPrePonto(pre)}
+                                      style={{
+                                        background: t.accent,
+                                        color: "#ffffff",
+                                        border: "none",
+                                        borderRadius: 6,
+                                        padding: "5px 10px",
+                                        fontSize: "11.5px",
+                                        fontWeight: 700,
+                                        cursor: "pointer",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 4
+                                      }}
+                                    >
+                                      📥 Resgatar Ponto para a Folha
+                                    </button>
                                   </div>
                                 ) : pre.calcStatus === "cancelado" ? (
                                   <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(107,114,128,0.11)", border: "1px solid rgba(107,114,128,0.3)", borderRadius: 8, padding: "4px 10px" }}>
@@ -4503,7 +4719,7 @@ export function AdmOperadorPanel({
                                 ) : (
                                   <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(245,158,11,0.11)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, padding: "4px 10px" }}>
                                     <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#f59e0b" }} />
-                                    <strong style={{ color: "#d97706", fontSize: "12px" }}>⏳ Aguardando GPS / Rede</strong>
+                                    <strong style={{ color: "#d97706", fontSize: "12px" }}>⏳ Aguardando Confirmação</strong>
                                   </div>
                                 )}
                               </td>

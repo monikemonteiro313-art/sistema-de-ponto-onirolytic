@@ -161,11 +161,23 @@ export function GerenciarMarcacoesView({
     });
 
     if (existingPunch && existingPunch.hora) {
-      const timeStr = new Date(existingPunch.hora).toLocaleTimeString("pt-BR", {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      setInputHora(timeStr);
+      let timeStr = "";
+      if (existingPunch.hora.includes("T")) {
+        try {
+          const d = new Date(existingPunch.hora);
+          if (!isNaN(d.getTime())) {
+            timeStr = d.toLocaleTimeString("pt-BR", {
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+          }
+        } catch {
+          timeStr = existingPunch.hora;
+        }
+      } else {
+        timeStr = existingPunch.hora;
+      }
+      setInputHora(timeStr || "");
     } else {
       setInputHora("");
     }

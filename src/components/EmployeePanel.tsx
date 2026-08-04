@@ -1921,12 +1921,7 @@ export function EmployeePanel({
                       🎉 Feriado Corporativo. Abono e folga geral.
                     </div>
                   )}
-                  {calBatidas.some(b => b && b.pendenteJustificativa) && (
-                    <div style={{ color: "#D97706", background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)", fontSize: 11.5, padding: "8px 12px", borderRadius: 10, marginTop: 6, fontWeight: 600 }}>
-                      ⚠️ <strong>Atenção:</strong> Batida Ímpar (Ponto Órfão) identificada. 
-                      O Cérebro de Autocura sinalizou este dia como pendente. Por favor, regularize este dia inserindo a batida faltante e informando a justificativa.
-                    </div>
-                  )}
+
                 </div>
               </div>
               {steps.map((s, i) => {
