@@ -7,7 +7,6 @@ import { LgpdModal } from "./LgpdModal";
 import { PontinhoTourModal } from "./PontinhoTourModal";
 import { ModalSolicitarCorrecao } from "./ModalSolicitarCorrecao";
 import { getCidInfo } from "../utils/cidHelper";
-import { savePunchToIndexedDB } from "../lib/indexedDbService";
 import { getBestCurrentPosition, watchBestPosition } from "../utils/geolocationHelper";
 
 function resizeAndCompressImage(base64Str: string, maxWidth = 1800, maxHeight = 1800, quality = 0.88): Promise<string> {
@@ -745,7 +744,7 @@ export function EmployeePanel({
             : `Atestado Médico lançado pelo colaborador (CID: ${atestadoCid.trim().toUpperCase()})`),
           registradoEm: timestamp,
           tipo: "manual",
-          serverTime: "pending"
+          serverTime: navigator.onLine ? timestamp : "pending"
         };
 
         if (atestadoIsParcial) {
@@ -1128,6 +1127,10 @@ export function EmployeePanel({
 
   function finalizarComGeo() {
     if (!geoActiveFor || isRegistering) return;
+    if (!geoCoords) {
+      setGeoError("Localização por GPS é obrigatória para registrar o ponto. Por favor, permita o acesso à localização e tente novamente.");
+      return;
+    }
     setIsRegistering(true);
 
     try {
@@ -1144,7 +1147,7 @@ export function EmployeePanel({
           hora: timestamp,
           tipo: "auto",
           registradoEm: timestamp,
-          serverTime: "pending",
+          serverTime: isOffline ? "pending" : timestamp,
           latitude: lat,
           longitude: lng,
           accuracy: acc,
@@ -1152,8 +1155,6 @@ export function EmployeePanel({
           dispositivoLocalHora: new Date().toISOString(),
           gravadoOffline: isOffline ? true : undefined
         };
-        // Instantly save punch locally in IndexedDB before network response
-        savePunchToIndexedDB(currentUser.id, dayKey, reg).catch(e => console.warn("[InstantPunch] IndexedDB save failed:", e));
         setPontosGlobal(prev => {
           const userRegs = prev[currentUser.id] || {};
           const day = [...(userRegs[dayKey] || [null, null, null, null])];
@@ -1183,7 +1184,7 @@ export function EmployeePanel({
           tipo: "manual",
           obs: manualJust?.trim(),
           registradoEm: timestamp,
-          serverTime: "pending",
+          serverTime: isOffline ? "pending" : timestamp,
           latitude: lat,
           longitude: lng,
           accuracy: acc,
@@ -1192,8 +1193,6 @@ export function EmployeePanel({
           gravadoOffline: isOffline ? true : undefined,
           statusAprovacao: "pendente"
         };
-        // Instantly save punch locally in IndexedDB before network response
-        savePunchToIndexedDB(currentUser.id, dayKey, reg).catch(e => console.warn("[InstantPunch] IndexedDB save failed:", e));
         setPontosGlobal(prev => {
           const userRegs = prev[currentUser.id] || {};
           const day = [...(userRegs[dayKey] || [null, null, null, null])];
@@ -1236,19 +1235,30 @@ export function EmployeePanel({
     }
     setGeoActiveFor(null);
     clearGeo();
+    setIsRegistering(false);
   }
 
-  async function registrarAgora(idx: number, dayKey: string) {
-    if (registerPrePonto) {
-      const pId = await registerPrePonto(currentUser.id, currentUser.nome, currentUser.matricula, dayKey, idx, "auto");
-      setCurrentPrePontoId(pId);
-    }
+  function registrarAgora(idx: number, dayKey: string) {
     setGeoActiveFor({ idx, dayKey, tipo: "auto" });
     setConfirmModal(null);
     clearGeo();
+
+    if (registerPrePonto) {
+      registerPrePonto(currentUser.id, currentUser.nome, currentUser.matricula, dayKey, idx, "auto")
+        .then(pId => {
+          if (pId) setCurrentPrePontoId(pId);
+        })
+        .catch(err => {
+          console.warn("[registrarAgora] registerPrePonto falhou:", err);
+        });
+    }
+
+    setTimeout(() => {
+      capturarLocalizacao();
+    }, 50);
   }
 
-  async function iniciarManualComGeo() {
+  function iniciarManualComGeo() {
     if (!manualHora.match(/^\d{2}:\d{2}$/)) {
       setManualError("Informe HH:MM.");
       return;
@@ -1264,10 +1274,7 @@ export function EmployeePanel({
     }
     if (!manualModal) return;
     const { idx, dayKey } = manualModal;
-    if (registerPrePonto) {
-      const pId = await registerPrePonto(currentUser.id, currentUser.nome, currentUser.matricula, dayKey, idx, "manual");
-      setCurrentPrePontoId(pId);
-    }
+
     setGeoActiveFor({
       idx,
       dayKey,
@@ -1277,6 +1284,20 @@ export function EmployeePanel({
     });
     setManualModal(null);
     clearGeo();
+
+    if (registerPrePonto) {
+      registerPrePonto(currentUser.id, currentUser.nome, currentUser.matricula, dayKey, idx, "manual")
+        .then(pId => {
+          if (pId) setCurrentPrePontoId(pId);
+        })
+        .catch(err => {
+          console.warn("[iniciarManualComGeo] registerPrePonto falhou:", err);
+        });
+    }
+
+    setTimeout(() => {
+      capturarLocalizacao();
+    }, 50);
   }
 
   function confirmarManual() {
@@ -1284,6 +1305,7 @@ export function EmployeePanel({
   }
 
   function abrirConfirm(idx: number, dayKey: string) {
+    if (idx < 0 || idx > 3 || isNaN(idx)) return;
     setConfirmModal({ idx, dayKey });
   }
 
@@ -2696,35 +2718,52 @@ export function EmployeePanel({
 
             {/* Sync Button */}
             {pendingOfflinePunchesList.length > 0 && (
-              <button
-                onClick={async () => {
-                  if (syncNow) {
-                    await syncNow();
-                  }
-                }}
-                disabled={isSyncing}
-                style={{
-                  width: "100%",
-                  background: "linear-gradient(135deg, #d97706, #b45309)",
-                  border: "none",
-                  borderRadius: 12,
-                  padding: "12px 16px",
-                  color: "#ffffff",
-                  fontSize: 13.5,
-                  fontWeight: 800,
-                  cursor: isSyncing ? "not-allowed" : "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 8,
-                  boxShadow: "0 4px 14px rgba(217,119,6,0.25)",
-                  marginBottom: 20,
-                  transition: "all 0.2s"
-                }}
-              >
-                <RefreshCw size={16} className={isSyncing ? "animate-spin" : ""} />
-                {isSyncing ? "Sincronizando Biblioteca com o Servidor..." : "🔄 Sincronizar Biblioteca Agora"}
-              </button>
+              <>
+                <button
+                  onClick={async () => {
+                    if (syncNow) {
+                      await syncNow();
+                    }
+                  }}
+                  disabled={isSyncing}
+                  style={{
+                    width: "100%",
+                    background: "linear-gradient(135deg, #d97706, #b45309)",
+                    border: "none",
+                    borderRadius: 12,
+                    padding: "12px 16px",
+                    color: "#ffffff",
+                    fontSize: 13.5,
+                    fontWeight: 800,
+                    cursor: isSyncing ? "not-allowed" : "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                    boxShadow: "0 4px 14px rgba(217,119,6,0.25)",
+                    marginBottom: syncError ? 12 : 20,
+                    transition: "all 0.2s"
+                  }}
+                >
+                  <RefreshCw size={16} className={isSyncing ? "animate-spin" : ""} />
+                  {isSyncing ? "Sincronizando Biblioteca com o Servidor..." : "🔄 Sincronizar Biblioteca Agora"}
+                </button>
+
+                {syncError && (
+                  <div style={{
+                    background: "rgba(239,68,68,0.1)",
+                    border: "1px solid rgba(239,68,68,0.3)",
+                    borderRadius: 12,
+                    padding: "10px 14px",
+                    fontSize: 12,
+                    color: "#ef4444",
+                    lineHeight: 1.4,
+                    marginBottom: 20
+                  }}>
+                    ⚠️ <strong>Erro na Sincronização:</strong> {syncError}
+                  </div>
+                )}
+              </>
             )}
 
             {/* List of Offline Punches */}
@@ -3909,25 +3948,27 @@ export function EmployeePanel({
 
             {/* State: Waiting Consent and Capture */}
             {!geoConsentAccepted && !geoCoords && !geoError && (
-              <button
-                onClick={capturarLocalizacao}
-                style={{
-                  width: "100%",
-                  background: t.accent,
-                  border: "none",
-                  borderRadius: 12,
-                  padding: "14px",
-                  cursor: "pointer",
-                  fontSize: 14,
-                  fontWeight: 700,
-                  color: "#fff",
-                  fontFamily: "inherit",
-                  boxShadow: `0 4px 14px ${t.accentGlow}`,
-                  transition: "all 0.15s"
-                }}
-              >
-                🔓 Aceitar Termo e Capturar GPS
-              </button>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <button
+                  onClick={capturarLocalizacao}
+                  style={{
+                    width: "100%",
+                    background: t.accent,
+                    border: "none",
+                    borderRadius: 12,
+                    padding: "14px",
+                    cursor: "pointer",
+                    fontSize: 14,
+                    fontWeight: 700,
+                    color: "#fff",
+                    fontFamily: "inherit",
+                    boxShadow: `0 4px 14px ${t.accentGlow}`,
+                    transition: "all 0.15s"
+                  }}
+                >
+                  🔓 Aceitar Termo e Capturar GPS
+                </button>
+              </div>
             )}
 
             {/* State: Loading with Progressive Filter Radar */}
@@ -3974,35 +4015,37 @@ export function EmployeePanel({
                   </div>
                 </div>
 
-                {bestGeoCoords && (
-                  <button
-                    onClick={() => {
-                      if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
-                      if (geoIntervalId !== null) clearInterval(geoIntervalId);
-                      setGeoWatchId(null);
-                      setGeoIntervalId(null);
-                      setGeoLoading(false);
-                      setGeoCountdown(0);
-                      setGeoCoords(bestGeoCoords);
-                    }}
-                    style={{
-                      width: "100%",
-                      marginTop: 4,
-                      background: t.surfaceAlt,
-                      border: `1.5px solid ${t.border}`,
-                      borderRadius: 10,
-                      padding: "8px 12px",
-                      cursor: "pointer",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: t.accent,
-                      fontFamily: "inherit",
-                      transition: "all 0.15s"
-                    }}
-                  >
-                    ⏹️ Interromper e Usar Precisão Atual
-                  </button>
-                )}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
+                  {bestGeoCoords && (
+                    <button
+                      onClick={() => {
+                        if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
+                        if (geoIntervalId !== null) clearInterval(geoIntervalId);
+                        setGeoWatchId(null);
+                        setGeoIntervalId(null);
+                        setGeoLoading(false);
+                        setGeoCountdown(0);
+                        setGeoCoords(bestGeoCoords);
+                      }}
+                      style={{
+                        width: "100%",
+                        marginTop: 4,
+                        background: t.surfaceAlt,
+                        border: `1.5px solid ${t.border}`,
+                        borderRadius: 10,
+                        padding: "8px 12px",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: t.accent,
+                        fontFamily: "inherit",
+                        transition: "all 0.15s"
+                      }}
+                    >
+                      ⏹️ Interromper e Usar Precisão Atual
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -4042,26 +4085,27 @@ export function EmployeePanel({
                     <div>{geoError}</div>
                   )}
                 </div>
-                <button
-                  onClick={capturarLocalizacao}
-                  style={{
-                    width: "100%",
-                    marginTop: 12,
-                    background: "linear-gradient(135deg, #3B82F6, #2563EB)",
-                    border: "none",
-                    borderRadius: 12,
-                    padding: "12px",
-                    cursor: "pointer",
-                    fontSize: 13.5,
-                    fontWeight: 700,
-                    color: "#fff",
-                    fontFamily: "inherit",
-                    boxShadow: "0 4px 12px rgba(37,99,235,0.25)",
-                    transition: "all 0.2s"
-                  }}
-                >
-                  🔄 Tentar capturar novamente
-                </button>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+                  <button
+                    onClick={capturarLocalizacao}
+                    style={{
+                      width: "100%",
+                      background: "linear-gradient(135deg, #3B82F6, #2563EB)",
+                      border: "none",
+                      borderRadius: 12,
+                      padding: "12px",
+                      cursor: "pointer",
+                      fontSize: 13.5,
+                      fontWeight: 700,
+                      color: "#fff",
+                      fontFamily: "inherit",
+                      boxShadow: "0 4px 12px rgba(37,99,235,0.25)",
+                      transition: "all 0.2s"
+                    }}
+                  >
+                    🔄 Tentar capturar novamente
+                  </button>
+                </div>
               </div>
             )}
 

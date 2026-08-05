@@ -4,6 +4,7 @@ import { ThemeColors, User } from "../types";
 import { Btn, PwInput } from "./SharedUI";
 import { LgpdModal } from "./LgpdModal";
 import { ModalDenunciaAnonima } from "./ModalDenunciaAnonima";
+import { wipeAllLocalData } from "../lib/indexedDbService";
 
 interface LoginScreenProps {
   mode: string;
@@ -118,10 +119,11 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
       const url = window.location.origin + "/?t=" + Date.now();
       let resolved = false;
 
+      let timeoutId: any = null;
       try {
         const start = performance.now();
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        timeoutId = setTimeout(() => controller.abort(), 5000);
 
         let res = await fetch(url, { 
           method: "HEAD",
@@ -143,8 +145,6 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
           }
         }
 
-        clearTimeout(timeoutId);
-
         if (dateHeader && active) {
           const apiEpoch = new Date(dateHeader).getTime();
           const rtt = performance.now() - start;
@@ -162,7 +162,6 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
           resolved = true;
           console.log(`[Login Clock Sync] Sincronizado com o servidor. Offset: ${offset.toFixed(0)}ms. RTT: ${rtt.toFixed(1)}ms.`);
 
-          // Audit log if offset is abnormally high (more than 3 minutes, indicating local clock manipulation)
           if (Math.abs(offset) > 3 * 60 * 1000) {
             const offsetMinutes = Math.round(offset / 60000);
             console.warn(`[Audit] Grande desvio de relógio detectado no login: ${offsetMinutes} min.`);
@@ -176,7 +175,9 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
           }
         }
       } catch (e) {
-        console.warn("[Login Clock Sync] Falha ao sincronizar com servidor, tentando local com cache.", e);
+        console.warn("[Login Clock Sync] Falha ao sincronizar com servidor, usando relógio local com cache.", e);
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
       }
 
       if (active && !resolved) {
@@ -248,15 +249,11 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
     setDiagnosticLogs([...logs]);
     await new Promise(r => setTimeout(r, 600));
 
-    logs.push("🗑️ Expurgando caches temporários e relatórios desatualizados para evitar tela branca...");
+    logs.push("🗑️ Expurgando caches temporários, localStorage e IndexedDB para evitar tela branca...");
     try {
-      localStorage.removeItem("hr_cached_users");
-      localStorage.removeItem("hr_cached_pontos");
-      localStorage.removeItem("hr_cached_audit_logs");
-      localStorage.removeItem("hr_cached_feriados");
-      localStorage.removeItem("hr_cached_wizard_done");
+      await wipeAllLocalData();
     } catch (e) {
-      console.warn("Could not clean up some localStorage keys:", e);
+      console.warn("Could not clean up local data:", e);
     }
     setDiagnosticLogs([...logs]);
     await new Promise(r => setTimeout(r, 800));

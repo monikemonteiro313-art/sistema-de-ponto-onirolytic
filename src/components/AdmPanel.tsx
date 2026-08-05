@@ -453,12 +453,6 @@ export function AdmPanel({
     }
   };
 
-  useEffect(() => {
-    if (tab === "guia_manutencao") {
-      runSelfHealing();
-    }
-  }, [tab]);
-
   // Firebase Storage Monitor states
   const [sessionReads, setSessionReads] = useState(32);
   const [sessionWrites, setSessionWrites] = useState(6);

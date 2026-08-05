@@ -1,7 +1,6 @@
 import React, { Component, ErrorInfo, ReactNode } from "react";
-import { AlertTriangle, RotateCcw, ShieldCheck, Sparkles, RefreshCw, HelpCircle, X, Info } from "lucide-react";
-import { db } from "../lib/firebase";
-import { doc, setDoc } from "firebase/firestore";
+import { AlertTriangle, RotateCcw, ShieldCheck, Sparkles, RefreshCw, HelpCircle, X, Info, Trash2 } from "lucide-react";
+import { wipeAllLocalData } from "../lib/indexedDbService";
 
 interface Props {
   children: ReactNode;
@@ -14,6 +13,7 @@ interface State {
   healingStep: string;
   showExplainModal: boolean;
   isLooping: boolean;
+  isCleaning: boolean;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
@@ -23,7 +23,8 @@ export class ErrorBoundary extends Component<Props, State> {
     errorInfo: null,
     healingStep: "",
     showExplainModal: false,
-    isLooping: false,
+    isLooping: true,
+    isCleaning: false,
   };
 
   public static getDerivedStateFromError(error: Error): Partial<State> {
@@ -31,45 +32,18 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   public componentDidMount() {
-    // Se o aplicativo rodar com sucesso por 5 segundos, limpa o contador de tentativas de autocura
-    setTimeout(() => {
-      if (!this.state.hasError) {
-        try {
-          sessionStorage.removeItem("hr_healing_attempts");
-        } catch (_) {}
-      }
-    }, 5000);
+    // No automatic reload loops
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     this.setState({ errorInfo });
     console.error("ErrorBoundary caught an uncaught React crash:", error, errorInfo);
     
-    // Log the critical error trace both to console and Firestore database
+    // Log error strictly to console and localStorage to prevent secondary crashes
     this.logCriticalError(error, errorInfo);
-
-    let attempts = 0;
-    try {
-      const attemptsStr = sessionStorage.getItem("hr_healing_attempts");
-      attempts = attemptsStr ? parseInt(attemptsStr, 10) : 0;
-    } catch (_) {}
-
-    if (attempts >= 2) {
-      this.setState({
-        healingStep: "Interrompido para evitar loop de recarregamento do navegador.",
-        isLooping: true
-      });
-      console.warn("[ErrorBoundary] Evitando loop infinito de autocura. Limite de tentativas atingido.");
-    } else {
-      try {
-        sessionStorage.setItem("hr_healing_attempts", String(attempts + 1));
-      } catch (_) {}
-      // Auto-execute self-healing routines immediately in the background
-      this.performAutomaticSelfHealing();
-    }
   }
 
-  private logCriticalError = async (error: Error, errorInfo: ErrorInfo) => {
+  private logCriticalError = (error: Error, errorInfo: ErrorInfo) => {
     const errorId = `err_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
     const timestamp = new Date().toISOString();
     
@@ -94,77 +68,21 @@ export class ErrorBoundary extends Component<Props, State> {
       userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "N/A"
     };
 
-    // 1. Log to console
     console.error("🚨 CRITICAL RENDER ERROR DETECTED:", errorLog);
 
-    // 2. Log to Firestore
     try {
-      const docRef = doc(db, "renderErrors", errorId);
-      await setDoc(docRef, errorLog);
-      console.log(`[ErrorBoundary] Critical render error logged to Firestore: ${errorId}`);
-    } catch (dbErr) {
-      console.warn("[ErrorBoundary] Failed to log render error to Firestore (possibly offline):", dbErr);
-    }
+      localStorage.setItem("hr_last_critical_error", JSON.stringify(errorLog));
+    } catch (_) {}
   };
 
-  private performAutomaticSelfHealing = async () => {
-    this.setState({ healingStep: "Analisando estruturas de dados locais..." });
-    await new Promise(resolve => setTimeout(resolve, 800));
-
+  private handleHardReset = async () => {
+    this.setState({ isCleaning: true });
     try {
-      this.setState({ healingStep: "Isolando chaves corrompidas no cache (localStorage)..." });
-      
-      // Let's identify if we have keys that might be problematic, and heal them
-      const criticalKeys = [
-        "hr_cached_users",
-        "hr_cached_pontos",
-        "hr_cached_audit_logs",
-        "hr_cached_minimo_horas_dia",
-        "hr_cached_empresa_config",
-        "hr_cached_feriados",
-        "hr_cached_wizard_done"
-      ];
-
-      criticalKeys.forEach(key => {
-        try {
-          const val = localStorage.getItem(key);
-          if (val) {
-            // Check if it's a valid JSON string
-            JSON.parse(val);
-          }
-        } catch (e) {
-          console.warn(`Removing corrupted localStorage key during self-healing: ${key}`);
-          localStorage.removeItem(key);
-        }
-      });
-
-      await new Promise(resolve => setTimeout(resolve, 800));
-      this.setState({ healingStep: "Reconfigurando parâmetros padrão de segurança..." });
-      
-      // Clear secondary structures but keep session "hr_current_user" intact if possible
-      localStorage.removeItem("hr_cached_users");
-      localStorage.removeItem("hr_cached_pontos");
-      localStorage.removeItem("hr_cached_audit_logs");
-      
-      await new Promise(resolve => setTimeout(resolve, 900));
-      this.setState({ healingStep: "Recarregando bundles do sistema com segurança..." });
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
-      // Force page reload, clearing Cache if browser supports it
-      window.location.reload();
+      await wipeAllLocalData();
     } catch (e) {
-      console.error("Self-healing failed to reload automatically", e);
-      this.setState({ healingStep: "Falha na restauração automática. Por favor, clique no botão para limpar tudo." });
-    }
-  };
-
-  private handleHardReset = () => {
-    try {
-      localStorage.clear();
-      sessionStorage.clear();
+      console.warn("Wipe error:", e);
+    } finally {
       window.location.reload();
-    } catch (e) {
-      alert("Por favor, limpe os dados do seu navegador manualmente.");
     }
   };
 
@@ -177,14 +95,14 @@ export class ErrorBoundary extends Component<Props, State> {
     });
   };
 
-  private handleLogoutAndReset = () => {
+  private handleLogoutAndReset = async () => {
+    this.setState({ isCleaning: true });
     try {
-      localStorage.removeItem("hr_current_user");
-      localStorage.clear();
-      sessionStorage.clear();
-      window.location.reload();
+      await wipeAllLocalData();
     } catch (e) {
-      alert("Por favor, limpe os dados do seu navegador manualmente.");
+      console.warn("Wipe error:", e);
+    } finally {
+      window.location.reload();
     }
   };
 

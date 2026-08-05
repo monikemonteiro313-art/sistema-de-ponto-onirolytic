@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { Shield, Check } from "lucide-react";
 import { ThemeColors } from "../types";
 import { Btn, PwInput, PwChecks } from "./SharedUI";

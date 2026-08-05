@@ -255,6 +255,126 @@ export async function saveAuthSessionToIndexedDB(user: any | null): Promise<bool
   }
 }
 
+export interface QueueItem {
+  id?: number;
+  type: "saveUserPontos" | "saveAuditLog";
+  payload: any;
+  createdAt: number;
+}
+
+export async function addToSyncQueue(type: "saveUserPontos" | "saveAuditLog", payload: any): Promise<boolean> {
+  try {
+    const db = await initIndexedDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction("offlineQueue", "readwrite");
+      const store = tx.objectStore("offlineQueue");
+      const getAllReq = store.getAll();
+      getAllReq.onsuccess = () => {
+        const items: QueueItem[] = getAllReq.result || [];
+        let existingItem: QueueItem | undefined;
+        if (type === "saveUserPontos" && payload?.userId) {
+          existingItem = items.find(i => i.type === "saveUserPontos" && i.payload?.userId === payload.userId);
+        }
+        if (existingItem) {
+          existingItem.payload = payload;
+          existingItem.createdAt = Date.now();
+          const putReq = store.put(existingItem);
+          putReq.onsuccess = () => resolve(true);
+          putReq.onerror = () => resolve(false);
+        } else {
+          const item: QueueItem = { type, payload, createdAt: Date.now() };
+          const addReq = store.add(item);
+          addReq.onsuccess = () => resolve(true);
+          addReq.onerror = () => resolve(false);
+        }
+      };
+      getAllReq.onerror = () => resolve(false);
+    });
+  } catch (err) {
+    console.warn("[IndexedDB] addToSyncQueue error:", err);
+    return false;
+  }
+}
+
+export async function getSyncQueue(): Promise<QueueItem[]> {
+  try {
+    const db = await initIndexedDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction("offlineQueue", "readonly");
+      const store = tx.objectStore("offlineQueue");
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => resolve([]);
+    });
+  } catch (err) {
+    console.warn("[IndexedDB] getSyncQueue error:", err);
+    return [];
+  }
+}
+
+export async function removeFromSyncQueue(id: number): Promise<boolean> {
+  try {
+    const db = await initIndexedDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction("offlineQueue", "readwrite");
+      const store = tx.objectStore("offlineQueue");
+      const req = store.delete(id);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+    });
+  } catch (err) {
+    console.warn("[IndexedDB] removeFromSyncQueue error:", err);
+    return false;
+  }
+}
+
+export async function wipeAllLocalData(): Promise<void> {
+  try {
+    localStorage.clear();
+  } catch (_) {}
+  try {
+    sessionStorage.clear();
+  } catch (_) {}
+
+  try {
+    if (dbInstance) {
+      try {
+        dbInstance.close();
+      } catch (_) {}
+      dbInstance = null;
+    }
+    if (typeof indexedDB !== "undefined") {
+      // Directly delete known databases for cross-browser reliability (Safari iOS safe)
+      const knownDbs = [DB_NAME, "pontos_offline_db", "hr_registro_ponto_db"];
+      for (const name of knownDbs) {
+        try {
+          indexedDB.deleteDatabase(name);
+        } catch (_) {}
+      }
+      
+      // Secondary optional check if indexedDB.databases is available without throwing
+      if (typeof indexedDB.databases === "function") {
+        try {
+          const dbs = await indexedDB.databases();
+          if (Array.isArray(dbs)) {
+            for (const dbInfo of dbs) {
+              if (dbInfo && dbInfo.name) {
+                try {
+                  indexedDB.deleteDatabase(dbInfo.name);
+                } catch (_) {}
+              }
+            }
+          }
+        } catch (_) {
+          // Ignore unsupported browser API failures silently
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[IndexedDB] wipeAllLocalData error:", err);
+  }
+}
+
 /**
   Retrieves active auth session from IndexedDB.
  */

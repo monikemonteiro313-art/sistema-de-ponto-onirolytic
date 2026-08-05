@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from "react";
+import React, { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { T } from "./components/Theme";
 import { User, ThemeColors, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao } from "./types";
 import { LoginScreen } from "./components/LoginScreen";
@@ -15,7 +15,11 @@ function lazyWithRetry(
   return lazy(async () => {
     try {
       const module = await componentImport();
-      return { default: module[exportName] };
+      const Component = module[exportName] || module.default;
+      if (!Component) {
+        throw new Error(`Component ${exportName} not found in module`);
+      }
+      return { default: Component };
     } catch (error) {
       console.error(`Error loading chunk for ${exportName}, attempting automatic page reload:`, error);
       const hasRefreshed = sessionStorage.getItem(`refreshed-chunk-${exportName}`);
@@ -66,10 +70,12 @@ import {
   fetchAllSolicitacoesCorrecao,
   saveSolicitacaoCorrecaoToDb,
   updateSolicitacaoCorrecaoInDb,
-  deleteSolicitacaoCorrecaoFromDb
+  deleteSolicitacaoCorrecaoFromDb,
+  checkFirebaseConnectivity
 } from "./lib/firebaseService";
-import { savePontosToIndexedDB, getPontosFromIndexedDB, saveUsersToIndexedDB, getUsersFromIndexedDB, saveAuthSessionToIndexedDB, getAuthSessionFromIndexedDB } from "./lib/indexedDbService";
+import { savePontosToIndexedDB, getPontosFromIndexedDB, saveUsersToIndexedDB, getUsersFromIndexedDB, saveAuthSessionToIndexedDB, getAuthSessionFromIndexedDB, addToSyncQueue, getSyncQueue, removeFromSyncQueue } from "./lib/indexedDbService";
 import { PwaInstallPrompt } from "./components/PwaInstallPrompt";
+import { AlertTriangle } from "lucide-react";
 
 const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos sem interação para auto-logout
 
@@ -104,6 +110,42 @@ function removeSafeLocalStorageItem(key: string): void {
   }
 }
 
+function areBatidasEqual(b1: any, b2: any): boolean {
+  if (b1 === b2) return true;
+  if (!b1 || !b2) return false;
+  if (b1.hora !== b2.hora) return false;
+  if ((b1.tipo || "auto") !== (b2.tipo || "auto")) return false;
+  if (b1.registradoEm !== b2.registradoEm) return false;
+  if ((b1.statusAprovacao || "aprovado") !== (b2.statusAprovacao || "aprovado")) return false;
+  if ((b1.duplicadoOculto || false) !== (b2.duplicadoOculto || false)) return false;
+  if ((b1.obs || "") !== (b2.obs || "")) return false;
+  if ((b1.motivoAjuste || "") !== (b2.motivoAjuste || "")) return false;
+  if ((b1.revisadoPor || "") !== (b2.revisadoPor || "")) return false;
+  if ((b1.revisadoEm || "") !== (b2.revisadoEm || "")) return false;
+  return true;
+}
+
+function areDayArraysEqual(arr1: (any | null)[], arr2: (any | null)[]): boolean {
+  if (arr1.length !== arr2.length) return false;
+  for (let i = 0; i < arr1.length; i++) {
+    if (!areBatidasEqual(arr1[i], arr2[i])) return false;
+  }
+  return true;
+}
+
+function areUserDaysEqual(days1?: Record<string, (any | null)[]>, days2?: Record<string, (any | null)[]>): boolean {
+  if (days1 === days2) return true;
+  if (!days1 || !days2) return false;
+  const keys1 = Object.keys(days1);
+  const keys2 = Object.keys(days2);
+  if (keys1.length !== keys2.length) return false;
+  for (const key of keys1) {
+    if (!days2[key]) return false;
+    if (!areDayArraysEqual(days1[key], days2[key])) return false;
+  }
+  return true;
+}
+
 function reconcilePontos(local: PontosGlobal | null, server: PontosGlobal | null): { merged: PontosGlobal; changedUserIds: number[] } {
   const merged: PontosGlobal = JSON.parse(JSON.stringify(server || {}));
   const changedUserIds: number[] = [];
@@ -127,7 +169,6 @@ function reconcilePontos(local: PontosGlobal | null, server: PontosGlobal | null
       if (!localDayArray) continue;
 
       const mergedDayArray = mergedUserDays[dayKey] || [null, null, null, null];
-
       const maxLength = Math.max(localDayArray.length, mergedDayArray.length);
       const newDayArray: (any | null)[] = [];
 
@@ -140,13 +181,26 @@ function reconcilePontos(local: PontosGlobal | null, server: PontosGlobal | null
         } else if (!localPunch && serverPunch) {
           newDayArray.push(serverPunch);
         } else if (localPunch && serverPunch) {
-          const localRegTime = localPunch.registradoEm ? new Date(localPunch.registradoEm).getTime() : 0;
-          const serverRegTime = serverPunch.registradoEm ? new Date(serverPunch.registradoEm).getTime() : 0;
+          // Check revision/approval timestamp first
+          const localRevTime = (localPunch.revisadoEm || localPunch.editadoEm) ? new Date(localPunch.revisadoEm || localPunch.editadoEm).getTime() : 0;
+          const serverRevTime = (serverPunch.revisadoEm || serverPunch.editadoEm) ? new Date(serverPunch.revisadoEm || serverPunch.editadoEm).getTime() : 0;
 
-          if (localRegTime > serverRegTime) {
+          if (localRevTime > serverRevTime) {
             newDayArray.push(localPunch);
-          } else {
+          } else if (serverRevTime > localRevTime) {
             newDayArray.push(serverPunch);
+          } else if (localPunch.statusAprovacao && localPunch.statusAprovacao !== "pendente" && (!serverPunch.statusAprovacao || serverPunch.statusAprovacao === "pendente")) {
+            newDayArray.push(localPunch);
+          } else if (serverPunch.statusAprovacao && serverPunch.statusAprovacao !== "pendente" && (!localPunch.statusAprovacao || localPunch.statusAprovacao === "pendente")) {
+            newDayArray.push(serverPunch);
+          } else {
+            const localRegTime = localPunch.registradoEm ? new Date(localPunch.registradoEm).getTime() : 0;
+            const serverRegTime = serverPunch.registradoEm ? new Date(serverPunch.registradoEm).getTime() : 0;
+            if (localRegTime > serverRegTime) {
+              newDayArray.push(localPunch);
+            } else {
+              newDayArray.push(serverPunch);
+            }
           }
         } else {
           newDayArray.push(null);
@@ -158,14 +212,14 @@ function reconcilePontos(local: PontosGlobal | null, server: PontosGlobal | null
       }
       const finalDayArray = newDayArray.slice(0, 4);
 
-      // Pad merged array as well to compare correctly
       const paddedMergedDayArray = [...mergedDayArray];
       while (paddedMergedDayArray.length < 4) {
         paddedMergedDayArray.push(null);
       }
       const finalMergedDayArray = paddedMergedDayArray.slice(0, 4);
 
-      const isDifferent = JSON.stringify(finalDayArray) !== JSON.stringify(finalMergedDayArray);
+      // ERRO 4 FIX: Deep equality comparison instead of JSON.stringify string matching
+      const isDifferent = !areDayArraysEqual(finalDayArray, finalMergedDayArray);
 
       if (isDifferent) {
         mergedUserDays[dayKey] = finalDayArray;
@@ -200,6 +254,55 @@ function reconcileAuditLogs(local: AuditLogEntry[] | null, server: AuditLogEntry
   }
 
   return { merged, pending };
+}
+
+function sanitizeDaysForFirebase(days: Record<string, (any | null)[]>): Record<string, (any | null)[]> {
+  if (!days) return days;
+  const clean = JSON.parse(JSON.stringify(days));
+  for (const dayKey of Object.keys(clean)) {
+    const day = clean[dayKey];
+    if (!Array.isArray(day)) continue;
+    for (let i = 0; i < day.length; i++) {
+      const b = day[i];
+      if (b && typeof b === "object") {
+        delete b.serverTime;
+        delete b.gravadoOffline;
+      }
+    }
+  }
+  return clean;
+}
+
+function sanitizePontosGlobal(pontos: PontosGlobal): PontosGlobal {
+  if (!pontos) return pontos;
+  const clean: PontosGlobal = JSON.parse(JSON.stringify(pontos));
+  for (const userIdStr of Object.keys(clean)) {
+    const userId = Number(userIdStr);
+    clean[userId] = sanitizeDaysForFirebase(clean[userId]);
+  }
+  return clean;
+}
+
+function clearUserSyncFlags(prev: PontosGlobal, userId: number): PontosGlobal {
+  if (!prev[userId]) return prev;
+  const updated: PontosGlobal = { ...prev };
+  const userDays = { ...updated[userId] };
+  for (const dayKey of Object.keys(userDays)) {
+    const day = [...(userDays[dayKey] || [])];
+    for (let i = 0; i < day.length; i++) {
+      const b = day[i];
+      if (b && typeof b === "object") {
+        const { serverTime, gravadoOffline, ...rest } = b;
+        day[i] = {
+          ...rest,
+          serverTime: (serverTime && serverTime !== "pending") ? serverTime : (b.registradoEm || b.hora || new Date().toISOString())
+        };
+      }
+    }
+    userDays[dayKey] = day;
+  }
+  updated[userId] = userDays;
+  return updated;
 }
 
 export default function App() {
@@ -248,11 +351,19 @@ export default function App() {
 
   const [screen, setScreen] = useState<"login" | "wizard" | "termo" | "main">(initialScreen);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [isFirebaseBlocked, setIsFirebaseBlocked] = useState<boolean>(false);
+  const isSyncingRef = useRef<boolean>(false);
 
   // Load initial data from Firestore in background
   useEffect(() => {
     async function loadData() {
       try {
+        const isConnected = await checkFirebaseConnectivity();
+        if (!isConnected) {
+          console.warn("[App Boot] Connectivity check failed. Entering local offline mode with notification banner.");
+          setIsFirebaseBlocked(true);
+        }
+
         // Fetch all database records safely to prevent any single collection error from crashing the entire initial load
         const safeFetch = async <T,>(fn: () => Promise<T>, fallback: T, name: string): Promise<T> => {
           try {
@@ -263,7 +374,7 @@ export default function App() {
           }
         };
 
-        const [rawDbUsers, dbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, wizardDone, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
+        const [rawDbUsers, rawDbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, wizardDone, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
           safeFetch(() => fetchAllUsers(), [] as User[], "users"),
           safeFetch(() => fetchAllPontos(0), {} as PontosGlobal, "pontos"),
           safeFetch(() => fetchAuditLogs(), [] as AuditLogEntry[], "auditLogs"),
@@ -277,6 +388,8 @@ export default function App() {
           safeFetch(() => fetchAllDenuncias(), [] as Denuncia[], "denuncias"),
           safeFetch(() => fetchAllSolicitacoesCorrecao(), [] as SolicitacaoCorrecao[], "solicitacoesCorrecao")
         ]);
+
+        const dbPontos = sanitizePontosGlobal(rawDbPontos);
 
         let dbUsers = rawDbUsers;
         if (dbUsers.length === 0) {
@@ -563,22 +676,66 @@ export default function App() {
     });
   };
 
+  const processOfflineQueue = async () => {
+    try {
+      const queue = await getSyncQueue();
+      if (!queue || queue.length === 0) return;
+      console.log(`[Offline Sync Queue] Processando ${queue.length} item(ns) pendente(s)...`);
+      for (const item of queue) {
+        if (!item.id) continue;
+        try {
+          if (item.type === "saveUserPontos") {
+            const { userId, days } = item.payload;
+            const cleanDays = sanitizeDaysForFirebase(days);
+            await saveUserPontosToDb(userId, cleanDays);
+            await removeFromSyncQueue(item.id);
+            console.log(`[Sync Queue] Pontos do usuário ${userId} salvos no Firebase com sucesso!`);
+            
+            setPontos(current => {
+              const updated = clearUserSyncFlags(current, userId);
+              setSafeLocalStorageItem("hr_cached_pontos", updated);
+              savePontosToIndexedDB(updated).catch(() => {});
+              return updated;
+            });
+            
+          } else if (item.type === "saveAuditLog") {
+            await saveAuditLogToDb(item.payload);
+            await removeFromSyncQueue(item.id);
+            console.log(`[Sync Queue] Log de auditoria salvo no Firebase com sucesso!`);
+          }
+        } catch (itemErr) {
+          console.warn(`[Sync Queue] Item ${item.id} falhou na sincronização, mantendo na fila:`, itemErr);
+        }
+      }
+    } catch (err) {
+      console.warn("[Sync Queue] Erro ao processar fila do IndexedDB:", err);
+    }
+  };
+
   const updatePontos = (newPontosOrFn: PontosGlobal | ((prev: PontosGlobal) => PontosGlobal)) => {
     setPontos((prev) => {
       const next = typeof newPontosOrFn === "function" ? newPontosOrFn(prev) : newPontosOrFn;
       
-      // Cache locally immediately in LocalStorage and IndexedDB for offline-first resilience
       setSafeLocalStorageItem("hr_cached_pontos", next);
       savePontosToIndexedDB(next).catch(err => console.warn("[IndexedDB] savePontosToIndexedDB error:", err));
 
-      // Sync updated user points to Firestore asynchronously in background
       for (const userIdStr of Object.keys(next)) {
         const userId = Number(userIdStr);
         const nextDays = next[userId];
         const prevDays = prev[userId];
-        if (!prevDays || JSON.stringify(nextDays) !== JSON.stringify(prevDays)) {
-          saveUserPontosToDb(userId, nextDays).catch(err => {
-            console.warn("Failed to save pontos to Firestore (offline?):", err);
+        if (!prevDays || !areUserDaysEqual(nextDays, prevDays)) {
+          const cleanDays = sanitizeDaysForFirebase(nextDays);
+          
+          saveUserPontosToDb(userId, cleanDays).then(() => {
+            setPontos(current => {
+              const updated = clearUserSyncFlags(current, userId);
+              setSafeLocalStorageItem("hr_cached_pontos", updated);
+              savePontosToIndexedDB(updated).catch(() => {});
+              return updated;
+            });
+          }).catch(err => {
+            console.warn(`[Sync Queue] Falha ao salvar no Firebase para usuário ${userId}, adicionando à fila do IndexedDB:`, err);
+            addToSyncQueue("saveUserPontos", { userId, days: nextDays }).catch(e => console.error("Error adding to sync queue:", e));
           });
         }
       }
@@ -593,12 +750,15 @@ export default function App() {
       // Cache locally immediately for offline-first resilience
       setSafeLocalStorageItem("hr_cached_audit_logs", next);
 
-      // Push new or updated logs to Firestore
+      // Push new or updated logs to Firestore with queue fallback
       const prevMap = new Map(prev.map(l => [l.id, l]));
       for (const log of next) {
         const p = prevMap.get(log.id);
         if (!p || JSON.stringify(p) !== JSON.stringify(log)) {
-          saveAuditLogToDb(log).catch(err => console.warn("Failed to save audit log to Firestore (offline?):", err));
+          saveAuditLogToDb(log).catch(err => {
+            console.warn("Falha ao salvar log de auditoria no Firebase, adicionando à fila do IndexedDB:", err);
+            addToSyncQueue("saveAuditLog", log).catch(e => console.error("Error adding to sync queue:", e));
+          });
         }
       }
       return next;
@@ -929,25 +1089,78 @@ export default function App() {
     setSyncError(null);
     try {
       console.log("[Sync] Manual sync triggered...");
-      const dbPontos = await fetchAllPontos();
+      
+      // 1. Flush any pending operations in the IndexedDB offline sync queue
+      await processOfflineQueue();
+
+      // 2. Scan current React state for offline-marked punches and upload them to Firestore
+      let currentPontos = { ...pontos };
+      let stateHasChanged = false;
+
+      for (const userIdStr of Object.keys(currentPontos)) {
+        const userId = Number(userIdStr);
+        const userDays = currentPontos[userId];
+        if (!userDays) continue;
+
+        let hasPending = false;
+        for (const dayKey of Object.keys(userDays)) {
+          const day = userDays[dayKey];
+          if (Array.isArray(day)) {
+            for (const punch of day) {
+              if (punch && (punch.gravadoOffline || punch.serverTime === "pending")) {
+                hasPending = true;
+                break;
+              }
+            }
+          }
+          if (hasPending) break;
+        }
+
+        if (hasPending) {
+          console.log(`[Sync] Encontradas batidas pendentes no estado para o usuário ${userId}. Enviando para o Firebase...`);
+          const cleanDays = sanitizeDaysForFirebase(userDays);
+          await saveUserPontosToDb(userId, cleanDays);
+          currentPontos = clearUserSyncFlags(currentPontos, userId);
+          stateHasChanged = true;
+        }
+      }
+
+      if (stateHasChanged) {
+        setPontos(currentPontos);
+        setSafeLocalStorageItem("hr_cached_pontos", currentPontos);
+        await savePontosToIndexedDB(currentPontos).catch(() => {});
+      }
+
+      // 3. Fetch latest points from Firestore server and reconcile
+      const rawDbPontos = await fetchAllPontos();
+      const dbPontos = rawDbPontos ? sanitizePontosGlobal(rawDbPontos) : null;
       if (dbPontos) {
-        const cached = getSafeLocalStorageItem<PontosGlobal | null>("hr_cached_pontos", null);
+        const cached = getSafeLocalStorageItem<PontosGlobal | null>("hr_cached_pontos", null) || currentPontos;
         const { merged: reconciled, changedUserIds } = reconcilePontos(cached, dbPontos);
         
+        let finalReconciled = { ...reconciled };
         for (const userId of changedUserIds) {
-          const prepared = await saveUserPontosToDb(userId, reconciled[userId]).catch(err => {
+          const cleanDays = sanitizeDaysForFirebase(finalReconciled[userId]);
+          const prepared = await saveUserPontosToDb(userId, cleanDays).catch(err => {
             console.error(`[Sync] Points sync failed for user ${userId}:`, err);
             throw err;
           });
           if (prepared) {
-            reconciled[userId] = prepared;
+            finalReconciled[userId] = sanitizeDaysForFirebase(prepared);
           }
         }
-        
-        setPontos(reconciled);
-        setSafeLocalStorageItem("hr_cached_pontos", reconciled);
+
+        // Always strip offline sync flags from all users in final state
+        for (const uStr of Object.keys(finalReconciled)) {
+          finalReconciled = clearUserSyncFlags(finalReconciled, Number(uStr));
+        }
+
+        setPontos(finalReconciled);
+        setSafeLocalStorageItem("hr_cached_pontos", finalReconciled);
+        await savePontosToIndexedDB(finalReconciled).catch(() => {});
       }
 
+      // 4. Reconcile audit logs
       const dbLogs = await fetchAuditLogs();
       if (dbLogs) {
         const cached = getSafeLocalStorageItem<AuditLogEntry[]>("hr_cached_audit_logs", []);
@@ -963,16 +1176,18 @@ export default function App() {
           });
         }
       }
+
       console.log("[Sync] Manual sync completed successfully!");
       setSyncError(null);
+      setIsFirebaseBlocked(false);
     } catch (err) {
       console.error("[Sync] Manual sync error:", err);
       const errStr = String(err);
       let errMsg = "Não foi possível conectar ao servidor de registro de ponto.";
       if (errStr.includes("quota") || errStr.includes("Quota") || errStr.includes("QUOTA")) {
         errMsg = "O limite diário de requisições do sistema em nuvem foi temporariamente atingido. Suas batidas continuam totalmente salvas localmente no aparelho com segurança e o sistema tentará enviá-las de forma automática.";
-      } else if (errStr.includes("offline") || errStr.includes("network") || errStr.includes("Network")) {
-        errMsg = "Identificamos ausência de sinal de internet. Suas batidas estão asseguradas localmente neste dispositivo e prontas para envio.";
+      } else if (errStr.includes("offline") || errStr.includes("network") || errStr.includes("Network") || errStr.includes("Timeout")) {
+        errMsg = "Identificamos ausência de sinal de internet ou instabilidade na conexão com o banco de dados. Suas batidas estão asseguradas localmente neste dispositivo e prontas para envio.";
       } else {
         errMsg = "Houve uma instabilidade temporária no sinal de rede ou no servidor. Por favor, tente enviar novamente mais tarde. Seus pontos estão protegidos.";
       }
@@ -985,30 +1200,48 @@ export default function App() {
   // Automatic synchronization when network is restored or tab/screen becomes visible again
   useEffect(() => {
     const performBackgroundSync = async () => {
-      console.log("[Sync] Triggering background synchronization (online / visibilitychange)...");
+      if (isSyncingRef.current) {
+        console.log("[Sync] Background sync dynamic execution prevented (already in progress).");
+        return;
+      }
+      isSyncingRef.current = true;
+      console.log("[Sync] Triggering protected background synchronization (online / visibilitychange)...");
       try {
-        const dbPontos = await fetchAllPontos(5);
+        // First process pending offline items in IndexedDB queue
+        await processOfflineQueue();
+
+        const rawDbPontos = await fetchAllPontos(5);
+        const dbPontos = rawDbPontos ? sanitizePontosGlobal(rawDbPontos) : null;
         if (dbPontos) {
           const idbPontos = await getPontosFromIndexedDB().catch(() => ({}));
           const cached = getSafeLocalStorageItem<PontosGlobal | null>("hr_cached_pontos", null);
           const combinedLocal = { ...(cached || {}), ...idbPontos };
           const { merged: reconciled, changedUserIds } = reconcilePontos(combinedLocal, dbPontos);
 
+          let finalReconciled = { ...reconciled };
           if (changedUserIds.length > 0) {
             for (const userId of changedUserIds) {
               try {
-                const prepared = await saveUserPontosToDb(userId, reconciled[userId]);
+                const cleanDays = sanitizeDaysForFirebase(finalReconciled[userId]);
+                const prepared = await saveUserPontosToDb(userId, cleanDays);
                 if (prepared) {
-                  reconciled[userId] = prepared;
+                  finalReconciled[userId] = sanitizeDaysForFirebase(prepared);
                 }
               } catch (err) {
                 console.error(`[Sync] Background sync failed for user ${userId}:`, err);
+                addToSyncQueue("saveUserPontos", { userId, days: finalReconciled[userId] }).catch(() => {});
               }
             }
           }
-          setPontos(reconciled);
-          setSafeLocalStorageItem("hr_cached_pontos", reconciled);
-          savePontosToIndexedDB(reconciled).catch(e => console.warn("[Sync] IDB save error:", e));
+
+          // Clear sync flags on all users in final reconciled state
+          for (const uStr of Object.keys(finalReconciled)) {
+            finalReconciled = clearUserSyncFlags(finalReconciled, Number(uStr));
+          }
+
+          setPontos(finalReconciled);
+          setSafeLocalStorageItem("hr_cached_pontos", finalReconciled);
+          savePontosToIndexedDB(finalReconciled).catch(e => console.warn("[Sync] IDB save error:", e));
         }
       } catch (err) {
         console.warn("[Sync] Network/Visibility trigger failed to fetch points:", err);
@@ -1023,15 +1256,18 @@ export default function App() {
           if (pending.length > 0) {
             setAuditLogs(reconciled);
             setSafeLocalStorageItem("hr_cached_audit_logs", reconciled);
-            pending.forEach(log => {
+            for (const log of pending) {
               saveAuditLogToDb(log).catch(err => {
                 console.error("[Sync] Background sync failed for log:", err);
+                addToSyncQueue("saveAuditLog", log).catch(() => {});
               });
-            });
+            }
           }
         }
       } catch (err) {
         console.warn("[Sync] Network/Visibility trigger failed to fetch logs:", err);
+      } finally {
+        isSyncingRef.current = false;
       }
     };
 
@@ -1049,6 +1285,11 @@ export default function App() {
     window.addEventListener("online", handleOnline);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
+    // Interval to flush offline sync queue every 30 seconds automatically
+    const queueInterval = setInterval(() => {
+      processOfflineQueue();
+    }, 30000);
+
     // Solicita permissões nativas se estiver rodando em APK/Capacitor
     requestAllNativePermissions().catch((err) => {
       console.warn("[App Mount] Erro ao solicitar permissões nativas:", err);
@@ -1057,6 +1298,7 @@ export default function App() {
     return () => {
       window.removeEventListener("online", handleOnline);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      clearInterval(queueInterval);
     };
   }, []);
 
@@ -1350,6 +1592,53 @@ export default function App() {
         transition: "background-color 0.25s, color 0.25s"
       }}
     >
+      {isFirebaseBlocked && (
+        <div style={{
+          background: "#b45309",
+          color: "#ffffff",
+          padding: "10px 16px",
+          fontSize: "13px",
+          fontWeight: 600,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "12px",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+          position: "sticky",
+          top: 0,
+          zIndex: 9999
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <AlertTriangle style={{ width: 18, height: 18, color: "#fef08a", flexShrink: 0 }} />
+            <span>
+              <strong>Modo 100% Offline Ativo (Filtro Corporativo/Rede Externa):</strong> Não foi possível conectar com o servidor do Firebase. Todas as suas marcações estão salvas com segurança no IndexedDB deste navegador e serão enviadas automaticamente quando a conexão for restabelecida.
+            </span>
+          </div>
+          <button
+            onClick={async () => {
+              const ok = await checkFirebaseConnectivity();
+              if (ok) {
+                setIsFirebaseBlocked(false);
+                alert("Conexão com o Firebase restabelecida!");
+              } else {
+                alert("Servidor Firebase continua inacessível na sua rede no momento.");
+              }
+            }}
+            style={{
+              background: "#78350f",
+              color: "#ffffff",
+              border: "1px solid #d97706",
+              borderRadius: "6px",
+              padding: "4px 10px",
+              fontSize: "12px",
+              cursor: "pointer",
+              whiteSpace: "nowrap"
+            }}
+          >
+            Testar Conexão
+          </button>
+        </div>
+      )}
       {/* Floating Theme Button (Corner Top-Right) - Hidden on login screen as LoginScreen has its own header theme toggle */}
       {screen !== "login" && screen !== "main" && (
         <div style={{ position: "absolute", top: 12, right: 18, zIndex: 100 }}>

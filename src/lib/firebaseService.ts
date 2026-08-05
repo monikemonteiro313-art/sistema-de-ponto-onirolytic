@@ -14,9 +14,24 @@ import {
 
 let hasFallenBack = false;
 
-async function runWithFallback<T>(operation: () => Promise<T>): Promise<T> {
+function recreateRef(ref: any) {
+  if (!ref) return ref;
+  if (ref.type === "document" && ref.path) {
+    return doc(db, ref.path);
+  }
+  if (ref.type === "collection" && ref.path) {
+    return collection(db, ref.path);
+  }
+  return ref;
+}
+
+async function runWithFallback<T>(operation: (ref?: any) => Promise<T>, ref?: any, timeoutMs = 10000): Promise<T> {
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error("Timeout de conexão com o banco de dados Firestore")), timeoutMs);
+  });
+
   try {
-    return await operation();
+    return await Promise.race([operation(ref), timeoutPromise]);
   } catch (error: any) {
     const errStr = String(error?.message || error);
     const isDbError = 
@@ -39,7 +54,8 @@ async function runWithFallback<T>(operation: () => Promise<T>): Promise<T> {
       } catch (fallbackErr) {
         console.error("[Firebase Service] Fallback failed:", fallbackErr);
       }
-      return await operation();
+      const newRef = recreateRef(ref);
+      return await Promise.race([operation(newRef), timeoutPromise]);
     }
     throw error;
   }
@@ -47,23 +63,23 @@ async function runWithFallback<T>(operation: () => Promise<T>): Promise<T> {
 
 // Resilient wrappers for imported Firestore operations
 function getDocs(colRef: any): Promise<any> {
-  return runWithFallback(() => firestoreGetDocs(colRef));
+  return runWithFallback((r) => firestoreGetDocs(r || colRef), colRef);
 }
 
 function getDoc(docRef: any): Promise<any> {
-  return runWithFallback(() => firestoreGetDoc(docRef));
+  return runWithFallback((r) => firestoreGetDoc(r || docRef), docRef);
 }
 
 function setDoc(docRef: any, data: any, options?: any): Promise<any> {
-  return runWithFallback(() => firestoreSetDoc(docRef, data, options));
+  return runWithFallback((r) => firestoreSetDoc(r || docRef, data, options), docRef);
 }
 
 function deleteDoc(docRef: any): Promise<any> {
-  return runWithFallback(() => firestoreDeleteDoc(docRef));
+  return runWithFallback((r) => firestoreDeleteDoc(r || docRef), docRef);
 }
 
 function updateDoc(docRef: any, data: any): Promise<any> {
-  return runWithFallback(() => firestoreUpdateDoc(docRef, data));
+  return runWithFallback((r) => firestoreUpdateDoc(r || docRef, data), docRef);
 }
 
 import { User, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Denuncia, SolicitacaoCorrecao } from "../types";
@@ -415,7 +431,21 @@ export async function saveUserPontosToDb(userId: number, days: any): Promise<any
     return mergedDays;
   } catch (error) {
     console.warn(`[Firebase] Error saving pontos for user ${userId} to Firestore (offline?):`, error);
-    return days;
+    throw error;
+  }
+}
+
+export async function checkFirebaseConnectivity(): Promise<boolean> {
+  try {
+    const docRef = doc(db, "config", "empresa");
+    const timeout = new Promise<never>((_, reject) => 
+      setTimeout(() => reject(new Error("Firebase ping timeout")), 4000)
+    );
+    await Promise.race([getDoc(docRef), timeout]);
+    return true;
+  } catch (err) {
+    console.warn("[Firebase Health Check] Connectivity failed:", err);
+    return false;
   }
 }
 
