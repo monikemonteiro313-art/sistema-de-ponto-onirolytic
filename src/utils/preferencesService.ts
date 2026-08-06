@@ -267,3 +267,73 @@ export async function migrateLocalStorageToPreferences(): Promise<void> {
     console.warn("[Preferences] Migration warning:", err);
   }
 }
+
+export async function migrateLocalStorageToPreferences(): Promise<void> {
+  const keysToMigrate = [
+    "hr_clock_offset",
+    "hr_cached_minimo_horas_dia",
+    "hr_cached_empresa_config",
+    "modo_leve",
+    "last_punch_timestamp",
+    "offline_punches_queue"
+  ];
+
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("tour_visto_") && !keysToMigrate.includes(k)) {
+        keysToMigrate.push(k);
+      }
+    }
+
+    for (const key of keysToMigrate) {
+      const prefVal = await getPref(key);
+      const localVal = localStorage.getItem(key);
+      if (!prefVal && localVal) {
+        await setPref(key, localVal);
+      }
+    }
+  } catch (err) {
+    console.warn("[Preferences] Migration warning:", err);
+  }
+}
+
+/**
+ * Pega a fila offline salva no disco e faz merge com o pontosGlobal atual.
+ * Usado no useEffect de inicialização do EmployeePanel/App.
+ */
+export async function applyOfflineQueueToPontos(
+  pontosGlobal: Record<number, Record<string, any[]>>,
+  userId: number
+): Promise<Record<number, Record<string, any[]>>> {
+  const queue = await loadOfflineQueue();
+  if (!queue || queue.length === 0) return pontosGlobal;
+
+  const merged = JSON.parse(JSON.stringify(pontosGlobal));
+
+  for (const item of queue) {
+    if (item.userId !== userId) continue;
+
+    if (!merged[userId]) merged[userId] = {};
+    if (!merged[userId][item.dayKey]) merged[userId][item.dayKey] = [null, null, null, null];
+
+    const dayArr = merged[userId][item.dayKey];
+    while (dayArr.length < 4) dayArr.push(null);
+
+    dayArr[item.slotIdx] = {
+      hora: item.hora,
+      tipo: item.tipo,
+      registradoEm: item.registradoEm,
+      serverTime: "pending",
+      latitude: item.latitude,
+      longitude: item.longitude,
+      accuracy: item.accuracy,
+      consentimentoGeoloc: item.consentimentoGeoloc,
+      dispositivoLocalHora: item.dispositivoLocalHora,
+      gravadoOffline: true,
+      obs: item.obs || undefined,
+    };
+  }
+
+  return merged;
+}
