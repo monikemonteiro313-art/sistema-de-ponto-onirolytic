@@ -49,6 +49,10 @@ export function ModalDenunciaAnonima({ isOpen, onClose, onSubmit, t }: ModalDenu
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!navigator.onLine) {
+      setErro("Canal de denúncias requer conexão com a internet.");
+      return;
+    }
     if (!texto.trim()) {
       setErro("Por favor, descreva a irregularidade antes de enviar.");
       return;

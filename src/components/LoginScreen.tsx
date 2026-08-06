@@ -5,6 +5,7 @@ import { Btn, PwInput } from "./SharedUI";
 import { LgpdModal } from "./LgpdModal";
 import { ModalDenunciaAnonima } from "./ModalDenunciaAnonima";
 import { wipeAllLocalData } from "../lib/indexedDbService";
+import { setPref } from "../utils/preferencesService";
 
 interface LoginScreenProps {
   mode: string;
@@ -152,7 +153,8 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
           const offset = realEpoch - Date.now();
           
           try {
-            localStorage.setItem("hr_clock_offset", String(offset));
+            setPref("hr_clock_offset", String(offset));
+            setPref("last_clock_sync", String(Date.now()));
           } catch (_) {}
 
           setBaseRealTime(realEpoch);
@@ -448,7 +450,13 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
             </button>
 
             <button
-              onClick={() => setIsDenunciaOpen(true)}
+              onClick={() => {
+                if (!navigator.onLine) {
+                  alert("Canal de denúncias requer conexão com a internet.");
+                  return;
+                }
+                setIsDenunciaOpen(true);
+              }}
               title="Fazer denúncia de irregularidade anônima"
               style={{
                 background: t.surfaceAlt,

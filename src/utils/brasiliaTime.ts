@@ -4,16 +4,10 @@
  * and ensures full compliance by avoiding external API dependencies.
  */
 
+import { getSecureTimeSync } from "./preferencesService";
+
 export function getHorarioBrasilia(): Date {
-  let offset = 0;
-  try {
-    const cached = localStorage.getItem("hr_clock_offset");
-    if (cached) {
-      offset = Number(cached);
-    }
-  } catch (_) {}
-  
-  return new Date(Date.now() + offset);
+  return getSecureTimeSync();
 }
 
 export function formatarHorarioBrasilia(date: Date, options?: Intl.DateTimeFormatOptions): string {

@@ -8,6 +8,16 @@ import { PontinhoTourModal } from "./PontinhoTourModal";
 import { ModalSolicitarCorrecao } from "./ModalSolicitarCorrecao";
 import { getCidInfo } from "../utils/cidHelper";
 import { getBestCurrentPosition, watchBestPosition } from "../utils/geolocationHelper";
+import {
+  getPref,
+  setPref,
+  saveOfflinePunch,
+  loadOfflineQueue,
+  saveLastPunchTimestamp,
+  checkClockTampering,
+  migrateLocalStorageToPreferences,
+  applyOfflineQueueToPontos
+} from "../utils/preferencesService";
 
 function resizeAndCompressImage(base64Str: string, maxWidth = 1800, maxHeight = 1800, quality = 0.88): Promise<string> {
   return new Promise((resolve) => {
@@ -281,6 +291,22 @@ export function EmployeePanel({
     } finally {
       setMarkingAlertRead(false);
     }
+  };
+
+  const handleOpenAtestadoModal = () => {
+    if (!navigator.onLine) {
+      alert("Atestado médico requer conexão com a internet para anexar o documento.");
+      return;
+    }
+    setAtestadoModalOpen(true);
+  };
+
+  const handleOpenSolicitarCorrecao = () => {
+    if (!navigator.onLine) {
+      alert("Solicitação de correção requer internet para envio ao gestor.");
+      return;
+    }
+    setSolicitarCorrecaoOpen(true);
   };
 
   const [modoLeve, setModoLeve] = useState<boolean>(() => {
@@ -627,7 +653,34 @@ export function EmployeePanel({
     }
   }
 
-  // Auto clean up watch and timers on unmount
+  // Native Preferences initialization & Offline Queue preload
+  useEffect(() => {
+    let active = true;
+    async function initPreferences() {
+      await migrateLocalStorageToPreferences();
+      
+      // Load offline punches from Capacitor Preferences native disk and merge with state
+      const queue = await loadOfflineQueue();
+      if (active && queue && queue.length > 0) {
+        console.log(`[EmployeePanel Boot] Loaded ${queue.length} offline punches from Capacitor Preferences native disk. Merging into state...`);
+        setPontosGlobal(prev => applyOfflineQueueToPontos(prev, queue));
+      }
+
+      // Check tour state from Preferences
+      const tourVal = await getPref(`tour_visto_${currentUser.id}`);
+      if (active && tourVal === "true") {
+        setTourModalOpen(false);
+      }
+
+      // Check modo leve from Preferences
+      const modoLeveVal = await getPref("modo_leve");
+      if (active && modoLeveVal === "true") {
+        setModoLeve(true);
+      }
+    }
+    initPreferences();
+    return () => { active = false; };
+  }, [currentUser.id]);
   useEffect(() => {
     return () => {
       if (geoWatchId !== null) {
@@ -688,6 +741,10 @@ export function EmployeePanel({
 
   async function enviarAtestado() {
     setAtestadoError("");
+    if (!navigator.onLine) {
+      setAtestadoError("Atestado médico requer conexão com a internet para anexar o documento.");
+      return;
+    }
     if (!atestadoCid.trim()) {
       setAtestadoError("O preenchimento do CID é obrigatório.");
       return;
@@ -1137,12 +1194,23 @@ export function EmployeePanel({
     }
   }
 
-  function finalizarComGeo() {
+  async function finalizarComGeo() {
     if (!geoActiveFor || isRegistering) return;
     if (!geoCoords) {
       setGeoError("Localização por GPS é obrigatória para registrar o ponto. Por favor, permita o acesso à localização e tente novamente.");
       return;
     }
+
+    // Anti-fraude: Clock Tampering Check
+    const tamperCheck = await checkClockTampering();
+    if (tamperCheck.isTampered) {
+      alert(tamperCheck.message || "Relógio do dispositivo foi alterado. Conecte-se à internet para sincronizar o horário antes de bater o ponto.");
+      setIsRegistering(false);
+      setGeoActiveFor(null);
+      clearGeo();
+      return;
+    }
+
     setIsRegistering(true);
 
     try {
@@ -1153,6 +1221,8 @@ export function EmployeePanel({
       const timestamp = getSyncDate().toISOString();
 
       const isOffline = !navigator.onLine;
+
+      let punchHora = timestamp;
 
       if (tipo === "auto") {
         const reg: Batida = {
@@ -1191,8 +1261,9 @@ export function EmployeePanel({
           const [hh, mm] = manualHora.split(":").map(Number);
           d.setHours(hh, mm, 0, 0);
         }
+        punchHora = d.toISOString();
         const reg: Batida = {
-          hora: d.toISOString(),
+          hora: punchHora,
           tipo: "manual",
           obs: manualJust?.trim(),
           registradoEm: timestamp,
@@ -1225,6 +1296,30 @@ export function EmployeePanel({
         );
       }
 
+      // Record last punch timestamp into native preferences disk
+      const punchTsNum = new Date(timestamp).getTime();
+      await saveLastPunchTimestamp(punchTsNum);
+
+      // Save offline punch to @capacitor/preferences queue if offline
+      if (isOffline) {
+        await saveOfflinePunch({
+          userId: currentUser.id,
+          dayKey,
+          slotIdx: idx,
+          hora: punchHora,
+          tipo,
+          latitude: lat ?? null,
+          longitude: lng ?? null,
+          accuracy: acc ?? null,
+          registradoEm: timestamp,
+          dispositivoLocalHora: new Date().toISOString(),
+          gravadoOffline: true,
+          consentimentoGeoloc: true,
+          obs: manualJust?.trim(),
+          statusAprovacao: tipo === "manual" ? "pendente" : undefined
+        });
+      }
+
       if (currentPrePontoId && markPrePontoSuccess) {
         markPrePontoSuccess(currentPrePontoId);
         setCurrentPrePontoId(null);
@@ -1250,7 +1345,13 @@ export function EmployeePanel({
     setIsRegistering(false);
   }
 
-  function registrarAgora(idx: number, dayKey: string) {
+  async function registrarAgora(idx: number, dayKey: string) {
+    const tamperCheck = await checkClockTampering();
+    if (tamperCheck.isTampered) {
+      alert(tamperCheck.message || "Relógio do dispositivo foi alterado. Conecte-se à internet para sincronizar o horário antes de bater o ponto.");
+      return;
+    }
+
     setGeoActiveFor({ idx, dayKey, tipo: "auto" });
     setConfirmModal(null);
     clearGeo();
@@ -1270,7 +1371,7 @@ export function EmployeePanel({
     }, 50);
   }
 
-  function iniciarManualComGeo() {
+  async function iniciarManualComGeo() {
     if (!manualHora.match(/^\d{2}:\d{2}$/)) {
       setManualError("Informe HH:MM.");
       return;
@@ -1285,6 +1386,13 @@ export function EmployeePanel({
       return;
     }
     if (!manualModal) return;
+
+    const tamperCheck = await checkClockTampering();
+    if (tamperCheck.isTampered) {
+      alert(tamperCheck.message || "Relógio do dispositivo foi alterado. Conecte-se à internet para sincronizar o horário antes de bater o ponto.");
+      return;
+    }
+
     const { idx, dayKey } = manualModal;
 
     setGeoActiveFor({
@@ -1665,7 +1773,7 @@ export function EmployeePanel({
           </button>
 
           <button
-            onClick={() => setSolicitarCorrecaoOpen(true)}
+            onClick={handleOpenSolicitarCorrecao}
             title="Solicitar Correção ou Ajuste de Ponto"
             style={{
               background: "linear-gradient(135deg, rgba(245,158,11,0.12), rgba(234,179,8,0.12))",
@@ -1688,7 +1796,7 @@ export function EmployeePanel({
           </button>
 
           <button
-            onClick={() => setAtestadoModalOpen(true)}
+            onClick={handleOpenAtestadoModal}
             title="Lançar Atestado Médico"
             style={{
               background: t.surfaceAlt,
@@ -2015,7 +2123,7 @@ export function EmployeePanel({
                       <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "monospace", color: batida ? s.color : t.textMuted }}>{fmt(batida)}</span>
                       {!batida && calDay === todayKey() && (
                         <button
-                          onClick={() => setSolicitarCorrecaoOpen(true)}
+                          onClick={handleOpenSolicitarCorrecao}
                           title="Solicitar Ajuste ou Correção"
                           style={{
                             background: t.surfaceAlt,
@@ -2448,7 +2556,7 @@ export function EmployeePanel({
 
             {/* Prominent Correction Request Banner */}
             <div
-              onClick={() => setSolicitarCorrecaoOpen(true)}
+              onClick={handleOpenSolicitarCorrecao}
               style={{
                 width: "100%",
                 maxWidth: 380,
@@ -3843,7 +3951,7 @@ export function EmployeePanel({
             <button
               onClick={() => {
                 setConfirmModal(null);
-                setSolicitarCorrecaoOpen(true);
+                handleOpenSolicitarCorrecao();
               }}
               style={{
                 width: "100%",
