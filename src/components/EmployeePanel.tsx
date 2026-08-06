@@ -729,7 +729,9 @@ export function EmployeePanel({
 
       const timestamp = getSyncDate().toISOString();
 
-      datas.forEach(dayKey => {
+      const atestadoGroupId = `atest_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+      datas.forEach((dayKey, index) => {
         const dayArray = [...(updatedDays[dayKey] || [null, null, null, null])];
 
         const atestadoObj: Batida = {
@@ -744,7 +746,10 @@ export function EmployeePanel({
             : `Atestado Médico lançado pelo colaborador (CID: ${atestadoCid.trim().toUpperCase()})`),
           registradoEm: timestamp,
           tipo: "manual",
-          serverTime: navigator.onLine ? timestamp : "pending"
+          serverTime: navigator.onLine ? timestamp : "pending",
+          atestadoGroupId,
+          totalDiasAtestado: datas.length,
+          diaSequencia: index + 1,
         };
 
         if (atestadoIsParcial) {
@@ -841,7 +846,13 @@ export function EmployeePanel({
       const fmtB = (b: any) => {
         if (!b) return "—";
         if (b.ocorrencia) {
-          return b.ocorrencia === "atestado" ? (b.parcial ? "Atestado Parcial" : "Atestado") : b.ocorrencia === "afastamento" ? "Afastamento" : b.ocorrencia === "falta" ? "Falta" : b.ocorrencia;
+          if (b.ocorrencia === "atestado") {
+            if (b.statusAtestado === "recusado") {
+              return b.hora ? `${new Date(b.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}${b.latitude && b.longitude ? " 📍" : ""}` : "—";
+            }
+            return b.parcial ? "Atestado Parcial" : "Atestado";
+          }
+          return b.ocorrencia === "afastamento" ? "Afastamento" : b.ocorrencia === "falta" ? "Falta" : b.ocorrencia;
         }
         let timeStr = new Date(b.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
         if (b.suspeitoHoraModificada) {
@@ -962,28 +973,29 @@ export function EmployeePanel({
     }
   ];
 
+  const isSlotOccupied = (b: Batida | null) => b !== null && (!!b.hora || (b.ocorrencia !== "atestado" && !!b.ocorrencia) || (b.ocorrencia === "atestado" && b.statusAtestado !== "recusado"));
   const temAtestadoDiaInteiro = todayBatidas.some(b => b && b.ocorrencia === "atestado" && !b.parcial && b.statusAtestado !== "recusado");
-  const nextIdx = todayBatidas.findIndex(b => b === null);
-  const allDone = temAtestadoDiaInteiro || todayBatidas[3] !== null || nextIdx === -1;
+  const nextIdx = todayBatidas.findIndex(b => !isSlotOccupied(b));
+  const allDone = temAtestadoDiaInteiro || isSlotOccupied(todayBatidas[3]) || nextIdx === -1;
   const current = allDone ? null : steps[nextIdx];
 
   function isStepClickable(i: number): boolean {
     if (allDone) return false;
     if (i === 0) {
-      return todayBatidas[0] === null;
+      return !isSlotOccupied(todayBatidas[0]);
     }
     if (i === 1) {
-      return todayBatidas[0] !== null && todayBatidas[1] === null;
+      return isSlotOccupied(todayBatidas[0]) && !isSlotOccupied(todayBatidas[1]);
     }
     if (i === 2) {
-      return todayBatidas[1] !== null && todayBatidas[2] === null;
+      return isSlotOccupied(todayBatidas[1]) && !isSlotOccupied(todayBatidas[2]);
     }
     if (i === 3) {
-      const temAtestadoNoDia = todayBatidas.some(b => b && b.ocorrencia === "atestado");
-      if (todayBatidas[1] === null || temAtestadoNoDia) {
-        return todayBatidas[0] !== null && todayBatidas[3] === null;
+      const temAtestadoNoDia = todayBatidas.some(b => b && b.ocorrencia === "atestado" && b.statusAtestado !== "recusado");
+      if (!isSlotOccupied(todayBatidas[1]) || temAtestadoNoDia) {
+        return isSlotOccupied(todayBatidas[0]) && !isSlotOccupied(todayBatidas[3]);
       } else {
-        return (todayBatidas[2] !== null || todayBatidas[1] !== null) && todayBatidas[3] === null;
+        return (isSlotOccupied(todayBatidas[2]) || isSlotOccupied(todayBatidas[1])) && !isSlotOccupied(todayBatidas[3]);
       }
     }
     return false;

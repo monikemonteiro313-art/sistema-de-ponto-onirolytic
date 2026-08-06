@@ -11,6 +11,7 @@ interface GerenciarMarcacoesViewProps {
   pontosGlobal: PontosGlobal;
   auditLogs: AuditLogEntry[];
   onSalvarPonto: (userId: number, dayKey: string, batidaIdx: number, novaHora: string, justificativa: string) => Promise<void>;
+  onDecisaoAtestado?: (userId: number, groupId: string, dias: {dayKey: string, slotIdx: number}[], decisao: "aceito" | "recusado" | "excluir", justificativa: string) => Promise<void>;
   feriados?: string[];
   minimoHorasDia?: number;
 }
@@ -24,14 +25,25 @@ export function GerenciarMarcacoesView({
   pontosGlobal,
   auditLogs,
   onSalvarPonto,
+  onDecisaoAtestado,
   feriados = [],
   minimoHorasDia = 7,
 }: GerenciarMarcacoesViewProps) {
+  const validUsers = useMemo(() => {
+    const map = new Map<number, User>();
+    for (const u of users) {
+      if (u && typeof u === "object" && typeof u.id === "number" && u.nome && u.matricula) {
+        map.set(u.id, u);
+      }
+    }
+    return Array.from(map.values());
+  }, [users]);
+
   // Filters state
   const [searchMatricula, setSearchMatricula] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<number | null>(() => {
-    const active = users.find((u) => !u.desativado && u.tipo !== "adm-dev");
-    return active ? active.id : users[0]?.id || null;
+    const active = validUsers.find((u) => !u.desativado && u.tipo !== "adm-dev");
+    return active ? active.id : validUsers[0]?.id || null;
   });
 
   const now = new Date();
@@ -54,6 +66,9 @@ export function GerenciarMarcacoesView({
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
   const [modalError, setModalError] = useState("");
 
+  const [justificativaAtestado, setJustificativaAtestado] = useState("");
+  const [atestadoProcessando, setAtestadoProcessando] = useState<string | null>(null);
+
   // Audit history drawer/modal
   const [auditDetailPunch, setAuditDetailPunch] = useState<{
     dayKey: string;
@@ -64,17 +79,81 @@ export function GerenciarMarcacoesView({
   // Filter users based on search string
   const filteredUsers = useMemo(() => {
     const query = searchMatricula.trim().toLowerCase();
-    if (!query) return users.filter((u) => !u.desativado);
-    return users.filter(
+    if (!query) return validUsers.filter((u) => !u.desativado);
+    return validUsers.filter(
       (u) =>
         u.matricula.toLowerCase().includes(query) ||
         u.nome.toLowerCase().includes(query)
     );
-  }, [users, searchMatricula]);
+  }, [validUsers, searchMatricula]);
 
   const selectedUser = useMemo(() => {
-    return users.find((u) => u.id === selectedUserId) || null;
-  }, [users, selectedUserId]);
+    return validUsers.find((u) => u.id === selectedUserId) || null;
+  }, [validUsers, selectedUserId]);
+
+  const atestadosPendentes = useMemo(() => {
+    if (!selectedUserId || !onDecisaoAtestado) return [];
+    const grupos = new Map<string, {
+      groupId: string;
+      fotoAtestado?: string;
+      cidAtestado?: string;
+      dias: { dayKey: string; slotIdx: number; punch: Batida }[];
+    }>();
+
+    const userDays = pontosGlobal[selectedUserId] || {};
+    for (const dayKey of Object.keys(userDays)) {
+      const dayArr = userDays[dayKey];
+      if (!Array.isArray(dayArr)) continue;
+      for (let slotIdx = 0; slotIdx < dayArr.length; slotIdx++) {
+        const punch = dayArr[slotIdx];
+        if (punch?.ocorrencia === "atestado" && punch?.statusAtestado !== "aceito" && punch?.statusAtestado !== "recusado") {
+          const groupId = punch.atestadoGroupId || `legacy_${selectedUserId}_${dayKey}_${slotIdx}`;
+          if (!grupos.has(groupId)) {
+            grupos.set(groupId, {
+              groupId,
+              fotoAtestado: punch.fotoAtestado,
+              cidAtestado: punch.cidAtestado || punch.cid,
+              dias: []
+            });
+          }
+          grupos.get(groupId)!.dias.push({ dayKey, slotIdx, punch });
+        }
+      }
+    }
+    return Array.from(grupos.values()).sort((a, b) =>
+      new Date(a.dias[0].dayKey).getTime() - new Date(b.dias[0].dayKey).getTime()
+    );
+  }, [selectedUserId, pontosGlobal, onDecisaoAtestado]);
+
+  async function handleDecisaoAtestado(grupo: typeof atestadosPendentes[0], decisao: "aceito" | "recusado" | "excluir") {
+    if (!selectedUserId || !onDecisaoAtestado) return;
+    if (decisao === "excluir") {
+      const diasStr = grupo.dias.map(d => d.dayKey.split("-").reverse().join("/")).join(", ");
+      if (!confirm(`Tem certeza que deseja EXCLUIR/REMOVER a marcação de atestado para o(s) dia(s) ${diasStr}?`)) {
+        return;
+      }
+    } else if (!justificativaAtestado.trim() || justificativaAtestado.trim().length < 3) {
+      alert("A justificativa é obrigatória para aprovar ou recusar um atestado (mínimo de 3 caracteres).");
+      return;
+    }
+
+    setAtestadoProcessando(grupo.groupId);
+    try {
+      await onDecisaoAtestado(
+        selectedUserId,
+        grupo.groupId,
+        grupo.dias.map(d => ({ dayKey: d.dayKey, slotIdx: d.slotIdx })),
+        decisao,
+        justificativaAtestado.trim() || "Removido/Excluído pelo gestor"
+      );
+      setJustificativaAtestado("");
+    } catch (err) {
+      console.error("Erro na decisão do atestado:", err);
+      alert("Falha ao aplicar decisão. Verifique o console.");
+    } finally {
+      setAtestadoProcessando(null);
+    }
+  }
 
   // Days of selected month
   const monthDays = useMemo(() => {
@@ -366,6 +445,137 @@ export function GerenciarMarcacoesView({
             </div>
           </div>
 
+          {atestadosPendentes.length > 0 && (
+            <div style={{ background: t.surface, border: `1.5px solid ${t.warningBorder}`, borderRadius: 14, padding: 20, marginBottom: 24, boxShadow: "0 2px 10px rgba(0,0,0,0.02)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                <AlertTriangle size={18} color={t.warning} />
+                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: t.text }}>
+                  Atestados Pendentes de Aprovação ({atestadosPendentes.length})
+                </h3>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                {atestadosPendentes.map((grupo) => {
+                  const datasFmt = grupo.dias
+                    .map(d => d.dayKey.split("-").reverse().join("/"))
+                    .join(", ");
+                  const isProcessing = atestadoProcessando === grupo.groupId;
+
+                  return (
+                    <div key={grupo.groupId} style={{ background: t.bg, border: `1px solid ${t.border}`, borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: t.text }}>
+                            Período: {datasFmt} ({grupo.dias.length} {grupo.dias.length === 1 ? "dia" : "dias"})
+                          </div>
+                          {grupo.cidAtestado && (
+                            <div style={{ fontSize: 12, color: t.textSub, marginTop: 2 }}>
+                              CID: <strong>{grupo.cidAtestado}</strong>
+                            </div>
+                          )}
+                        </div>
+                        {grupo.fotoAtestado && (
+                          <a href={grupo.fotoAtestado} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: t.accent, fontWeight: 600 }}>
+                            📎 Ver Anexo/Foto
+                          </a>
+                        )}
+                      </div>
+
+                      {grupo.fotoAtestado && (
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          <img
+                            src={grupo.fotoAtestado}
+                            alt="Atestado"
+                            style={{ maxWidth: 220, maxHeight: 160, borderRadius: 8, border: `1px solid ${t.border}`, objectFit: "cover" }}
+                          />
+                        </div>
+                      )}
+
+                      <div>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: t.textSub, marginBottom: 4 }}>
+                          Justificativa da Decisão *
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Informe o motivo da aprovação ou recusa..."
+                          value={justificativaAtestado}
+                          onChange={e => setJustificativaAtestado(e.target.value)}
+                          style={{
+                            width: "100%",
+                            padding: "8px 12px",
+                            background: t.surfaceAlt,
+                            border: `1.5px solid ${t.border}`,
+                            borderRadius: 8,
+                            fontSize: 13,
+                            color: t.text,
+                            outline: "none"
+                          }}
+                        />
+                      </div>
+
+                      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          onClick={() => handleDecisaoAtestado(grupo, "excluir")}
+                          disabled={isProcessing}
+                          style={{
+                            background: t.surfaceAlt,
+                            border: `1.5px solid ${t.border}`,
+                            color: t.danger,
+                            borderRadius: 8,
+                            padding: "7px 14px",
+                            fontSize: 12,
+                            fontWeight: 700,
+                            cursor: isProcessing ? "not-allowed" : "pointer",
+                            fontFamily: "inherit"
+                          }}
+                        >
+                          🗑️ Excluir Marcação
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDecisaoAtestado(grupo, "recusado")}
+                          disabled={isProcessing}
+                          style={{
+                            background: isProcessing ? t.surfaceAlt : t.dangerBg,
+                            border: `1.5px solid ${isProcessing ? t.border : t.dangerBorder}`,
+                            color: isProcessing ? t.textMuted : t.danger,
+                            borderRadius: 8,
+                            padding: "7px 14px",
+                            fontSize: 12,
+                            fontWeight: 700,
+                            cursor: isProcessing ? "not-allowed" : "pointer",
+                            fontFamily: "inherit"
+                          }}
+                        >
+                          {isProcessing ? "Processando..." : "❌ Recusar Atestado"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDecisaoAtestado(grupo, "aceito")}
+                          disabled={isProcessing}
+                          style={{
+                            background: isProcessing ? t.surfaceAlt : t.successBg,
+                            border: `1.5px solid ${isProcessing ? t.border : t.successBorder}`,
+                            color: isProcessing ? t.textMuted : t.success,
+                            borderRadius: 8,
+                            padding: "7px 14px",
+                            fontSize: 12,
+                            fontWeight: 700,
+                            cursor: isProcessing ? "not-allowed" : "pointer",
+                            fontFamily: "inherit"
+                          }}
+                        >
+                          {isProcessing ? "Processando..." : "✅ Aprovar Atestado"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Espelho de Ponto Table */}
           <div
             style={{
@@ -420,14 +630,24 @@ export function GerenciarMarcacoesView({
 
                         {[0, 1, 2, 3].map((slotIdx) => {
                           const punch = day.punches[slotIdx];
-                          const hasPunch = punch && (punch.hora || punch.ocorrencia);
+                          const isAtestadoRecusado = punch && punch.ocorrencia === "atestado" && punch.statusAtestado === "recusado";
+                          const hasValidOccurrence = punch && punch.ocorrencia && !isAtestadoRecusado;
+                          const hasPunch = punch && (punch.hora || hasValidOccurrence);
 
                           let timeDisplay = "--:--";
                           let tag: "MA" | "MO" | null = null;
 
                           if (punch) {
-                            if (punch.ocorrencia) {
-                              timeDisplay = punch.ocorrencia.toUpperCase();
+                            if (punch.ocorrencia && !isAtestadoRecusado) {
+                              if (punch.ocorrencia === "atestado") {
+                                if (punch.statusAtestado === "aceito") {
+                                  timeDisplay = "ATESTADO (ACEITO)";
+                                } else {
+                                  timeDisplay = "ATESTADO (PENDENTE)";
+                                }
+                              } else {
+                                timeDisplay = punch.ocorrencia.toUpperCase();
+                              }
                             } else if (punch.hora) {
                               timeDisplay = new Date(punch.hora).toLocaleTimeString("pt-BR", {
                                 hour: "2-digit",
@@ -589,6 +809,94 @@ export function GerenciarMarcacoesView({
 
             {/* Modal Body */}
             <div style={{ padding: 20 }}>
+              {/* Existing atestado info */}
+              {modalData.punch && modalData.punch.ocorrencia === "atestado" && (
+                <div
+                  style={{
+                    background: t.bg,
+                    border: `1.5px solid ${modalData.punch.statusAtestado === "aceito" ? t.successBorder : modalData.punch.statusAtestado === "recusado" ? t.dangerBorder : t.warningBorder}`,
+                    borderRadius: 10,
+                    padding: "12px 14px",
+                    marginBottom: 16,
+                    fontSize: 12.5,
+                  }}
+                >
+                  <div style={{ fontWeight: 800, color: t.text, marginBottom: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>🏥 Ocorrência: Atestado Médico</span>
+                    <span
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 800,
+                        padding: "2px 8px",
+                        borderRadius: 4,
+                        background: modalData.punch.statusAtestado === "aceito" ? t.successBg : modalData.punch.statusAtestado === "recusado" ? t.dangerBg : t.warningBg,
+                        color: modalData.punch.statusAtestado === "aceito" ? t.success : modalData.punch.statusAtestado === "recusado" ? t.danger : t.warning,
+                        border: `1px solid ${modalData.punch.statusAtestado === "aceito" ? t.successBorder : modalData.punch.statusAtestado === "recusado" ? t.dangerBorder : t.warningBorder}`,
+                      }}
+                    >
+                      {modalData.punch.statusAtestado === "aceito" ? "✅ Aceito / Homologado" : modalData.punch.statusAtestado === "recusado" ? "❌ Recusado" : "⏳ Pendente"}
+                    </span>
+                  </div>
+
+                  {(modalData.punch.cidAtestado || modalData.punch.cid) && (
+                    <div style={{ color: t.textSub, marginTop: 4 }}>
+                      <strong>CID:</strong> {modalData.punch.cidAtestado || modalData.punch.cid}
+                    </div>
+                  )}
+
+                  {modalData.punch.motivoRecusaAtestado && (
+                    <div style={{ color: t.danger, marginTop: 4, fontWeight: 600 }}>
+                      <strong>Motivo da Recusa:</strong> "{modalData.punch.motivoRecusaAtestado}"
+                    </div>
+                  )}
+
+                  {onDecisaoAtestado && (
+                    <div style={{ marginTop: 10, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!selectedUserId) return;
+                          if (confirm("Tem certeza que deseja EXCLUIR/REMOVER o atestado desta data?")) {
+                            setSaving(true);
+                            try {
+                              await onDecisaoAtestado(
+                                selectedUserId,
+                                modalData.punch?.atestadoGroupId || `slot_${modalData.dayKey}_${modalData.slotIdx}`,
+                                [{ dayKey: modalData.dayKey, slotIdx: modalData.slotIdx }],
+                                "excluir",
+                                "Removido pelo gestor no espelho de ponto"
+                              );
+                              setSaveSuccessMsg("Atestado removido com sucesso!");
+                              setTimeout(() => {
+                                setModalData(null);
+                                setSaveSuccessMsg("");
+                              }, 800);
+                            } catch (err) {
+                              console.error(err);
+                              setModalError("Erro ao remover atestado.");
+                            } finally {
+                              setSaving(false);
+                            }
+                          }
+                        }}
+                        style={{
+                          background: t.dangerBg,
+                          border: `1px solid ${t.dangerBorder}`,
+                          color: t.danger,
+                          borderRadius: 6,
+                          padding: "5px 10px",
+                          fontSize: 11.5,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        🗑️ Excluir / Limpar Atestado deste Dia
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Existing punch info */}
               {modalData.punch && modalData.punch.hora && (
                 <div

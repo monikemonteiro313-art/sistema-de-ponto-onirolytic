@@ -833,6 +833,30 @@ export async function deleteSolicitacaoCorrecaoFromDb(id: string): Promise<void>
   }
 }
 
+export async function fetchBlocoNotas(): Promise<{ texto: string; atualizadoEm: string } | null> {
+  try {
+    const docSnap = await getDoc(doc(db, "config", "bloco_notas_gestor"));
+    if (docSnap && docSnap.exists()) {
+      return docSnap.data() as { texto: string; atualizadoEm: string };
+    }
+  } catch (error) {
+    console.warn("[Firebase] Error fetching bloco_notas_gestor (offline?):", error);
+  }
+  return null;
+}
+
+export async function saveBlocoNotasToDb(texto: string): Promise<void> {
+  try {
+    await setDoc(doc(db, "config", "bloco_notas_gestor"), {
+      texto,
+      atualizadoEm: new Date().toISOString()
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, "config/bloco_notas_gestor");
+  }
+}
+
+
 
 
 

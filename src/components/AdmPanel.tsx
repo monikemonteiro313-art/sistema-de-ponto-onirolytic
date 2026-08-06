@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map, FileText, Globe, Database, Server, HardDrive, RefreshCw, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote } from "lucide-react";
+import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map as MapIcon, FileText, Globe, Database, Server, HardDrive, RefreshCw, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote } from "lucide-react";
 import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { PwModal, CreateModal, DeleteModal, EditMatriculaModal } from "./AdmModals";
@@ -10,7 +10,7 @@ import { SolicitacoesCorrecaoView } from "./SolicitacoesCorrecaoView";
 
 import { genMatricula, timeAgo, resumoMesCalculado, calcularDia } from "../utils/hrHelpers";
 import { SUPERADMIN_MAT, getJornada } from "../data/mockData";
-import { fetchWizardDone, saveUserPontosToDb, saveAuditLogToDb } from "../lib/firebaseService";
+import { fetchWizardDone, saveUserPontosToDb, saveAuditLogToDb, fetchBlocoNotas, saveBlocoNotasToDb } from "../lib/firebaseService";
 
 // Decides what actions are permitted based on credentials mapping
 export function perms(viewer: User, target: User) {
@@ -140,6 +140,34 @@ export function AdmPanel({
   const [showDesativados, setShowDesativados] = useState(false);
   const viewerIsSuper = currentUser.matricula === SUPERADMIN_MAT;
 
+  const validUsers = useMemo(() => {
+    const map = new Map<number, User>();
+    for (const u of users) {
+      if (u && typeof u === "object" && typeof u.id === "number" && u.nome && u.matricula) {
+        map.set(u.id, u);
+      }
+    }
+    return Array.from(map.values());
+  }, [users]);
+
+  useEffect(() => {
+    const carregar = async () => {
+      try {
+        const notasDb = await fetchBlocoNotas();
+        if (notasDb?.texto !== undefined) {
+          setBlocoNotas(notasDb.texto);
+          localStorage.setItem("bloco_notas_gestor", notasDb.texto);
+          return;
+        }
+      } catch (e) {
+        console.warn("Firebase indisponível para notas, usando localStorage");
+      }
+      const local = localStorage.getItem("bloco_notas_gestor") || "";
+      setBlocoNotas(local);
+    };
+    carregar();
+  }, []);
+
   // Form states for Folhas de Aceite Generation
   const [selectedUserForAceite, setSelectedUserForAceite] = useState<string>("");
   const [selectedMonthForAceite, setSelectedMonthForAceite] = useState<number>(() => {
@@ -211,8 +239,18 @@ export function AdmPanel({
     }
   });
 
-  // Dynamic derived stats from database to prevent count leaks and infinite increments
+  // Dynamic derived stats — SÓ calcula quando estiver na aba Guia de Manutenção
   const derivedStats = useMemo(() => {
+    if (tab !== "guia_manutencao") {
+      return { oddPunchesFixed: 0, doubleClicksSanitized: 0, clockDivergencesFlagged: 0, offlineReviewed: 0 };
+    }
+
+    // Mapa O(1) para evitar .find() a cada iteração
+    const validUsersMap = new Map<number, User>();
+    for (const u of validUsers) {
+      validUsersMap.set(u.id, u);
+    }
+
     let oddPunches = 0;
     let doubleClicks = 0;
     let clockDivergences = 0;
@@ -220,28 +258,19 @@ export function AdmPanel({
 
     for (const userIdStr of Object.keys(pontosGlobal)) {
       const uId = Number(userIdStr);
-      const userObj = users.find(u => u.id === uId);
+      const userObj = validUsersMap.get(uId);
       if (userObj && userObj.tipo === "adm-dev" && userObj.matricula === SUPERADMIN_MAT) {
         continue;
       }
-      
+
       const userDays = pontosGlobal[uId] || {};
       for (const dayKey of Object.keys(userDays)) {
         const dayPoints = userDays[dayKey] || [];
-        
-        // Odd punches check removed (no longer valid)
-
         for (const p of dayPoints) {
           if (!p) continue;
-          if (p.duplicadoOculto) {
-            doubleClicks++;
-          }
-          if (p.suspeitoHoraModificada) {
-            clockDivergences++;
-          }
-          if (p.gravadoOffline) {
-            offlineReviewed++;
-          }
+          if (p.duplicadoOculto) doubleClicks++;
+          if (p.suspeitoHoraModificada) clockDivergences++;
+          if (p.gravadoOffline) offlineReviewed++;
         }
       }
     }
@@ -252,7 +281,7 @@ export function AdmPanel({
       clockDivergencesFlagged: clockDivergences,
       offlineReviewed: offlineReviewed
     };
-  }, [pontosGlobal, users]);
+  }, [pontosGlobal, validUsers, tab]);
 
   const statsToRender = {
     oddPunchesFixed: derivedStats.oddPunchesFixed,
@@ -266,6 +295,12 @@ export function AdmPanel({
   const [healingLogs, setHealingLogs] = useState<string[]>([]);
 
   const runSelfHealing = async () => {
+    // BLOQUEIO ABSOLUTO: nunca executa fora da aba Guia de Manutenção
+    if (tab !== "guia_manutencao") {
+      console.warn("[Autocura] Ignorada — não estamos na aba Guia de Manutenção.");
+      return;
+    }
+
     if (isScanning.current || healingRunning) return;
     isScanning.current = true;
     setHealingRunning(true);
@@ -285,7 +320,7 @@ export function AdmPanel({
       const newPontosGlobal = { ...pontosGlobal };
       let hasChanges = false;
       
-      for (const u of users) {
+      for (const u of validUsers) {
         if (u.tipo === "adm-dev" && u.matricula === SUPERADMIN_MAT) continue;
         
         const userDays = { ...(newPontosGlobal[u.id] || {}) };
@@ -868,7 +903,7 @@ export function AdmPanel({
       return;
     }
 
-    const activeColabs = users.filter(u => u.tipo !== "adm-dev" && !u.desativado);
+    const activeColabs = validUsers.filter(u => u.tipo !== "adm-dev" && !u.desativado);
 
     if (selectedUserForAceite === "todos") {
       if (activeColabs.length === 0) {
@@ -999,7 +1034,7 @@ export function AdmPanel({
     let sheetsHtml = "";
 
     for (const folha of folhasOrdenadas) {
-      const u = users.find(x => x.id === folha.userId);
+      const u = validUsers.find(x => x.id === folha.userId);
       if (!u) continue;
 
       const J = u.jornadaId === "personalizada" ? u.jornadaCustom : getJornada(u.jornadaId || "");
@@ -1183,7 +1218,7 @@ export function AdmPanel({
   }
 
   function gerarEspelhoHTMLForAdmin(userId: number, year: number, month: number) {
-    const u = users.find(x => x.id === userId);
+    const u = validUsers.find(x => x.id === userId);
     if (!u) return;
 
     const J = u.jornadaId === "personalizada" ? u.jornadaCustom : getJornada(u.jornadaId || "");
@@ -1348,11 +1383,11 @@ export function AdmPanel({
 
   // Memoized search list of users to keep search typing snappy
   const filteredUsers = useMemo(() => {
-    return users.filter(u =>
+    return validUsers.filter(u =>
       u.nome.toLowerCase().includes(search.toLowerCase()) ||
       u.matricula.toLowerCase().includes(search.toLowerCase())
     );
-  }, [users, search]);
+  }, [validUsers, search]);
 
   const tabUsers = useMemo(() => {
     return filteredUsers.filter(u => {
@@ -1363,12 +1398,12 @@ export function AdmPanel({
   }, [filteredUsers, tab, showDesativados]);
 
   const desativadosCount = useMemo(() => {
-    return users.filter(u => u.desativado && (tab === "colaboradores" ? u.tipo !== "adm-dev" : u.tipo === "adm-dev")).length;
-  }, [users, tab]);
+    return validUsers.filter(u => u.desativado && (tab === "colaboradores" ? u.tipo !== "adm-dev" : u.tipo === "adm-dev")).length;
+  }, [validUsers, tab]);
 
   const deactivatedUsers = useMemo(() => {
-    return users.filter(u => u.desativado);
-  }, [users]);
+    return validUsers.filter(u => u.desativado);
+  }, [validUsers]);
 
   function exportLogsPDF() {
     if (combinedAuditLogs.length === 0) return;
@@ -1680,7 +1715,7 @@ export function AdmPanel({
       </div>
 
       {/* Main Table view */}
-      {tab !== "auditoria" && tab !== "feriados" && tab !== "arquivo_morto" && tab !== "armazenamento" && tab !== "guia_manutencao" && tab !== "aceites" && tab !== "alertas" && (
+      {(tab === "colaboradores" || tab === "adm") && (
         <div style={{ padding: "24px 28px", maxWidth: 980, margin: "0 auto" }}>
           {tab === "adm" && viewerIsSuper && (
             <div
@@ -1981,11 +2016,41 @@ export function AdmPanel({
       {tab === "gerenciar_marcacoes" && (
         <GerenciarMarcacoesView
           t={t}
-          users={users}
+          users={validUsers}
           currentUser={currentUser}
           pontosGlobal={pontosGlobal}
           auditLogs={combinedAuditLogs}
           onSalvarPonto={handleSalvarPontoGerenciado}
+          onDecisaoAtestado={async (userId, groupId, dias, decisao, justificativa) => {
+            const userDays = { ...(pontosGlobal[userId] || {}) };
+            for (const { dayKey, slotIdx } of dias) {
+              const dayArr = [...(userDays[dayKey] || [null, null, null, null])];
+              if (dayArr[slotIdx]) {
+                if (decisao === "excluir") {
+                  dayArr[slotIdx] = null;
+                } else {
+                  const decStr = decisao as string;
+                  const isAceito = decStr === "aceito" || decStr === "aprovado";
+                  const statusStr = isAceito ? "aceito" : "recusado";
+                  dayArr[slotIdx] = {
+                    ...dayArr[slotIdx],
+                    statusAtestado: statusStr,
+                    statusAprovacao: isAceito ? "aprovado" : "recusado",
+                    motivoRecusaAtestado: isAceito ? undefined : (justificativa || "Atestado recusado pelo Gestor/RH"),
+                    justificativaAtestado: justificativa,
+                    revisadoPor: currentUser.nome,
+                    revisadoEm: new Date().toISOString(),
+                    vistoPeloColaborador: false
+                  };
+                }
+                userDays[dayKey] = dayArr;
+              }
+            }
+            if (setPontosGlobal) {
+              setPontosGlobal({ ...pontosGlobal, [userId]: userDays });
+            }
+            await saveUserPontosToDb(userId, userDays);
+          }}
           feriados={feriados}
           minimoHorasDia={minimoHorasDia}
         />
@@ -2366,7 +2431,7 @@ export function AdmPanel({
                               }}
                             >
                               <FileText size={12} style={{ color: "#059669" }} />
-                              <Map size={12} style={{ color: "#059669" }} />
+                              <MapIcon size={12} style={{ color: "#059669" }} />
                               <span>Ficha Legal GPS</span>
                             </button>
                           </div>
@@ -3569,10 +3634,17 @@ export function AdmPanel({
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
                 <button
                   type="button"
-                  onClick={() => {
-                    localStorage.setItem("bloco_notas_gestor", blocoNotas);
-                    setBlocoNotasSalvoMsg(true);
-                    setTimeout(() => setBlocoNotasSalvoMsg(false), 2000);
+                  onClick={async () => {
+                    try {
+                      localStorage.setItem("bloco_notas_gestor", blocoNotas);
+                      await saveBlocoNotasToDb(blocoNotas);
+                      setBlocoNotasSalvoMsg(true);
+                      setTimeout(() => setBlocoNotasSalvoMsg(false), 2000);
+                    } catch (err) {
+                      console.error("Erro ao salvar anotações no Firebase:", err);
+                      setBlocoNotasSalvoMsg(true);
+                      setTimeout(() => setBlocoNotasSalvoMsg(false), 2000);
+                    }
                   }}
                   style={{
                     background: t.accent,
@@ -3656,7 +3728,7 @@ export function AdmPanel({
                 >
                   <option value="">Selecione o colaborador...</option>
                   <option value="todos">Todos os Colaboradores Ativos</option>
-                  {users.filter(u => u.tipo !== "adm-dev" && !u.desativado).map(u => (
+                  {validUsers.filter(u => u.tipo !== "adm-dev" && !u.desativado).map(u => (
                     <option key={u.id} value={u.id}>{u.nome} ({u.matricula})</option>
                   ))}
                 </select>
@@ -4106,7 +4178,7 @@ export function AdmPanel({
                       }}
                     >
                       <option value="">-- Selecione na lista de colaboradores --</option>
-                      {users.filter(u => u.tipo === "colaborador" && !u.desativado).map(u => (
+                      {validUsers.filter(u => u.tipo === "colaborador" && !u.desativado).map(u => (
                         <option key={u.id} value={u.matricula}>
                           Matrícula {u.matricula} - {u.nome}
                         </option>
@@ -4413,7 +4485,7 @@ export function AdmPanel({
               color: "#ffffff"
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                <Map size={22} style={{ color: "rgba(255,255,255,0.9)" }} />
+                <MapIcon size={22} style={{ color: "rgba(255,255,255,0.9)" }} />
                 <h3 style={{ margin: 0, fontSize: 16, fontWeight: 750, letterSpacing: "-0.2px" }}>Metadados Jurídicos de Geolocalização</h3>
               </div>
               <p style={{ margin: 0, fontSize: 12, color: "rgba(255,255,255,0.78)", lineHeight: 1.4 }}>
@@ -4557,7 +4629,7 @@ export function AdmPanel({
                     transition: "all 0.15s"
                   }}
                 >
-                  <Map size={14} />
+                  <MapIcon size={14} />
                   Ver no Google Maps
                 </a>
               )}

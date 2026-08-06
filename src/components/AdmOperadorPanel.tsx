@@ -584,6 +584,7 @@ export function AdmOperadorPanel({
 }: AdmOperadorPanelProps) {
   const [busca, setBusca] = useState("");
   const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "gerenciar_marcacoes" | "solicitacoes_correcao" | "alimentacao" | "atestados" | "pre_pontos" | "pontos_manuais" | "denuncias">("frequencia");
+  const [filtroStatusPontoManual, setFiltroStatusPontoManual] = useState<"todos" | "pendente" | "aprovado" | "rejeitado">("todos");
 
 
   const handleSalvarPontoGerenciado = async (
@@ -760,26 +761,30 @@ export function AdmOperadorPanel({
     };
   }, [pontosGlobal, computedPrePontos, users]);
 
-  function handleAceitarAtestado(item: { userId: number; userName: string; dayKey: string; batidaIdx: number; cid: string }) {
+  async function handleAceitarAtestado(item: { userId: number; userName: string; dayKey: string; batidaIdx: number; cid: string }) {
     const userRegs = pontosGlobal[item.userId] || {};
     const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
     if (dayArray[item.batidaIdx]) {
       dayArray[item.batidaIdx] = {
         ...dayArray[item.batidaIdx]!,
         statusAtestado: "aceito",
+        statusAprovacao: "aprovado",
         motivoRecusaAtestado: undefined,
         revisadoEm: new Date().toISOString(),
         revisadoPor: currentUser.nome
       };
     }
+    const updatedUserDays = {
+      ...userRegs,
+      [item.dayKey]: dayArray
+    };
     const updated = {
       ...pontosGlobal,
-      [item.userId]: {
-        ...userRegs,
-        [item.dayKey]: dayArray
-      }
+      [item.userId]: updatedUserDays
     };
     setPontosGlobal(updated);
+    await saveUserPontosToDb(item.userId, updatedUserDays);
+
     if (onAddLog) {
       onAddLog(
         "Aprovou Atestado Médico",
@@ -789,7 +794,7 @@ export function AdmOperadorPanel({
     }
   }
 
-  function handleConfirmarRecusaAtestado() {
+  async function handleConfirmarRecusaAtestado() {
     if (!atestadoParaRecusar) return;
     if (!justificativaRecusaInput.trim()) return;
 
@@ -801,6 +806,7 @@ export function AdmOperadorPanel({
       dayArray[item.batidaIdx] = {
         ...dayArray[item.batidaIdx]!,
         statusAtestado: "recusado",
+        statusAprovacao: "recusado",
         motivoRecusaAtestado: justificativaRecusaInput.trim(),
         revisadoEm: new Date().toISOString(),
         revisadoPor: currentUser.nome,
@@ -808,15 +814,17 @@ export function AdmOperadorPanel({
       };
     }
 
+    const updatedUserDays = {
+      ...userRegs,
+      [item.dayKey]: dayArray
+    };
     const updated = {
       ...pontosGlobal,
-      [item.userId]: {
-        ...userRegs,
-        [item.dayKey]: dayArray
-      }
+      [item.userId]: updatedUserDays
     };
 
     setPontosGlobal(updated);
+    await saveUserPontosToDb(item.userId, updatedUserDays);
 
     if (onAddLog) {
       onAddLog(
@@ -2407,7 +2415,7 @@ export function AdmOperadorPanel({
               latitude: b.latitude,
               longitude: b.longitude,
               accuracy: b.accuracy,
-              statusAprovacao: b.statusAprovacao || "pendente",
+              statusAprovacao: (b.statusAprovacao as any) || "pendente",
               motivoRejeicaoAjuste: b.motivoRejeicaoAjuste,
               revisadoPor: b.revisadoPor,
               revisadoEm: b.revisadoEm
@@ -2421,16 +2429,20 @@ export function AdmOperadorPanel({
   }, [users, pontosGlobal]);
 
   const filtradosPontosManuais = useMemo(() => {
-    if (!busca.trim()) return todosPontosManuais;
-    const term = busca.toLowerCase();
-    return todosPontosManuais.filter(
-      p =>
+    return todosPontosManuais.filter(p => {
+      if (filtroStatusPontoManual !== "todos" && p.statusAprovacao !== filtroStatusPontoManual) {
+        return false;
+      }
+      if (!busca.trim()) return true;
+      const term = busca.toLowerCase();
+      return (
         p.userName.toLowerCase().includes(term) ||
         p.userMatricula.toLowerCase().includes(term) ||
         (p.obs && p.obs.toLowerCase().includes(term)) ||
         p.dayKey.includes(term)
-    );
-  }, [todosPontosManuais, busca]);
+      );
+    });
+  }, [todosPontosManuais, busca, filtroStatusPontoManual]);
 
   function handleAprovarPontoManual(item: typeof todosPontosManuais[0]) {
     setPontosGlobal(prev => {
@@ -3458,28 +3470,6 @@ export function AdmOperadorPanel({
             📊 Controle de Frequência
           </button>
           <button
-            onClick={() => {
-              if (onOpenGerenciarMarcacoes) {
-                onOpenGerenciarMarcacoes();
-              } else {
-                setGuiaAtiva("gerenciar_marcacoes");
-              }
-            }}
-            style={{
-              background: guiaAtiva === "gerenciar_marcacoes" ? t.accentGlow : "transparent",
-              border: `1.5px solid ${guiaAtiva === "gerenciar_marcacoes" ? t.borderFocus : "transparent"}`,
-              color: guiaAtiva === "gerenciar_marcacoes" ? t.accent : t.textSub,
-              fontSize: "13px",
-              fontWeight: 700,
-              padding: "7px 14px",
-              borderRadius: 8,
-              cursor: "pointer",
-              transition: "all 0.15s"
-            }}
-          >
-            ✍️ Gerenciar Marcações
-          </button>
-          <button
             onClick={() => setGuiaAtiva("solicitacoes_correcao")}
             style={{
               background: guiaAtiva === "solicitacoes_correcao" ? t.accentGlow : "transparent",
@@ -3577,40 +3567,6 @@ export function AdmOperadorPanel({
           >
             🛡️ Validação de Cliques (Pré-Pontos)
           </button>
-          <button
-            onClick={() => setGuiaAtiva("denuncias")}
-            style={{
-              background: guiaAtiva === "denuncias" ? t.accentGlow : "transparent",
-              border: `1.5px solid ${guiaAtiva === "denuncias" ? t.borderFocus : "transparent"}`,
-              color: guiaAtiva === "denuncias" ? t.accent : t.textSub,
-              fontSize: "13px",
-              fontWeight: 700,
-              padding: "7px 14px",
-              borderRadius: 8,
-              cursor: "pointer",
-              transition: "all 0.15s",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6
-            }}
-          >
-            🚨 Denúncias
-            {denuncias.filter(d => d.status === "pendente").length > 0 && (
-              <span
-                style={{
-                  background: t.warning,
-                  color: "#000",
-                  fontSize: "10px",
-                  fontWeight: 800,
-                  borderRadius: 99,
-                  padding: "1px 6px",
-                  lineHeight: 1.2
-                }}
-              >
-                {denuncias.filter(d => d.status === "pendente").length}
-              </span>
-            )}
-          </button>
 
         </div>
 
@@ -3673,6 +3629,36 @@ export function AdmOperadorPanel({
             pontosGlobal={pontosGlobal}
             auditLogs={[]}
             onSalvarPonto={handleSalvarPontoGerenciado}
+            onDecisaoAtestado={async (userId, groupId, dias, decisao, justificativa) => {
+              const userDays = { ...(pontosGlobal[userId] || {}) };
+              for (const { dayKey, slotIdx } of dias) {
+                const dayArr = [...(userDays[dayKey] || [null, null, null, null])];
+                if (dayArr[slotIdx]) {
+                  if (decisao === "excluir") {
+                    dayArr[slotIdx] = null;
+                  } else {
+                    const decStr = decisao as string;
+                    const isAceito = decStr === "aceito" || decStr === "aprovado";
+                    const statusStr = isAceito ? "aceito" : "recusado";
+                    dayArr[slotIdx] = {
+                      ...dayArr[slotIdx],
+                      statusAtestado: statusStr,
+                      statusAprovacao: isAceito ? "aprovado" : "recusado",
+                      motivoRecusaAtestado: isAceito ? undefined : (justificativa || "Atestado recusado pelo Gestor/RH"),
+                      justificativaAtestado: justificativa,
+                      revisadoPor: currentUser.nome,
+                      revisadoEm: new Date().toISOString(),
+                      vistoPeloColaborador: false
+                    };
+                  }
+                  userDays[dayKey] = dayArr;
+                }
+              }
+              if (setPontosGlobal) {
+                setPontosGlobal({ ...pontosGlobal, [userId]: userDays });
+              }
+              await saveUserPontosToDb(userId, userDays);
+            }}
             feriados={feriados}
             minimoHorasDia={minimoHorasDia}
           />
@@ -4306,26 +4292,80 @@ export function AdmOperadorPanel({
             {/* Metric widgets for Manual Points */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 }}>
               {[
-                ["Total de Inserções Manuais", todosPontosManuais.length, t.accent, t.accentGlow, t.borderFocus],
-                ["Aguardando Aprovação", todosPontosManuais.filter(x => x.statusAprovacao === "pendente").length, "#D97706", "rgba(245,158,11,0.1)", "rgba(245,158,11,0.3)"],
-                ["Pontos Aprovados", todosPontosManuais.filter(x => x.statusAprovacao === "aprovado").length, "#10B981", "rgba(16,185,129,0.1)", "rgba(16,185,129,0.3)"],
-                ["Pontos Rejeitados", todosPontosManuais.filter(x => x.statusAprovacao === "rejeitado").length, "#EF4444", "rgba(239,68,68,0.1)", "rgba(239,68,68,0.3)"]
-              ].map(([label, val, color, bg, border], idx) => (
-                <div key={idx} style={{ background: t.surface, border: `1.5px solid ${border}`, borderRadius: 12, padding: "14px 16px" }}>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: color as string, fontVariantNumeric: "tabular-nums" }}>{val}</div>
-                  <div style={{ fontSize: 12, color: t.textSub, marginTop: 3 }}>{label as string}</div>
-                </div>
-              ))}
+                ["Total de Inserções Manuais", todosPontosManuais.length, t.accent, t.accentGlow, t.borderFocus, "todos"],
+                ["Aguardando Aprovação", todosPontosManuais.filter(x => x.statusAprovacao === "pendente").length, "#D97706", "rgba(245,158,11,0.1)", "rgba(245,158,11,0.3)", "pendente"],
+                ["Pontos Aprovados", todosPontosManuais.filter(x => x.statusAprovacao === "aprovado").length, "#10B981", "rgba(16,185,129,0.1)", "rgba(16,185,129,0.3)", "aprovado"],
+                ["Pontos Rejeitados", todosPontosManuais.filter(x => x.statusAprovacao === "rejeitado").length, "#EF4444", "rgba(239,68,68,0.1)", "rgba(239,68,68,0.3)", "rejeitado"]
+              ].map(([label, val, color, bg, border, key], idx) => {
+                const isSelected = filtroStatusPontoManual === key;
+                return (
+                  <div
+                    key={idx}
+                    onClick={() => setFiltroStatusPontoManual(key as any)}
+                    style={{
+                      background: isSelected ? (bg as string) : t.surface,
+                      border: `1.5px solid ${isSelected ? (color as string) : (border as string)}`,
+                      borderRadius: 12,
+                      padding: "14px 16px",
+                      cursor: "pointer",
+                      transition: "all 0.15s",
+                      boxShadow: isSelected ? `0 0 10px ${bg as string}` : "none"
+                    }}
+                  >
+                    <div style={{ fontSize: 22, fontWeight: 800, color: color as string, fontVariantNumeric: "tabular-nums" }}>{val}</div>
+                    <div style={{ fontSize: 12, color: isSelected ? t.text : t.textSub, marginTop: 3, fontWeight: isSelected ? 700 : 500 }}>{label as string}</div>
+                  </div>
+                );
+              })}
             </div>
 
-            {/* Search filter */}
-            <div style={{ marginBottom: 20 }}>
-              <input
-                placeholder="Buscar por colaborador, matrícula, justificativa ou data..."
-                value={busca}
-                onChange={e => setBusca(e.target.value)}
-                style={{ width: "100%", boxSizing: "border-box", background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 10, color: t.text, fontSize: 14, padding: "10px 16px", outline: "none", fontFamily: "inherit" }}
-              />
+            {/* Search and status filter bar */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginBottom: 20 }}>
+              <div style={{ flex: "1 1 280px" }}>
+                <input
+                  placeholder="Buscar por colaborador, matrícula, justificativa ou data..."
+                  value={busca}
+                  onChange={e => setBusca(e.target.value)}
+                  style={{ width: "100%", boxSizing: "border-box", background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 10, color: t.text, fontSize: 14, padding: "10px 16px", outline: "none", fontFamily: "inherit" }}
+                />
+              </div>
+
+              {/* Status Filter Tabs */}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {[
+                  { key: "todos", label: "Todos", count: todosPontosManuais.length },
+                  { key: "pendente", label: "⏳ Aguardando Aprovação", count: todosPontosManuais.filter(x => x.statusAprovacao === "pendente").length },
+                  { key: "aprovado", label: "✅ Aprovados", count: todosPontosManuais.filter(x => x.statusAprovacao === "aprovado").length },
+                  { key: "rejeitado", label: "❌ Rejeitados", count: todosPontosManuais.filter(x => x.statusAprovacao === "rejeitado").length }
+                ].map(item => {
+                  const active = filtroStatusPontoManual === item.key;
+                  return (
+                    <button
+                      key={item.key}
+                      onClick={() => setFiltroStatusPontoManual(item.key as any)}
+                      style={{
+                        background: active ? t.accentGlow : t.surface,
+                        border: `1.5px solid ${active ? t.borderFocus : t.border}`,
+                        color: active ? t.accent : t.textSub,
+                        fontSize: "12.5px",
+                        fontWeight: active ? 800 : 600,
+                        padding: "8px 14px",
+                        borderRadius: 10,
+                        cursor: "pointer",
+                        transition: "all 0.15s",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6
+                      }}
+                    >
+                      <span>{item.label}</span>
+                      <span style={{ fontSize: 11, opacity: 0.85, padding: "1px 6px", borderRadius: 8, background: active ? t.accent : t.surfaceAlt, color: active ? "#fff" : t.textSub }}>
+                        {item.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             {filtradosPontosManuais.length === 0 ? (

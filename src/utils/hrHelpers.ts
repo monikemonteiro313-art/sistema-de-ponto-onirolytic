@@ -234,7 +234,7 @@ export function calcularDia(
   }
 
   const horasJornada = jornadaIdParaODia ? calcularHorasDia(jornadaIdParaODia, jornadaCustomParaODia) : 8;
-  const ocorrencia = batidas.find((b): b is Batida => b !== null && !!b.ocorrencia);
+  const ocorrencia = batidas.find((b): b is Batida => b !== null && !!b.ocorrencia && (b.ocorrencia !== "atestado" || b.statusAtestado !== "recusado"));
 
   // Afastamento
   if (ocorrencia?.ocorrencia === "afastamento") {
@@ -242,7 +242,7 @@ export function calcularDia(
   }
 
   // Falta
-  if (ocorrencia?.ocorrencia === "falta" || (!ocorrencia && batidas.every(b => b === null))) {
+  if (ocorrencia?.ocorrencia === "falta" || (!ocorrencia && batidas.every(b => b === null || (b.ocorrencia === "atestado" && b.statusAtestado === "recusado" && !b.hora)))) {
     if (u.apenasSomarHoras) {
       return { status: "folga" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
     }
@@ -255,10 +255,10 @@ export function calcularDia(
   }
 
   // Atestado parcial ou horários comuns
-  const bEntrada = batidas[0] && !batidas[0].ocorrencia && batidas[0].hora ? batidas[0] : null;
-  const bSaidaAlm = batidas[1] && !batidas[1].ocorrencia && batidas[1].hora ? batidas[1] : null;
-  const bRetorno  = batidas[2] && !batidas[2].ocorrencia && batidas[2].hora ? batidas[2] : null;
-  const bSaida    = batidas[3] && !batidas[3].ocorrencia && batidas[3].hora ? batidas[3] : null;
+  const bEntrada = batidas[0] && (!batidas[0].ocorrencia || batidas[0].statusAtestado === "recusado") && batidas[0].hora ? batidas[0] : null;
+  const bSaidaAlm = batidas[1] && (!batidas[1].ocorrencia || batidas[1].statusAtestado === "recusado") && batidas[1].hora ? batidas[1] : null;
+  const bRetorno  = batidas[2] && (!batidas[2].ocorrencia || batidas[2].statusAtestado === "recusado") && batidas[2].hora ? batidas[2] : null;
+  const bSaida    = batidas[3] && (!batidas[3].ocorrencia || batidas[3].statusAtestado === "recusado") && batidas[3].hora ? batidas[3] : null;
 
   if (!bEntrada || !bEntrada.hora) {
     if (u.apenasSomarHoras) {

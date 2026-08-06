@@ -83,6 +83,11 @@ export interface Batida {
   offlineAudited?: boolean;
   cid?: string;
   fotoAtestado?: string;
+  cidAtestado?: string;
+  atestadoGroupId?: string;
+  totalDiasAtestado?: number;
+  diaSequencia?: number;
+  justificativaAtestado?: string;
   horaInicioParcial?: string;
   horaFimParcial?: string;
   statusAtestado?: "pendente" | "aceito" | "recusado";
@@ -90,7 +95,7 @@ export interface Batida {
   revisadoEm?: string;
   revisadoPor?: string;
   vistoPeloColaborador?: boolean;
-  statusAprovacao?: "pendente" | "aprovado" | "rejeitado";
+  statusAprovacao?: "pendente" | "aprovado" | "rejeitado" | "recusado";
   motivoRejeicaoAjuste?: string;
 }
 

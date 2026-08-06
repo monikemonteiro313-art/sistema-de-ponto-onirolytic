@@ -1797,6 +1797,35 @@ export default function App() {
                     pontosGlobal={pontos}
                     auditLogs={auditLogs}
                     onSalvarPonto={handleSalvarPontoGerenciado}
+                    onDecisaoAtestado={async (userId, groupId, dias, decisao, justificativa) => {
+                      const userDays = { ...(pontos[userId] || {}) };
+                      for (const { dayKey, slotIdx } of dias) {
+                        const dayArr = [...(userDays[dayKey] || [null, null, null, null])];
+                        if (dayArr[slotIdx]) {
+                          if (decisao === "excluir") {
+                            dayArr[slotIdx] = null;
+                          } else {
+                            const decStr = decisao as string;
+                            const isAceito = decStr === "aceito" || decStr === "aprovado";
+                            const statusStr = isAceito ? "aceito" : "recusado";
+                            dayArr[slotIdx] = {
+                              ...dayArr[slotIdx],
+                              statusAtestado: statusStr,
+                              statusAprovacao: isAceito ? "aprovado" : "recusado",
+                              motivoRecusaAtestado: isAceito ? undefined : (justificativa || "Atestado recusado pelo Gestor/RH"),
+                              justificativaAtestado: justificativa,
+                              revisadoPor: currentUser.nome,
+                              revisadoEm: new Date().toISOString(),
+                              vistoPeloColaborador: false
+                            };
+                          }
+                          userDays[dayKey] = dayArr;
+                        }
+                      }
+                      const next = { ...pontos, [userId]: userDays };
+                      setPontos(next);
+                      await saveUserPontosToDb(userId, userDays);
+                    }}
                     feriados={feriados}
                     minimoHorasDia={minimoHorasDia}
                   />
