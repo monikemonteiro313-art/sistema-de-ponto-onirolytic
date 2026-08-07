@@ -3,9 +3,13 @@ import { compressImageBase64 } from "../utils/hrHelpers";
 import { 
   collection, 
   getDocs as firestoreGetDocs, 
+  getDocsFromServer,
+  getDocsFromCache,
   doc, 
   setDoc as firestoreSetDoc, 
   getDoc as firestoreGetDoc, 
+  getDocFromServer,
+  getDocFromCache,
   deleteDoc as firestoreDeleteDoc,
   updateDoc as firestoreUpdateDoc,
   serverTimestamp,
@@ -13,6 +17,11 @@ import {
 } from "firebase/firestore";
 
 let hasFallenBack = false;
+export let isUsingOfflineCache = false;
+
+export function getIsUsingOfflineCache(): boolean {
+  return isUsingOfflineCache;
+}
 
 function recreateRef(ref: any) {
   if (!ref) return ref;
@@ -61,13 +70,66 @@ async function runWithFallback<T>(operation: (ref?: any) => Promise<T>, ref?: an
   }
 }
 
-// Resilient wrappers for imported Firestore operations
+// Resilient server-first wrappers for imported Firestore operations
 function getDocs(colRef: any): Promise<any> {
-  return runWithFallback((r) => firestoreGetDocs(r || colRef), colRef);
+  return runWithFallback(async (r) => {
+    const targetRef = r || colRef;
+    try {
+      const snap = await getDocsFromServer(targetRef);
+      isUsingOfflineCache = false;
+      return snap;
+    } catch (serverErr) {
+      console.warn("[Firebase] Direct server fetch failed, falling back to cache/default getDocs:", serverErr);
+      isUsingOfflineCache = true;
+      try {
+        return await getDocsFromCache(targetRef);
+      } catch {
+        return await firestoreGetDocs(targetRef);
+      }
+    }
+  }, colRef);
 }
 
 function getDoc(docRef: any): Promise<any> {
-  return runWithFallback((r) => firestoreGetDoc(r || docRef), docRef);
+  return runWithFallback(async (r) => {
+    const targetRef = r || docRef;
+    try {
+      const snap = await getDocFromServer(targetRef);
+      isUsingOfflineCache = false;
+      return snap;
+    } catch (serverErr) {
+      console.warn("[Firebase] Direct server doc fetch failed, falling back to cache/default getDoc:", serverErr);
+      isUsingOfflineCache = true;
+      try {
+        return await getDocFromCache(targetRef);
+      } catch {
+        return await firestoreGetDoc(targetRef);
+      }
+    }
+  }, docRef);
+}
+
+export async function forceServerFetch<T = any>(collectionName: string): Promise<T[]> {
+  try {
+    const colRef = collection(db, collectionName);
+    const snap = await getDocsFromServer(colRef);
+    isUsingOfflineCache = false;
+    const items: T[] = [];
+    snap.forEach((docSnap: any) => {
+      items.push({ id: docSnap.id, ...docSnap.data() } as T);
+    });
+    return items;
+  } catch (err) {
+    console.warn(`[Firebase] forceServerFetch failed for ${collectionName}:`, err);
+    isUsingOfflineCache = true;
+    const colRef = collection(db, collectionName);
+    const snap = await firestoreGetDocs(colRef);
+    const items: T[] = [];
+    snap.forEach((docSnap: any) => {
+      items.push({ id: docSnap.id, ...docSnap.data() } as T);
+    });
+    return items;
+  }
 }
 
 function setDoc(docRef: any, data: any, options?: any): Promise<any> {

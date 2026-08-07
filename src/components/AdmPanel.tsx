@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map as MapIcon, FileText, Globe, Database, Server, HardDrive, RefreshCw, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote } from "lucide-react";
+import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map as MapIcon, FileText, Globe, Database, Server, HardDrive, RefreshCw, WifiOff, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote, Settings, ChevronDown, Wrench, Filter } from "lucide-react";
 import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { PwModal, CreateModal, DeleteModal, EditMatriculaModal } from "./AdmModals";
@@ -7,6 +7,7 @@ import { FeriasModal } from "./FeriasModal";
 import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
 import { DenunciasView } from "./DenunciasView";
 import { SolicitacoesCorrecaoView } from "./SolicitacoesCorrecaoView";
+import { Paginacao } from "./Paginacao";
 
 import { genMatricula, timeAgo, resumoMesCalculado, calcularDia } from "../utils/hrHelpers";
 import { SUPERADMIN_MAT, getJornada } from "../data/mockData";
@@ -94,6 +95,9 @@ interface AdmPanelProps {
   solicitacoesCorrecao?: SolicitacaoCorrecao[];
   onAprovarSolicitacaoCorrecao?: (id: string, revisadoPor: string) => Promise<void>;
   onRejeitarSolicitacaoCorrecao?: (id: string, motivoRejeicao: string, revisadoPor: string) => Promise<void>;
+  onSyncData?: () => Promise<void>;
+  isSyncingData?: boolean;
+  isOfflineData?: boolean;
 }
 
 export function AdmPanel({
@@ -121,7 +125,10 @@ export function AdmPanel({
   onDeleteDenuncia,
   solicitacoesCorrecao = [],
   onAprovarSolicitacaoCorrecao,
-  onRejeitarSolicitacaoCorrecao
+  onRejeitarSolicitacaoCorrecao,
+  onSyncData,
+  isSyncingData = false,
+  isOfflineData = false
 }: AdmPanelProps) {
   const [tab, setTab] = useState<"colaboradores" | "gerenciar_marcacoes" | "solicitacoes_correcao" | "adm" | "alertas" | "denuncias" | "auditoria" | "feriados" | "arquivo_morto" | "armazenamento" | "guia_manutencao" | "aceites">("colaboradores");
 
@@ -131,6 +138,7 @@ export function AdmPanel({
   const [alertaMatricula, setAlertaMatricula] = useState<string>("");
   const [alertaMensagem, setAlertaMensagem] = useState<string>("");
   const [alertaSending, setAlertaSending] = useState<boolean>(false);
+  const [confirmDeleteAlertaId, setConfirmDeleteAlertaId] = useState<string | null>(null);
   const [modal, setModal] = useState<any | null>(null);
   const [search, setSearch] = useState("");
   const [modalDelegation, setModalDelegation] = useState<User | null>(null);
@@ -138,6 +146,30 @@ export function AdmPanel({
   const [selectedGeoLog, setSelectedGeoLog] = useState<AuditLogEntry | null>(null);
   const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
   const [showDesativados, setShowDesativados] = useState(false);
+  const [devMenuOpen, setDevMenuOpen] = useState(false);
+  const [pageColab, setPageColab] = useState(1);
+  const [pageAudit, setPageAudit] = useState(1);
+  const [pageAceites, setPageAceites] = useState(1);
+
+  // Filtros avançados para a aba de Auditoria
+  const [filterAuditMes, setFilterAuditMes] = useState<string>("");
+  const [filterAuditNome, setFilterAuditNome] = useState<string>("");
+  const [filterAuditData, setFilterAuditData] = useState<string>("");
+  const [filterAuditMatricula, setFilterAuditMatricula] = useState<string>("");
+  const [filterAuditAcao, setFilterAuditAcao] = useState<string>("todas");
+
+  // Reset pagination on filter or tab change
+  useEffect(() => {
+    setPageColab(1);
+  }, [search, showDesativados, tab]);
+
+  useEffect(() => {
+    setPageAudit(1);
+  }, [tab, filterAuditMes, filterAuditNome, filterAuditData, filterAuditMatricula, filterAuditAcao]);
+
+  useEffect(() => {
+    setPageAceites(1);
+  }, [tab]);
   const viewerIsSuper = currentUser.matricula === SUPERADMIN_MAT;
 
   const validUsers = useMemo(() => {
@@ -502,6 +534,106 @@ export function AdmPanel({
   const combinedAuditLogs = useMemo(() => {
     return [...auditLogExterno, ...auditLog];
   }, [auditLogExterno, auditLog]);
+
+  // Função para identificar fraudes de adulteração de relógio no log de auditoria
+  const isFraudAuditLog = (entry: AuditLogEntry): boolean => {
+    if (!entry) return false;
+    const text = `${entry.acao || ""} ${entry.detalhe || ""} ${entry.alvo || ""}`.toLowerCase();
+    return (
+      text.includes("fraude: alteração de relógio") ||
+      text.includes("fraude: alteracao de relogio") ||
+      text.includes("tamper") ||
+      text.includes("adulterado ou retrocedido") ||
+      text.includes("adulteração de relógio") ||
+      text.includes("adulteracao de relogio") ||
+      text.includes("relógio local adulterado") ||
+      text.includes("relogio local adulterado") ||
+      (text.includes("fraude") && text.includes("offline"))
+    );
+  };
+
+  // Contagem de fraudes/suspeitas para exibir a bolinha vermelha no menu do topo
+  const fraudAuditLogsCount = useMemo(() => {
+    return combinedAuditLogs.filter(isFraudAuditLog).length;
+  }, [combinedAuditLogs]);
+
+  // Lista de meses disponíveis nos logs para o filtro
+  const availableAuditMonths = useMemo(() => {
+    const monthsMap = new Map<string, string>();
+    combinedAuditLogs.forEach(entry => {
+      const d = new Date(entry.quando);
+      if (!isNaN(d.getTime())) {
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const key = `${yyyy}-${mm}`;
+        if (!monthsMap.has(key)) {
+          const monthName = d.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+          monthsMap.set(key, monthName.charAt(0).toUpperCase() + monthName.slice(1));
+        }
+      }
+    });
+    return Array.from(monthsMap.entries()).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [combinedAuditLogs]);
+
+  // Aplicador de filtros na lista de auditoria
+  const filteredAuditLogs = useMemo(() => {
+    return combinedAuditLogs.filter(entry => {
+      if (!entry) return false;
+      const entryDate = new Date(entry.quando);
+
+      // 1. Mês filter (YYYY-MM)
+      if (filterAuditMes) {
+        if (!isNaN(entryDate.getTime())) {
+          const yyyy = entryDate.getFullYear();
+          const mm = String(entryDate.getMonth() + 1).padStart(2, "0");
+          const entryMonth = `${yyyy}-${mm}`;
+          if (entryMonth !== filterAuditMes) return false;
+        }
+      }
+
+      // 2. Data filter (YYYY-MM-DD)
+      if (filterAuditData) {
+        if (!isNaN(entryDate.getTime())) {
+          const yyyy = entryDate.getFullYear();
+          const mm = String(entryDate.getMonth() + 1).padStart(2, "0");
+          const dd = String(entryDate.getDate()).padStart(2, "0");
+          const entryDay = `${yyyy}-${mm}-${dd}`;
+          if (entryDay !== filterAuditData) return false;
+        }
+      }
+
+      // 3. Nome filter (quem or alvo)
+      if (filterAuditNome.trim()) {
+        const term = filterAuditNome.trim().toLowerCase();
+        const q = (entry.quem || "").toLowerCase();
+        const a = (entry.alvo || "").toLowerCase();
+        if (!q.includes(term) && !a.includes(term)) return false;
+      }
+
+      // 4. Matrícula filter (quemMat or matricula in alvo/detalhe)
+      if (filterAuditMatricula.trim()) {
+        const term = filterAuditMatricula.trim().toLowerCase();
+        const qm = (entry.quemMat || "").toLowerCase();
+        const a = (entry.alvo || "").toLowerCase();
+        const d = (entry.detalhe || "").toLowerCase();
+        if (!qm.includes(term) && !a.includes(term) && !d.includes(term)) return false;
+      }
+
+      // 5. Ação filter
+      if (filterAuditAcao && filterAuditAcao !== "todas") {
+        if (filterAuditAcao === "apenas_fraudes") {
+          if (!isFraudAuditLog(entry)) return false;
+        } else {
+          const term = filterAuditAcao.toLowerCase();
+          const ac = (entry.acao || "").toLowerCase();
+          const dt = (entry.detalhe || "").toLowerCase();
+          if (!ac.includes(term) && !dt.includes(term)) return false;
+        }
+      }
+
+      return true;
+    });
+  }, [combinedAuditLogs, filterAuditMes, filterAuditData, filterAuditNome, filterAuditMatricula, filterAuditAcao]);
 
   // Database stats calculation (approximate size in bytes and doc counts)
   const firebaseStats = useMemo(() => {
@@ -1406,7 +1538,7 @@ export function AdmPanel({
   }, [validUsers]);
 
   function exportLogsPDF() {
-    if (combinedAuditLogs.length === 0) return;
+    if (filteredAuditLogs.length === 0) return;
 
     const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1447,7 +1579,7 @@ export function AdmPanel({
   </div>
 
   <div class="summary-badge">
-    Total de ocorrências localizadas: ${combinedAuditLogs.length} registros
+    Total de ocorrências localizadas: ${filteredAuditLogs.length} registros
   </div>
 
   <table>
@@ -1461,7 +1593,7 @@ export function AdmPanel({
       </tr>
     </thead>
     <tbody>
-      ${combinedAuditLogs.map(entry => {
+      ${filteredAuditLogs.map(entry => {
         const isRed = entry.acao.includes("Excluiu") || entry.acao.includes("Desativou");
         const isYel = entry.acao.includes("Bloqueou") || entry.acao.includes("permissão");
         const isGrn = entry.acao.includes("Criou") || entry.acao.includes("Desbloqueou") || entry.acao.includes("termo");
@@ -1510,12 +1642,12 @@ export function AdmPanel({
   }
 
   function exportLogsExcel() {
-    if (combinedAuditLogs.length === 0) return;
+    if (filteredAuditLogs.length === 0) return;
 
     // Use semicolon separation for seamless Portuguese Excel load, add BOM for UTF-8 encoding
     const csvHeader = "Data/Hora;Responsável;Matrícula do Responsável;Ação Administrativa;Afetado / Alvo;Detalhes adicionais;Latitude;Longitude\n";
     
-    const csvRows = combinedAuditLogs.map(entry => {
+    const csvRows = filteredAuditLogs.map(entry => {
       const d = new Date(entry.quando);
       const dataHoraStr = `${d.toLocaleDateString("pt-BR")} ${d.toLocaleTimeString("pt-BR")}`;
       
@@ -1545,6 +1677,44 @@ export function AdmPanel({
 
   return (
     <div style={{ minHeight: "100vh", background: t.bg }}>
+      {isOfflineData && (
+        <div style={{
+          background: t.warningBg,
+          borderBottom: `1.5px solid ${t.warningBorder}`,
+          color: t.warning,
+          padding: "8px 28px",
+          fontSize: 12.5,
+          fontWeight: 700,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <WifiOff size={16} />
+            <span>Exibindo dados armazenados localmente (offline) — Servidor indisponível no momento.</span>
+          </div>
+          {onSyncData && (
+            <button
+              type="button"
+              onClick={() => onSyncData()}
+              disabled={isSyncingData}
+              style={{
+                background: t.warning,
+                color: "#000",
+                border: "none",
+                borderRadius: 6,
+                padding: "3px 10px",
+                fontSize: 11,
+                fontWeight: 800,
+                cursor: "pointer"
+              }}
+            >
+              {isSyncingData ? "Tentando..." : "Tentar Sincronizar"}
+            </button>
+          )}
+        </div>
+      )}
+
       {toast && (
         <div
           style={{
@@ -1590,6 +1760,31 @@ export function AdmPanel({
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {onSyncData && (
+              <button
+                type="button"
+                onClick={() => onSyncData()}
+                disabled={isSyncingData}
+                style={{
+                  background: t.surfaceAlt,
+                  border: `1.5px solid ${t.border}`,
+                  color: t.accent,
+                  borderRadius: 8,
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: isSyncingData ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  transition: "all 0.2s"
+                }}
+                title="Sincronizar e forçar busca de dados do servidor"
+              >
+                <RefreshCw size={14} style={{ animation: isSyncingData ? "spin 1s linear infinite" : "none" }} />
+                <span>{isSyncingData ? "Atualizando..." : "Sincronizar"}</span>
+              </button>
+            )}
             {viewerIsSuper && <Tag label="SUPERADMIN" color="#fff" bg={`linear-gradient(135deg, ${t.accent}, #2040CC)`} />}
             {!viewerIsSuper && currentUser.perm_trocar_senha_adm && (
               <Tag label="Perm. Extra" color={t.gold} bg={t.goldBg} border={t.goldBorder} />
@@ -1600,11 +1795,11 @@ export function AdmPanel({
             </Btn>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 2, overflowX: "auto", whiteSpace: "nowrap", flexWrap: "nowrap" }} className="no-scrollbar">
-          {(["colaboradores", "gerenciar_marcacoes", "solicitacoes_correcao", "adm", "alertas", "denuncias", "auditoria", "feriados", "arquivo_morto", "armazenamento", "guia_manutencao", "aceites"] as const).map(key => (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1.5px solid ${t.border}` }}>
+          <div style={{ display: "flex", gap: 4, overflowX: "auto", whiteSpace: "nowrap" }} className="no-scrollbar">
+            {/* 1. Colaboradores */}
             <button
-              key={key}
-              onClick={() => setTab(key)}
+              onClick={() => setTab("colaboradores")}
               style={{
                 background: "none",
                 border: "none",
@@ -1612,111 +1807,284 @@ export function AdmPanel({
                 fontFamily: "inherit",
                 fontSize: "13.5px",
                 fontWeight: 600,
-                color: tab === key ? t.accent : t.textSub,
-                padding: "10px 16px",
-                borderBottom: `2px solid ${tab === key ? t.accent : "transparent"}`,
+                color: (tab === "colaboradores" || tab === "adm") ? t.accent : t.textSub,
+                padding: "12px 18px",
+                borderBottom: `2.5px solid ${(tab === "colaboradores" || tab === "adm") ? t.accent : "transparent"}`,
                 transition: "all 0.2s",
-                position: "relative",
                 display: "inline-flex",
                 alignItems: "center",
-                flexShrink: 0,
                 gap: 6
               }}
             >
-              {key === "colaboradores"
-                ? "Colaboradores"
-                : key === "gerenciar_marcacoes"
-                ? "Gerenciar Marcações"
-                : key === "solicitacoes_correcao"
-                ? "Solicitações de Correção"
-                : key === "adm"
-                ? "Credenciais ADMs"
-                : key === "alertas"
-                ? "Enviar Alertas"
-                : key === "denuncias"
-                ? "Denúncias Anônimas"
-                : key === "auditoria"
-                ? "Auditoria"
-                : key === "feriados"
-                ? "Calendário Geral / Feriados"
-                : key === "armazenamento"
-                ? "Monitor Firebase"
-                : key === "guia_manutencao"
-                ? "Guia de Manutenção"
-                : key === "aceites"
-                ? "Aceite de Folhas"
-                : "Arquivo Morto"}
+              Colaboradores
+            </button>
 
-              {key === "solicitacoes_correcao" && solicitacoesCorrecao.filter(s => s.status === "pendente").length > 0 && (
-                <span
-                  style={{
-                    background: "#f59e0b",
-                    color: "#fff",
-                    fontSize: "10px",
-                    fontWeight: 800,
-                    borderRadius: 99,
-                    padding: "1px 6px",
-                    lineHeight: 1.2
-                  }}
-                >
+            {/* 2. Aprovações */}
+            <button
+              onClick={() => setTab("solicitacoes_correcao")}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                fontSize: "13.5px",
+                fontWeight: 600,
+                color: tab === "solicitacoes_correcao" ? t.accent : t.textSub,
+                padding: "12px 18px",
+                borderBottom: `2.5px solid ${tab === "solicitacoes_correcao" ? t.accent : "transparent"}`,
+                transition: "all 0.2s",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
+              <span>Aprovações</span>
+              {solicitacoesCorrecao.filter(s => s.status === "pendente").length > 0 && (
+                <span style={{ background: "#f59e0b", color: "#fff", fontSize: "10px", fontWeight: 800, borderRadius: 99, padding: "1px 6px" }}>
                   {solicitacoesCorrecao.filter(s => s.status === "pendente").length}
                 </span>
               )}
+            </button>
 
-              {key === "denuncias" && denuncias.filter(d => d.status === "pendente").length > 0 && (
-                <span
-                  style={{
-                    background: t.warning,
-                    color: "#000",
-                    fontSize: "10px",
-                    fontWeight: 800,
-                    borderRadius: 99,
-                    padding: "1px 6px",
-                    lineHeight: 1.2
-                  }}
-                >
+            {/* 3. Comunicação */}
+            <button
+              onClick={() => setTab("alertas")}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                fontSize: "13.5px",
+                fontWeight: 600,
+                color: (tab === "alertas" || tab === "denuncias") ? t.accent : t.textSub,
+                padding: "12px 18px",
+                borderBottom: `2.5px solid ${(tab === "alertas" || tab === "denuncias") ? t.accent : "transparent"}`,
+                transition: "all 0.2s",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
+              <span>Comunicação</span>
+              {denuncias.filter(d => d.status === "pendente").length > 0 && (
+                <span style={{ background: t.warning, color: "#000", fontSize: "10px", fontWeight: 800, borderRadius: 99, padding: "1px 6px" }}>
                   {denuncias.filter(d => d.status === "pendente").length}
                 </span>
               )}
+            </button>
 
-              {key === "auditoria" && combinedAuditLogs.length > 0 && (
+            {/* 4. Folha & Compliance */}
+            <button
+              onClick={() => setTab("aceites")}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                fontSize: "13.5px",
+                fontWeight: 600,
+                color: (tab === "aceites" || tab === "feriados") ? t.accent : t.textSub,
+                padding: "12px 18px",
+                borderBottom: `2.5px solid ${(tab === "aceites" || tab === "feriados") ? t.accent : "transparent"}`,
+                transition: "all 0.2s",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
+              Folha & Compliance
+            </button>
+
+            {/* 5. Auditoria (Com indicador de fraude / alerta) */}
+            <button
+              onClick={() => setTab("auditoria")}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                fontSize: "13.5px",
+                fontWeight: 600,
+                color: tab === "auditoria" ? t.accent : t.textSub,
+                padding: "12px 18px",
+                borderBottom: `2.5px solid ${tab === "auditoria" ? t.accent : "transparent"}`,
+                transition: "all 0.2s",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
+              <span>Auditoria</span>
+              {fraudAuditLogsCount > 0 && (
                 <span
                   style={{
-                    position: "absolute",
-                    top: 8,
-                    right: 4,
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: t.accent,
-                    display: "block"
-                  }}
-                />
-              )}
-              {key === "arquivo_morto" && deactivatedUsers.length > 0 && (
-                <span
-                  style={{
-                    marginLeft: 6,
-                    fontSize: 10,
-                    padding: "1px 6px",
-                    background: "rgba(239, 68, 68, 0.12)",
-                    border: "1px solid rgba(239, 68, 68, 0.3)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    background: "rgba(239, 68, 68, 0.15)",
+                    border: "1px solid rgba(239, 68, 68, 0.4)",
                     color: "#EF4444",
-                    borderRadius: 10,
-                    fontWeight: 700
+                    fontSize: "10px",
+                    fontWeight: 800,
+                    borderRadius: 99,
+                    padding: "1px 7px"
                   }}
+                  title={`${fraudAuditLogsCount} registro(s) de suspeita/fraude ou divergência na auditoria`}
                 >
-                  {deactivatedUsers.length}
+                  <span
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: "50%",
+                      backgroundColor: "#EF4444",
+                      boxShadow: "0 0 6px #EF4444",
+                      display: "inline-block"
+                    }}
+                  />
+                  <span>{fraudAuditLogsCount}</span>
                 </span>
               )}
             </button>
-          ))}
+          </div>
+
+          {/* Dev Tools Menu for Superadmin / Devs */}
+          {viewerIsSuper && (
+            <div style={{ position: "relative", paddingRight: 12 }}>
+              <button
+                type="button"
+                onClick={() => setDevMenuOpen(v => !v)}
+                style={{
+                  background: (tab === "armazenamento" || tab === "guia_manutencao") ? t.accentGlow : t.surfaceAlt,
+                  border: `1.5px solid ${(tab === "armazenamento" || tab === "guia_manutencao") ? t.accent : t.border}`,
+                  color: (tab === "armazenamento" || tab === "guia_manutencao") ? t.accent : t.textSub,
+                  borderRadius: 8,
+                  padding: "6px 12px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6
+                }}
+                title="Ferramentas do Desenvolvedor (Dev Tools)"
+              >
+                <Settings size={14} color={(tab === "armazenamento" || tab === "guia_manutencao") ? t.accent : t.textSub} />
+                <span>Dev Tools</span>
+                <ChevronDown size={12} />
+              </button>
+
+              {devMenuOpen && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "100%",
+                    right: 12,
+                    marginTop: 6,
+                    background: t.surface,
+                    border: `1.5px solid ${t.border}`,
+                    borderRadius: 10,
+                    boxShadow: `0 8px 24px ${t.shadow}`,
+                    padding: 6,
+                    zIndex: 9999,
+                    minWidth: 180,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 4
+                  }}
+                >
+                  <button
+                    onClick={() => {
+                      setTab("armazenamento");
+                      setDevMenuOpen(false);
+                    }}
+                    style={{
+                      background: tab === "armazenamento" ? t.accentGlow : "transparent",
+                      color: tab === "armazenamento" ? t.accent : t.text,
+                      border: "none",
+                      borderRadius: 6,
+                      padding: "8px 12px",
+                      fontSize: "12.5px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      textAlign: "left",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8
+                    }}
+                  >
+                    <Database size={14} /> Monitor Firebase
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setTab("guia_manutencao");
+                      setDevMenuOpen(false);
+                    }}
+                    style={{
+                      background: tab === "guia_manutencao" ? t.accentGlow : "transparent",
+                      color: tab === "guia_manutencao" ? t.accent : t.text,
+                      border: "none",
+                      borderRadius: 6,
+                      padding: "8px 12px",
+                      fontSize: "12.5px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      textAlign: "left",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8
+                    }}
+                  >
+                    <Wrench size={14} /> Guia de Manutenção
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
       {/* Main Table view */}
       {(tab === "colaboradores" || tab === "adm") && (
         <div style={{ padding: "24px 28px", maxWidth: 980, margin: "0 auto" }}>
+          {/* Sub-navigation Pills for Colaboradores vs Credenciais ADMs */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+            <button
+              type="button"
+              onClick={() => setTab("colaboradores")}
+              style={{
+                background: tab === "colaboradores" ? t.accent : t.surfaceAlt,
+                color: tab === "colaboradores" ? "#fff" : t.textSub,
+                border: `1.5px solid ${tab === "colaboradores" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Lista de Colaboradores
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("adm")}
+              style={{
+                background: tab === "adm" ? t.accent : t.surfaceAlt,
+                color: tab === "adm" ? "#fff" : t.textSub,
+                border: `1.5px solid ${tab === "adm" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Credenciais ADMs
+            </button>
+          </div>
           {tab === "adm" && viewerIsSuper && (
             <div
               style={{
@@ -1799,7 +2167,7 @@ export function AdmPanel({
                   ))}
                 </div>
 
-            {tabUsers.map((u, i) => {
+            {tabUsers.slice((pageColab - 1) * 10, pageColab * 10).map((u, i) => {
               const isSuper = u.matricula === SUPERADMIN_MAT;
               const isSelf = currentUser.id === u.id;
               const p = perms(currentUser, u);
@@ -2009,6 +2377,13 @@ export function AdmPanel({
               </div>
             </div>
           </div>
+          <Paginacao
+            totalItems={tabUsers.length}
+            itemsPerPage={10}
+            currentPage={pageColab}
+            onPageChange={setPageColab}
+            t={t}
+          />
         </div>
       )}
 
@@ -2070,6 +2445,44 @@ export function AdmPanel({
       {/* Calendario Geral / Feriados Corporativos tab */}
       {tab === "feriados" && (
         <div style={{ padding: "24px 28px", maxWidth: 980, margin: "0 auto" }}>
+          {/* Sub-navigation Pills for Folha & Compliance */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+            <button
+              type="button"
+              onClick={() => setTab("aceites")}
+              style={{
+                background: (tab as string) === "aceites" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "aceites" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "aceites" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Aceite de Folhas
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("feriados")}
+              style={{
+                background: tab === "feriados" ? t.accent : t.surfaceAlt,
+                color: tab === "feriados" ? "#fff" : t.textSub,
+                border: `1.5px solid ${tab === "feriados" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Calendário Geral / Feriados
+            </button>
+          </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
             <div>
               <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: t.text }}>Calendário Geral de Feriados</h2>
@@ -2262,11 +2675,11 @@ export function AdmPanel({
             <div>
               <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: t.text }}>Log de Auditoria</h2>
               <p style={{ margin: "4px 0 0", fontSize: 13, color: t.textSub }}>
-                Todas as ações administrativas ficam registradas de forma imutável para conformidade legal (Portaria 671/2021).
+                Todas as ações administrativas e ocorrências ficam registradas de forma imutável para conformidade legal (Portaria 671/2021).
               </p>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              {combinedAuditLogs.length > 0 && (
+              {filteredAuditLogs.length > 0 && (
                 <>
                   <button
                     onClick={exportLogsExcel}
@@ -2285,7 +2698,7 @@ export function AdmPanel({
                       gap: 6,
                       transition: "all 0.15s"
                     }}
-                    title="Exportar registros do log para Excel (CSV compatível)"
+                    title="Exportar registros filtrados do log para Excel (CSV compatível)"
                   >
                     <FileSpreadsheet size={15} />
                     Exportar Excel
@@ -2308,25 +2721,214 @@ export function AdmPanel({
                       gap: 6,
                       transition: "all 0.15s"
                     }}
-                    title="Visualizar relatório de auditoria formatado para impressão ou salvar em PDF"
+                    title="Visualizar relatório de auditoria filtrado para impressão ou salvar em PDF"
                   >
                     <Printer size={15} />
                     Imprimir / PDF
                   </button>
 
                   <span style={{ fontSize: 12, color: t.textMuted, background: t.surfaceAlt, border: `1.5px solid ${t.border}`, borderRadius: 10, padding: "7px 11px", fontWeight: 550 }}>
-                    {combinedAuditLogs.length} registros
+                    {filteredAuditLogs.length} de {combinedAuditLogs.length} registros
                   </span>
                 </>
               )}
             </div>
           </div>
 
+          {/* Painel de Filtros da Auditoria */}
+          <div
+            style={{
+              background: t.surface,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 14,
+              padding: "14px 18px",
+              marginBottom: 16,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: t.text, display: "flex", alignItems: "center", gap: 6 }}>
+                <Filter size={15} style={{ color: t.accent }} />
+                <span>Filtros do Log de Auditoria</span>
+              </div>
+              
+              {(filterAuditMes || filterAuditNome || filterAuditData || filterAuditMatricula || filterAuditAcao !== "todas") && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFilterAuditMes("");
+                    setFilterAuditNome("");
+                    setFilterAuditData("");
+                    setFilterAuditMatricula("");
+                    setFilterAuditAcao("todas");
+                  }}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: t.accent,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    padding: 0,
+                    textDecoration: "underline"
+                  }}
+                >
+                  Limpar todos os filtros
+                </button>
+              )}
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: 10
+              }}
+            >
+              {/* 1. Mês */}
+              <div>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 650, color: t.textMuted, marginBottom: 4 }}>
+                  Mês
+                </label>
+                <select
+                  value={filterAuditMes}
+                  onChange={e => setFilterAuditMes(e.target.value)}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    background: t.inputBg,
+                    border: `1.5px solid ${t.border}`,
+                    borderRadius: 8,
+                    color: t.text,
+                    fontSize: 12.5,
+                    padding: "7px 10px",
+                    outline: "none"
+                  }}
+                >
+                  <option value="">Todos os Meses</option>
+                  {availableAuditMonths.map(([val, label]) => (
+                    <option key={val} value={val}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 2. Data Específica */}
+              <div>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 650, color: t.textMuted, marginBottom: 4 }}>
+                  Data
+                </label>
+                <input
+                  type="date"
+                  value={filterAuditData}
+                  onChange={e => setFilterAuditData(e.target.value)}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    background: t.inputBg,
+                    border: `1.5px solid ${t.border}`,
+                    borderRadius: 8,
+                    color: t.text,
+                    fontSize: 12.5,
+                    padding: "6px 10px",
+                    outline: "none"
+                  }}
+                />
+              </div>
+
+              {/* 3. Nome / Colaborador */}
+              <div>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 650, color: t.textMuted, marginBottom: 4 }}>
+                  Nome
+                </label>
+                <input
+                  type="text"
+                  placeholder="Nome no log..."
+                  value={filterAuditNome}
+                  onChange={e => setFilterAuditNome(e.target.value)}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    background: t.inputBg,
+                    border: `1.5px solid ${t.border}`,
+                    borderRadius: 8,
+                    color: t.text,
+                    fontSize: 12.5,
+                    padding: "7px 10px",
+                    outline: "none"
+                  }}
+                />
+              </div>
+
+              {/* 4. Matrícula */}
+              <div>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 650, color: t.textMuted, marginBottom: 4 }}>
+                  Matrícula
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: 1001..."
+                  value={filterAuditMatricula}
+                  onChange={e => setFilterAuditMatricula(e.target.value)}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    background: t.inputBg,
+                    border: `1.5px solid ${t.border}`,
+                    borderRadius: 8,
+                    color: t.text,
+                    fontSize: 12.5,
+                    padding: "7px 10px",
+                    outline: "none"
+                  }}
+                />
+              </div>
+
+              {/* 5. Ação */}
+              <div>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 650, color: t.textMuted, marginBottom: 4 }}>
+                  Ação
+                </label>
+                <select
+                  value={filterAuditAcao}
+                  onChange={e => setFilterAuditAcao(e.target.value)}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    background: filterAuditAcao === "apenas_fraudes" ? "rgba(239,68,68,0.1)" : t.inputBg,
+                    border: `1.5px solid ${filterAuditAcao === "apenas_fraudes" ? "#EF4444" : t.border}`,
+                    borderRadius: 8,
+                    color: filterAuditAcao === "apenas_fraudes" ? "#EF4444" : t.text,
+                    fontWeight: filterAuditAcao === "apenas_fraudes" ? 700 : 500,
+                    fontSize: 12.5,
+                    padding: "7px 10px",
+                    outline: "none"
+                  }}
+                >
+                  <option value="todas">Todas as Ações</option>
+                  <option value="apenas_fraudes">🚨 Apenas Fraudes / Suspeitas ({fraudAuditLogsCount})</option>
+                  <option value="excluiu">Exclusões / Remoções</option>
+                  <option value="desativou">Desativações de Usuário</option>
+                  <option value="criou">Criações / Cadastros</option>
+                  <option value="alterou">Alterações de Dados/Senha</option>
+                  <option value="gerenciar_marcacao">Ajustes de Ponto Manual</option>
+                  <option value="autocura">Autocura / Divergência de Horário</option>
+                  <option value="login">Logins / Acessos</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
           <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 14, overflow: "hidden" }}>
-            {combinedAuditLogs.length === 0 ? (
+            {filteredAuditLogs.length === 0 ? (
               <div style={{ padding: "52px 0", textAlign: "center" }}>
                 <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: t.textSub }}>Nenhuma ação registrada ainda</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: t.textSub }}>
+                  {combinedAuditLogs.length === 0 ? "Nenhuma ação registrada ainda" : "Nenhum registro encontrado com os filtros aplicados"}
+                </div>
               </div>
             ) : (
               <>
@@ -2337,8 +2939,9 @@ export function AdmPanel({
                     </span>
                   ))}
                 </div>
-                {combinedAuditLogs.map((entry, idx) => {
-                  const isRed = entry.acao.includes("Excluiu") || entry.acao.includes("Desativou");
+                {filteredAuditLogs.slice((pageAudit - 1) * 10, pageAudit * 10).map((entry, idx) => {
+                  const isFraud = isFraudAuditLog(entry);
+                  const isRed = entry.acao.includes("Excluiu") || entry.acao.includes("Desativou") || isFraud;
                   const isYel = entry.acao.includes("Bloqueou") || entry.acao.includes("permissão");
                   const isGrn = entry.acao.includes("Criou") || entry.acao.includes("Desbloqueou") || entry.acao.includes("termo");
                   const acaoCor = isRed ? t.danger : isYel ? t.warning : isGrn ? t.success : t.accent;
@@ -2356,24 +2959,45 @@ export function AdmPanel({
                         gridTemplateColumns: "160px 130px 160px 1fr 1fr",
                         padding: "11px 18px",
                         borderBottom: `1px solid ${t.border}`,
-                        background: idx % 2 === 0 ? "transparent" : t.surfaceAlt,
+                        background: isFraud ? "rgba(239, 68, 68, 0.08)" : (idx % 2 === 0 ? "transparent" : t.surfaceAlt),
                         alignItems: "center"
                       }}
                     >
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: t.text, fontFamily: "monospace" }}>{horaFmt}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: t.text, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 5 }}>
+                          {isFraud && (
+                            <span
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                backgroundColor: "#EF4444",
+                                boxShadow: "0 0 8px #EF4444",
+                                display: "inline-block",
+                                flexShrink: 0
+                              }}
+                              title="Alerta de Fraude / Suspeita de Adulteração de Relógio ou Inconsistência"
+                            />
+                          )}
+                          <span>{horaFmt}</span>
+                        </div>
                         <div style={{ fontSize: 11, color: t.textMuted }}>{dataFmt}</div>
                       </div>
                       <span style={{ fontSize: 13, color: t.text, fontWeight: 500 }}>{entry.quem}</span>
                       <span style={{ fontSize: "12.5px", color: t.textMuted, fontFamily: "monospace" }}>{entry.quemMat}</span>
-                      <span style={{ display: "inline-flex" }}>
+                      <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4 }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: acaoCor, background: acaoBg, border: `1.5px solid ${acaoCor}33`, borderRadius: 6, padding: "3px 9px", whiteSpace: "nowrap" }}>
                           {entry.acao}
                         </span>
+                        {isFraud && (
+                          <span style={{ fontSize: 10, fontWeight: 800, color: "#EF4444", background: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.3)", borderRadius: 6, padding: "2px 6px" }}>
+                            🚨 FRAUDE/SUSPEITA
+                          </span>
+                        )}
                       </span>
                       <div>
-                        <div style={{ fontSize: 13, color: t.text }}>{entry.alvo}</div>
-                        {entry.detalhe && <div style={{ fontSize: "11.5px", color: t.textMuted, marginTop: 2 }}>{entry.detalhe}</div>}
+                        <div style={{ fontSize: 13, color: t.text, fontWeight: isFraud ? 650 : 400 }}>{entry.alvo}</div>
+                        {entry.detalhe && <div style={{ fontSize: "11.5px", color: isFraud ? "#EF4444" : t.textMuted, marginTop: 2 }}>{entry.detalhe}</div>}
                         {entry.latitude && entry.longitude ? (
                           <div style={{ fontSize: "11px", color: t.accent, marginTop: 4, display: "flex", alignItems: "center", gap: 3, flexWrap: "wrap" }}>
                             <span>📍</span>
@@ -2448,6 +3072,13 @@ export function AdmPanel({
               </>
             )}
           </div>
+          <Paginacao
+            totalItems={filteredAuditLogs.length}
+            itemsPerPage={10}
+            currentPage={pageAudit}
+            onPageChange={setPageAudit}
+            t={t}
+          />
         </div>
       )}
 
@@ -3669,6 +4300,45 @@ export function AdmPanel({
       {/* Stage 3 - Aceite de Folhas Administrative Tab Rendering */}
       {tab === "aceites" && (
         <div style={{ padding: "24px 28px", maxWidth: 1080, margin: "0 auto" }}>
+          {/* Sub-navigation Pills for Folha & Compliance */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+            <button
+              type="button"
+              onClick={() => setTab("aceites")}
+              style={{
+                background: (tab as string) === "aceites" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "aceites" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "aceites" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Aceite de Folhas
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("feriados")}
+              style={{
+                background: (tab as string) === "feriados" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "feriados" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "feriados" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Calendário Geral / Feriados
+            </button>
+          </div>
+
           {/* Dashboard Header */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
             <div>
@@ -3892,7 +4562,7 @@ export function AdmPanel({
                     </tr>
                   </thead>
                   <tbody>
-                    {folhasAceite.map((folha) => {
+                    {folhasAceite.slice((pageAceites - 1) * 10, pageAceites * 10).map((folha) => {
                       const MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
                       const userObj = users.find(u => u.id === folha.userId);
                       const isUserBlocked = userObj?.bloqueadoAceite;
@@ -4063,6 +4733,13 @@ export function AdmPanel({
                 </table>
               </div>
             )}
+            <Paginacao
+              totalItems={folhasAceite.length}
+              itemsPerPage={10}
+              currentPage={pageAceites}
+              onPageChange={setPageAceites}
+              t={t}
+            />
           </div>
         </div>
       )}
@@ -4070,6 +4747,52 @@ export function AdmPanel({
       {/* Stage 4 - Enviar Alertas Administrative Tab Rendering */}
       {tab === "alertas" && (
         <div style={{ padding: "24px 28px", maxWidth: 1080, margin: "0 auto" }}>
+          {/* Sub-navigation Pills for Comunicação */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+            <button
+              type="button"
+              onClick={() => setTab("alertas")}
+              style={{
+                background: (tab as string) === "alertas" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "alertas" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "alertas" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Enviar Alertas
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("denuncias")}
+              style={{
+                background: (tab as string) === "denuncias" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "denuncias" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "denuncias" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s",
+                display: "flex",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
+              <span>Denúncias Anônimas</span>
+              {denuncias.filter(d => d.status === "pendente").length > 0 && (
+                <span style={{ background: t.warning, color: "#000", fontSize: "10px", fontWeight: 800, borderRadius: 99, padding: "1px 6px" }}>
+                  {denuncias.filter(d => d.status === "pendente").length}
+                </span>
+              )}
+            </button>
+          </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
             <div>
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: t.text, display: "flex", alignItems: "center", gap: 8 }}>
@@ -4366,38 +5089,74 @@ export function AdmPanel({
                             />
                           </td>
                           <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                            <button
-                              type="button"
-                              title="Excluir alerta"
-                              onClick={async () => {
-                                if (window.confirm("Deseja realmente remover este alerta?")) {
-                                  try {
+                            {confirmDeleteAlertaId === alerta.id ? (
+                              <div style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                                <span style={{ fontSize: 11, color: t.danger, fontWeight: 700 }}>Remover?</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const targetId = alerta.id;
+                                    setConfirmDeleteAlertaId(null);
+                                    setAlertas(prev => prev.filter(a => a.id !== targetId));
+                                    setToast({ msg: "Alerta removido com sucesso.", type: "success" });
                                     if (deleteAlertaFromDb) {
-                                      await deleteAlertaFromDb(alerta.id);
+                                      deleteAlertaFromDb(targetId).catch(err => {
+                                        console.warn("Erro ao deletar alerta no banco de dados:", err);
+                                      });
                                     }
-                                    setAlertas(prev => prev.filter(a => a.id !== alerta.id));
-                                    setToast({ msg: "Alerta removido.", type: "success" });
-                                  } catch (err) {
-                                    console.error("Erro ao deletar alerta:", err);
-                                  }
-                                }
-                              }}
-                              style={{
-                                background: t.dangerBg,
-                                border: `1px solid ${t.dangerBorder}`,
-                                color: t.danger,
-                                borderRadius: 6,
-                                padding: "6px 10px",
-                                cursor: "pointer",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 4,
-                                fontSize: 12,
-                                fontWeight: 600
-                              }}
-                            >
-                              <Trash2 size={13} /> Excluir
-                            </button>
+                                  }}
+                                  style={{
+                                    background: "#DC2626",
+                                    color: "#ffffff",
+                                    border: "none",
+                                    borderRadius: 6,
+                                    padding: "4px 8px",
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                    cursor: "pointer"
+                                  }}
+                                >
+                                  Sim
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteAlertaId(null)}
+                                  style={{
+                                    background: t.surfaceAlt,
+                                    color: t.textSub,
+                                    border: `1px solid ${t.border}`,
+                                    borderRadius: 6,
+                                    padding: "4px 8px",
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    cursor: "pointer"
+                                  }}
+                                >
+                                  Não
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                title="Excluir alerta"
+                                onClick={() => setConfirmDeleteAlertaId(alerta.id)}
+                                style={{
+                                  background: t.dangerBg,
+                                  border: `1px solid ${t.dangerBorder}`,
+                                  color: t.danger,
+                                  borderRadius: 6,
+                                  padding: "6px 10px",
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  fontSize: 12,
+                                  fontWeight: 600
+                                }}
+                              >
+                                <Trash2 size={13} /> Excluir
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -4412,12 +5171,61 @@ export function AdmPanel({
 
       {/* Stage 5 - Denúncias Anônimas Tab Rendering */}
       {tab === "denuncias" && (
-        <DenunciasView
-          t={t}
-          denuncias={denuncias}
-          onUpdateStatus={onUpdateDenunciaStatus || (async () => {})}
-          onDelete={onDeleteDenuncia || (async () => {})}
-        />
+        <div style={{ padding: "24px 28px", maxWidth: 1080, margin: "0 auto" }}>
+          {/* Sub-navigation Pills for Comunicação */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+            <button
+              type="button"
+              onClick={() => setTab("alertas")}
+              style={{
+                background: (tab as string) === "alertas" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "alertas" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "alertas" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Enviar Alertas
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("denuncias")}
+              style={{
+                background: (tab as string) === "denuncias" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "denuncias" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "denuncias" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s",
+                display: "flex",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
+              <span>Denúncias Anônimas</span>
+              {denuncias.filter(d => d.status === "pendente").length > 0 && (
+                <span style={{ background: t.warning, color: "#000", fontSize: "10px", fontWeight: 800, borderRadius: 99, padding: "1px 6px" }}>
+                  {denuncias.filter(d => d.status === "pendente").length}
+                </span>
+              )}
+            </button>
+          </div>
+
+          <DenunciasView
+            t={t}
+            denuncias={denuncias}
+            onUpdateStatus={onUpdateDenunciaStatus || (async () => {})}
+            onDelete={onDeleteDenuncia || (async () => {})}
+          />
+        </div>
       )}
 
       {/* Modals rendering */}
@@ -4828,3 +5636,5 @@ function DelegationModal({ user, onClose, onSave, t }: DelegationModalProps) {
     </div>
   );
 }
+
+export default AdmPanel;

@@ -130,6 +130,19 @@ export async function clearSyncedPunches(confirmedPunches: OfflinePunchItem[]): 
 }
 
 /**
+ * Remove ENTIRE offline queue from native disk.
+ * Call after syncNow() returns success.
+ */
+export async function clearOfflineQueue(): Promise<void> {
+  try {
+    await Preferences.remove({ key: "offline_punches_queue" });
+    console.log("[Preferences] Fila offline completa removida do disco.");
+  } catch (err) {
+    console.error("[Preferences] Erro ao limpar fila offline:", err);
+  }
+}
+
+/**
  * Synchronize clock with server (when online) and store offset in Preferences
  */
 export async function syncClockWithServer(): Promise<number> {
@@ -143,7 +156,7 @@ export async function syncClockWithServer(): Promise<number> {
   try {
     const startTime = Date.now();
     const response = await fetch("/api/health", { method: "HEAD", cache: "no-store" }).catch(() => null);
-    
+
     if (response) {
       const dateHeader = response.headers.get("date");
       if (dateHeader) {
@@ -151,7 +164,7 @@ export async function syncClockWithServer(): Promise<number> {
         const endTime = Date.now();
         const latency = (endTime - startTime) / 2;
         const offset = Math.round((serverTime + latency) - endTime);
-        
+
         memoryClockOffset = offset;
         await setPref("hr_clock_offset", String(offset));
         await setPref("last_clock_sync", String(Date.now()));
@@ -268,39 +281,8 @@ export async function migrateLocalStorageToPreferences(): Promise<void> {
   }
 }
 
-export async function migrateLocalStorageToPreferences(): Promise<void> {
-  const keysToMigrate = [
-    "hr_clock_offset",
-    "hr_cached_minimo_horas_dia",
-    "hr_cached_empresa_config",
-    "modo_leve",
-    "last_punch_timestamp",
-    "offline_punches_queue"
-  ];
-
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith("tour_visto_") && !keysToMigrate.includes(k)) {
-        keysToMigrate.push(k);
-      }
-    }
-
-    for (const key of keysToMigrate) {
-      const prefVal = await getPref(key);
-      const localVal = localStorage.getItem(key);
-      if (!prefVal && localVal) {
-        await setPref(key, localVal);
-      }
-    }
-  } catch (err) {
-    console.warn("[Preferences] Migration warning:", err);
-  }
-}
-
 /**
- * Pega a fila offline salva no disco e faz merge com o pontosGlobal atual.
- * Usado no useEffect de inicialização do EmployeePanel/App.
+ * Apply offline queue to pontosGlobal state
  */
 export async function applyOfflineQueueToPontos(
   pontosGlobal: Record<number, Record<string, any[]>>,

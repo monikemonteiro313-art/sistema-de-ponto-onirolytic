@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
-import { ThemeColors, User, PontosGlobal, Jornada, EmpresaConfig, PeriodoFerias, DiaPontos, PrePonto, Batida, AuditLogEntry, Denuncia, SolicitacaoCorrecao } from "../types";
+import { RefreshCw, WifiOff } from "lucide-react";
+import { ThemeColors, User, PontosGlobal, Jornada, EmpresaConfig, PeriodoFerias, DiaPontos, PrePonto, Batida, AuditLogEntry, Denuncia, SolicitacaoCorrecao, Alerta } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { ModalJornada } from "./ModalJornada";
 import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
@@ -556,6 +557,13 @@ interface AdmOperadorPanelProps {
   solicitacoesCorrecao?: SolicitacaoCorrecao[];
   onAprovarSolicitacaoCorrecao?: (id: string, revisadoPor: string) => Promise<void>;
   onRejeitarSolicitacaoCorrecao?: (id: string, motivoRejeicao: string, revisadoPor: string) => Promise<void>;
+  alertas?: Alerta[];
+  setAlertas?: React.Dispatch<React.SetStateAction<Alerta[]>>;
+  saveAlertaToDb?: (alerta: Alerta) => Promise<void>;
+  deleteAlertaFromDb?: (alertaId: string) => Promise<void>;
+  onSyncData?: () => Promise<void>;
+  isSyncingData?: boolean;
+  isOfflineData?: boolean;
 }
 
 export function AdmOperadorPanel({
@@ -580,10 +588,23 @@ export function AdmOperadorPanel({
   onDeleteDenuncia,
   solicitacoesCorrecao = [],
   onAprovarSolicitacaoCorrecao,
-  onRejeitarSolicitacaoCorrecao
+  onRejeitarSolicitacaoCorrecao,
+  alertas = [],
+  setAlertas,
+  saveAlertaToDb,
+  deleteAlertaFromDb,
+  onSyncData,
+  isSyncingData = false,
+  isOfflineData = false
 }: AdmOperadorPanelProps) {
   const [busca, setBusca] = useState("");
-  const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "gerenciar_marcacoes" | "solicitacoes_correcao" | "alimentacao" | "atestados" | "pre_pontos" | "pontos_manuais" | "denuncias">("frequencia");
+  const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "aprovacoes" | "beneficios" | "relatorios" | "gerenciar_marcacoes">("frequencia");
+  const [subFiltroAprovacoes, setSubFiltroAprovacoes] = useState<"correcoes" | "atestados" | "pontos_manuais" | "pre_pontos" | "denuncias" | "alertas">("correcoes");
+  const [alertaDestinoTipo, setAlertaDestinoTipo] = useState<"TODOS" | "ESPECIFICO">("TODOS");
+  const [alertaMatricula, setAlertaMatricula] = useState<string>("");
+  const [alertaMensagem, setAlertaMensagem] = useState<string>("");
+  const [alertaSending, setAlertaSending] = useState<boolean>(false);
+  const [confirmDeleteAlertaId, setConfirmDeleteAlertaId] = useState<string | null>(null);
   const [filtroStatusPontoManual, setFiltroStatusPontoManual] = useState<"todos" | "pendente" | "aprovado" | "rejeitado">("todos");
 
 
@@ -719,7 +740,8 @@ export function AdmOperadorPanel({
               if (b && b.ocorrencia === "atestado" && (!b.statusAtestado || b.statusAtestado === "pendente")) {
                 atestadosPendentes++;
               }
-              if (b && b.tipo === "manual" && (!b.statusAprovacao || b.statusAprovacao === "pendente")) {
+              const statusAprov = b ? (b.statusAprovacao || (b.lancadoPorAdm || b.editadoPor || b.justificativa?.includes("Aprovada") || b.justificativa?.includes("Gestor") ? "aprovado" : "pendente")) : null;
+              if (b && b.tipo === "manual" && statusAprov === "pendente") {
                 pontosManuaisPendentes++;
               }
             });
@@ -760,6 +782,15 @@ export function AdmOperadorPanel({
       total: atestadosPendentes + pontosManuaisPendentes + prePontosPendentes + batidasIncompletas
     };
   }, [pontosGlobal, computedPrePontos, users]);
+
+  const totalAprovacoesPendentes = useMemo(() => {
+    const correcoes = solicitacoesCorrecao.filter(s => s.status === "pendente").length;
+    const atestados = pendenciasCalculadas.atestadosPendentes;
+    const pontosManuais = pendenciasCalculadas.pontosManuaisPendentes;
+    const prePontos = pendenciasCalculadas.prePontosPendentes;
+    const denunciasQtd = denuncias.filter(d => d.status === "pendente").length;
+    return correcoes + atestados + pontosManuais + prePontos + denunciasQtd;
+  }, [solicitacoesCorrecao, pendenciasCalculadas, denuncias]);
 
   async function handleAceitarAtestado(item: { userId: number; userName: string; dayKey: string; batidaIdx: number; cid: string }) {
     const userRegs = pontosGlobal[item.userId] || {};
@@ -2415,7 +2446,7 @@ export function AdmOperadorPanel({
               latitude: b.latitude,
               longitude: b.longitude,
               accuracy: b.accuracy,
-              statusAprovacao: (b.statusAprovacao as any) || "pendente",
+              statusAprovacao: (b.statusAprovacao as any) || (b.lancadoPorAdm || b.editadoPor || b.justificativa?.includes("Aprovada") || b.justificativa?.includes("Gestor") ? "aprovado" : "pendente"),
               motivoRejeicaoAjuste: b.motivoRejeicaoAjuste,
               revisadoPor: b.revisadoPor,
               revisadoEm: b.revisadoEm
@@ -2844,6 +2875,15 @@ export function AdmOperadorPanel({
                     {calcularHorasDia(activeUser.jornadaId, activeUser.jornadaCustom).toFixed(1)}h
                   </div>
                 </div>
+
+                {selectedUserJornada.sabadoEspecial && (
+                  <div style={{ background: t.accentGlow, border: `1.5px solid ${t.borderFocus}`, borderRadius: 8, padding: "6px 12px", textAlign: "left" }}>
+                    <div style={{ fontSize: 11, color: t.accent, fontWeight: 700, textTransform: "uppercase" }}>Sábado (2 batidas)</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: t.text, fontFamily: "monospace" }}>
+                      {selectedUserJornada.sabadoEntrada || "08:00"} às {selectedUserJornada.sabadoSaida || "12:00"} ({selectedUserJornada.sabadoHoras ?? 4}h)
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -3169,6 +3209,44 @@ export function AdmOperadorPanel({
 
   return (
     <div style={{ minHeight: "100vh", background: t.bg }}>
+      {isOfflineData && (
+        <div style={{
+          background: t.warningBg,
+          borderBottom: `1.5px solid ${t.warningBorder}`,
+          color: t.warning,
+          padding: "8px 28px",
+          fontSize: 12.5,
+          fontWeight: 700,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <WifiOff size={16} />
+            <span>Exibindo dados armazenados localmente (offline) — Servidor indisponível no momento.</span>
+          </div>
+          {onSyncData && (
+            <button
+              type="button"
+              onClick={() => onSyncData()}
+              disabled={isSyncingData}
+              style={{
+                background: t.warning,
+                color: "#000",
+                border: "none",
+                borderRadius: 6,
+                padding: "3px 10px",
+                fontSize: 11,
+                fontWeight: 800,
+                cursor: "pointer"
+              }}
+            >
+              {isSyncingData ? "Tentando..." : "Tentar Sincronizar"}
+            </button>
+          )}
+        </div>
+      )}
+
       {toast && (
         <div style={{ position: "fixed", top: 20, right: 20, zIndex: 1000, background: t.successBg, border: `1.5px solid ${t.successBorder}`, color: t.success, borderRadius: 10, padding: "11px 18px", fontSize: "13.5px", fontWeight: 600 }}>
           {toast.msg}
@@ -3188,6 +3266,30 @@ export function AdmOperadorPanel({
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {onSyncData && (
+              <button
+                type="button"
+                onClick={() => onSyncData()}
+                disabled={isSyncingData}
+                style={{
+                  background: t.surfaceAlt,
+                  border: `1.5px solid ${t.border}`,
+                  color: t.accent,
+                  borderRadius: 9,
+                  padding: "7px 13px",
+                  fontSize: "12.5px",
+                  fontWeight: 600,
+                  cursor: isSyncingData ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6
+                }}
+                title="Sincronizar e forçar busca de dados do servidor"
+              >
+                <RefreshCw size={14} style={{ animation: isSyncingData ? "spin 1s linear infinite" : "none" }} />
+                <span>{isSyncingData ? "Atualizando..." : "Sincronizar"}</span>
+              </button>
+            )}
             <button onClick={() => setModalEmpresa(true)} title="Configurar empresa" style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 9, padding: "7px 10px", cursor: "pointer", display: "flex", alignItems: "center" }}>
               <span>⚙️</span>
             </button>
@@ -3379,7 +3481,7 @@ export function AdmOperadorPanel({
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
             {/* Card 1: Atestados Pendentes */}
             <div
-              onClick={() => setGuiaAtiva("atestados")}
+              onClick={() => { setGuiaAtiva("aprovacoes"); setSubFiltroAprovacoes("atestados"); }}
               style={{
                 background: pendenciasCalculadas.atestadosPendentes > 0 ? "rgba(245,158,11,0.08)" : t.surfaceAlt,
                 border: `1.5px solid ${pendenciasCalculadas.atestadosPendentes > 0 ? "rgba(245,158,11,0.3)" : t.border}`,
@@ -3397,7 +3499,7 @@ export function AdmOperadorPanel({
 
             {/* Card 2: Pontos Manuais (M) */}
             <div
-              onClick={() => setGuiaAtiva("pontos_manuais")}
+              onClick={() => { setGuiaAtiva("aprovacoes"); setSubFiltroAprovacoes("pontos_manuais"); }}
               style={{
                 background: pendenciasCalculadas.pontosManuaisPendentes > 0 ? "rgba(245,158,11,0.08)" : t.surfaceAlt,
                 border: `1.5px solid ${pendenciasCalculadas.pontosManuaisPendentes > 0 ? "rgba(245,158,11,0.3)" : t.border}`,
@@ -3415,7 +3517,7 @@ export function AdmOperadorPanel({
 
             {/* Card 3: Ajustes Solicitados (PrePonto) */}
             <div
-              onClick={() => setGuiaAtiva("pre_pontos")}
+              onClick={() => { setGuiaAtiva("aprovacoes"); setSubFiltroAprovacoes("correcoes"); }}
               style={{
                 background: pendenciasCalculadas.prePontosPendentes > 0 ? "rgba(59,130,246,0.08)" : t.surfaceAlt,
                 border: `1.5px solid ${pendenciasCalculadas.prePontosPendentes > 0 ? "rgba(59,130,246,0.3)" : t.border}`,
@@ -3451,123 +3553,110 @@ export function AdmOperadorPanel({
           </div>
         </div>
 
-        {/* Navigation Tabs */}
-        <div className="no-scrollbar" style={{ display: "flex", gap: 8, borderBottom: `1.5px solid ${t.border}`, paddingBottom: 12, marginBottom: 20, overflowX: "auto", whiteSpace: "nowrap", maxWidth: "100%", WebkitOverflowScrolling: "touch" }}>
+        {/* Navigation Tabs (Strictly 4 Visible Tabs) */}
+        <div style={{ display: "flex", gap: 10, borderBottom: `1.5px solid ${t.border}`, paddingBottom: 12, marginBottom: 20, flexWrap: "wrap" }}>
+          {/* Tab 1: Controle de Frequência */}
           <button
+            type="button"
             onClick={() => setGuiaAtiva("frequencia")}
             style={{
-              background: guiaAtiva === "frequencia" ? t.accentGlow : "transparent",
-              border: `1.5px solid ${guiaAtiva === "frequencia" ? t.borderFocus : "transparent"}`,
-              color: guiaAtiva === "frequencia" ? t.accent : t.textSub,
-              fontSize: "13px",
+              background: (guiaAtiva === "frequencia" || guiaAtiva === "gerenciar_marcacoes") ? t.accentGlow : t.surface,
+              border: `1.5px solid ${(guiaAtiva === "frequencia" || guiaAtiva === "gerenciar_marcacoes") ? t.borderFocus : t.border}`,
+              color: (guiaAtiva === "frequencia" || guiaAtiva === "gerenciar_marcacoes") ? t.accent : t.textSub,
+              fontSize: "13.5px",
               fontWeight: 700,
-              padding: "7px 14px",
-              borderRadius: 8,
-              cursor: "pointer",
-              transition: "all 0.15s"
-            }}
-          >
-            📊 Controle de Frequência
-          </button>
-          <button
-            onClick={() => setGuiaAtiva("solicitacoes_correcao")}
-            style={{
-              background: guiaAtiva === "solicitacoes_correcao" ? t.accentGlow : "transparent",
-              border: `1.5px solid ${guiaAtiva === "solicitacoes_correcao" ? t.borderFocus : "transparent"}`,
-              color: guiaAtiva === "solicitacoes_correcao" ? t.accent : t.textSub,
-              fontSize: "13px",
-              fontWeight: 700,
-              padding: "7px 14px",
-              borderRadius: 8,
+              padding: "9px 18px",
+              borderRadius: 10,
               cursor: "pointer",
               transition: "all 0.15s",
               display: "inline-flex",
               alignItems: "center",
-              gap: 6
+              gap: 8
             }}
           >
-            <span>📝 Aprovar Correções</span>
-            {solicitacoesCorrecao.filter(s => s.status === "pendente").length > 0 && (
+            📊 Controle de Frequência
+          </button>
+
+          {/* Tab 2: Aprovações */}
+          <button
+            type="button"
+            onClick={() => setGuiaAtiva("aprovacoes")}
+            style={{
+              background: guiaAtiva === "aprovacoes" ? t.accentGlow : t.surface,
+              border: `1.5px solid ${guiaAtiva === "aprovacoes" ? t.borderFocus : t.border}`,
+              color: guiaAtiva === "aprovacoes" ? t.accent : t.textSub,
+              fontSize: "13.5px",
+              fontWeight: 700,
+              padding: "9px 18px",
+              borderRadius: 10,
+              cursor: "pointer",
+              transition: "all 0.15s",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8
+            }}
+          >
+            <span>✍️ Aprovações</span>
+            {totalAprovacoesPendentes > 0 && (
               <span
                 style={{
                   background: "#f59e0b",
-                  color: "#fff",
-                  fontSize: "10px",
+                  color: "#ffffff",
+                  fontSize: "11px",
                   fontWeight: 800,
                   borderRadius: 99,
-                  padding: "1px 6px",
+                  padding: "2px 8px",
                   lineHeight: 1.2
                 }}
               >
-                {solicitacoesCorrecao.filter(s => s.status === "pendente").length}
+                {totalAprovacoesPendentes}
               </span>
             )}
           </button>
+
+          {/* Tab 3: Benefícios */}
           <button
-            onClick={() => setGuiaAtiva("alimentacao")}
+            type="button"
+            onClick={() => setGuiaAtiva("beneficios")}
             style={{
-              background: guiaAtiva === "alimentacao" ? t.accentGlow : "transparent",
-              border: `1.5px solid ${guiaAtiva === "alimentacao" ? t.borderFocus : "transparent"}`,
-              color: guiaAtiva === "alimentacao" ? t.accent : t.textSub,
-              fontSize: "13px",
+              background: guiaAtiva === "beneficios" ? t.accentGlow : t.surface,
+              border: `1.5px solid ${guiaAtiva === "beneficios" ? t.borderFocus : t.border}`,
+              color: guiaAtiva === "beneficios" ? t.accent : t.textSub,
+              fontSize: "13.5px",
               fontWeight: 700,
-              padding: "7px 14px",
-              borderRadius: 8,
+              padding: "9px 18px",
+              borderRadius: 10,
               cursor: "pointer",
-              transition: "all 0.15s"
+              transition: "all 0.15s",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8
             }}
           >
-            🎴 Gestão de Cartão Alimentação
-          </button>
-          <button
-            onClick={() => setGuiaAtiva("atestados")}
-            style={{
-              background: guiaAtiva === "atestados" ? t.accentGlow : "transparent",
-              border: `1.5px solid ${guiaAtiva === "atestados" ? t.borderFocus : "transparent"}`,
-              color: guiaAtiva === "atestados" ? t.accent : t.textSub,
-              fontSize: "13px",
-              fontWeight: 700,
-              padding: "7px 14px",
-              borderRadius: 8,
-              cursor: "pointer",
-              transition: "all 0.15s"
-            }}
-          >
-            📋 Gestão de Atestados
-          </button>
-          <button
-            onClick={() => setGuiaAtiva("pontos_manuais")}
-            style={{
-              background: guiaAtiva === "pontos_manuais" ? t.accentGlow : "transparent",
-              border: `1.5px solid ${guiaAtiva === "pontos_manuais" ? t.borderFocus : "transparent"}`,
-              color: guiaAtiva === "pontos_manuais" ? t.accent : t.textSub,
-              fontSize: "13px",
-              fontWeight: 700,
-              padding: "7px 14px",
-              borderRadius: 8,
-              cursor: "pointer",
-              transition: "all 0.15s"
-            }}
-          >
-            ✍️ Aprovação de Pontos Manuais (M)
-          </button>
-          <button
-            onClick={() => setGuiaAtiva("pre_pontos")}
-            style={{
-              background: guiaAtiva === "pre_pontos" ? t.accentGlow : "transparent",
-              border: `1.5px solid ${guiaAtiva === "pre_pontos" ? t.borderFocus : "transparent"}`,
-              color: guiaAtiva === "pre_pontos" ? t.accent : t.textSub,
-              fontSize: "13px",
-              fontWeight: 700,
-              padding: "7px 14px",
-              borderRadius: 8,
-              cursor: "pointer",
-              transition: "all 0.15s"
-            }}
-          >
-            🛡️ Validação de Cliques (Pré-Pontos)
+            🎴 Benefícios
           </button>
 
+          {/* Tab 4: Relatórios */}
+          <button
+            type="button"
+            onClick={() => setGuiaAtiva("relatorios")}
+            style={{
+              background: guiaAtiva === "relatorios" ? t.accentGlow : t.surface,
+              border: `1.5px solid ${guiaAtiva === "relatorios" ? t.borderFocus : t.border}`,
+              color: guiaAtiva === "relatorios" ? t.accent : t.textSub,
+              fontSize: "13.5px",
+              fontWeight: 700,
+              padding: "9px 18px",
+              borderRadius: 10,
+              cursor: "pointer",
+              transition: "all 0.15s",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8
+            }}
+          >
+            📈 Relatórios
+          </button>
         </div>
 
         {guiaAtiva === "frequencia" ? (
@@ -3662,196 +3751,70 @@ export function AdmOperadorPanel({
             feriados={feriados}
             minimoHorasDia={minimoHorasDia}
           />
-        ) : guiaAtiva === "solicitacoes_correcao" ? (
-          <SolicitacoesCorrecaoView
-            t={t}
-            currentUser={currentUser}
-            solicitacoes={solicitacoesCorrecao}
-            onAprovar={onAprovarSolicitacaoCorrecao || (async () => {})}
-            onRejeitar={onRejeitarSolicitacaoCorrecao || (async () => {})}
-          />
-        ) : guiaAtiva === "alimentacao" ? (
+        ) : guiaAtiva === "aprovacoes" ? (
           <>
-            {/* VALE-ALIMENTAÇÃO TAB CONTENT */}
-            {/* Highlight Alert widgets for Food Card */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 }}>
+            {/* Sub-navigation bar for Aprovações */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 20, borderBottom: `1.5px solid ${t.border}`, paddingBottom: 12, flexWrap: "wrap" }}>
               {[
-                ["Colaboradores Elegíveis", totalElegiveisAlimentacao, t.accent, t.accentGlow, t.borderFocus],
-                ["Total de Dias de Direito", totalDiasAlimentacao, "#10B981", "rgba(16,185,129,0.1)", "rgba(16,185,129,0.3)"],
-                ["Média de Dias / Colaborador", `${mediaDiasAlimentacao} dias`, "#F59E0B", "rgba(245,158,11,0.1)", "rgba(245,158,11,0.3)"],
-                ["Total Estimado a Pagar", totalEstimadoAlimentacaoPagar.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }), "#3b82f6", "rgba(59,130,246,0.1)", "rgba(59,130,246,0.3)"]
-              ].map(([label, val, color, bg, border], idx) => (
-                <div key={idx} style={{ background: t.surface, border: `1.5px solid ${border}`, borderRadius: 12, padding: "14px 16px" }}>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: color as string, fontVariantNumeric: "tabular-nums" }}>{val}</div>
-                  <div style={{ fontSize: 12, color: t.textSub, marginTop: 3 }}>{label as string}</div>
-                </div>
-              ))}
+                { key: "correcoes", label: "📝 Correções de Ponto", count: solicitacoesCorrecao.filter(s => s.status === "pendente").length },
+                { key: "atestados", label: "📋 Atestados Médicos", count: pendenciasCalculadas.atestadosPendentes },
+                { key: "pontos_manuais", label: "✍️ Pontos Manuais (M)", count: pendenciasCalculadas.pontosManuaisPendentes },
+                { key: "pre_pontos", label: "🛡️ Validação / Pré-Pontos", count: pendenciasCalculadas.prePontosPendentes },
+                { key: "denuncias", label: "📢 Canal de Denúncias", count: denuncias.filter(d => d.status === "pendente").length },
+                { key: "alertas", label: "🔔 Comunicados / Alertas", count: alertas.length }
+              ].map(item => {
+                const active = subFiltroAprovacoes === item.key;
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setSubFiltroAprovacoes(item.key as any)}
+                    style={{
+                      background: active ? t.accent : t.surface,
+                      color: active ? "#ffffff" : t.textSub,
+                      border: `1.5px solid ${active ? t.accent : t.border}`,
+                      borderRadius: 10,
+                      padding: "8px 16px",
+                      fontSize: "13px",
+                      fontWeight: active ? 800 : 600,
+                      cursor: "pointer",
+                      transition: "all 0.15s",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      boxShadow: active ? `0 2px 8px ${t.accentGlow}` : "none"
+                    }}
+                  >
+                    <span>{item.label}</span>
+                    {item.count > 0 && (
+                      <span
+                        style={{
+                          background: active ? "#ffffff" : "#f59e0b",
+                          color: active ? t.accent : "#ffffff",
+                          fontSize: "11px",
+                          fontWeight: 800,
+                          borderRadius: 99,
+                          padding: "1px 7px",
+                          lineHeight: 1.2
+                        }}
+                      >
+                        {item.count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Explanatory Notice Block */}
-            <div style={{ background: t.surfaceAlt, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "16px 20px", marginBottom: 20 }}>
-              <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <span style={{ fontSize: 18 }}>💡</span>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginBottom: 4 }}>Sobre o Cálculo do Vale-Alimentação</div>
-                  <div style={{ fontSize: 12, color: t.textSub, lineHeight: "1.5" }}>
-                    Os dias de direito ao vale-alimentação correspondem apenas aos dias em que o funcionário <strong>efetivamente trabalhou</strong> no mínimo <strong>{minimoHorasDia} horas</strong> no posto. O atestado (seja de dia completo ou parcial) abona as horas/faltas no espelho de ponto, mas <strong>nunca contabiliza como horas trabalhadas para o vale-alimentação</strong>. Férias, feriados e afastamentos também não geram direito ao benefício. O pagamento é limitado ao teto máximo de <strong>R$ {limiteMaximoAlimentacao}</strong> (configurado no topo) por funcionário.
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Filter and Export Row for Alimentacao */}
-            <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: "260px" }}>
-                <input
-                  placeholder="Buscar funcionário na gestão de alimentação..."
-                  value={busca}
-                  onChange={e => setBusca(e.target.value)}
-                  style={{ width: "100%", boxSizing: "border-box", background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 10, color: t.text, fontSize: 14, padding: "10px 16px", outline: "none", fontFamily: "inherit" }}
-                />
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={copiarTabelaAlimentacao}
-                  style={{
-                    background: t.surfaceAlt,
-                    border: `1.5px solid ${t.border}`,
-                    borderRadius: 10,
-                    padding: "9px 16px",
-                    cursor: "pointer",
-                    fontSize: "13px",
-                    fontWeight: 600,
-                    color: t.textSub,
-                    fontFamily: "inherit",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    transition: "all 0.15s"
-                  }}
-                >
-                  📋 Copiar Dados
-                </button>
-                <button
-                  onClick={exportarTabelaAlimentacao}
-                  style={{
-                    background: "rgba(16,185,129,0.12)",
-                    border: "1px solid rgba(16,185,129,0.3)",
-                    borderRadius: 10,
-                    padding: "9px 16px",
-                    cursor: "pointer",
-                    fontSize: "13px",
-                    fontWeight: 600,
-                    color: "#10B981",
-                    fontFamily: "inherit",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    transition: "all 0.15s"
-                  }}
-                >
-                  📥 Exportar XLS
-                </button>
-              </div>
-            </div>
-
-            {/* Food Card Table listing */}
-            {filtrados.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "48px", color: t.textMuted, fontSize: 14 }}>Nenhum funcionário encontrado.</div>
-            ) : (
-              <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 14, overflow: "hidden" }}>
-                <div style={{ overflowX: "auto" }} className="no-scrollbar">
-                  <table style={{ minWidth: 680, width: "100%", borderCollapse: "collapse", textAlign: "left", fontFamily: "inherit" }}>
-                  <thead>
-                    <tr style={{ background: t.surfaceAlt, borderBottom: `1.5px solid ${t.border}` }}>
-                      <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Nome / Matrícula</th>
-                      <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Jornada</th>
-                      <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub, textAlign: "center" }}>Elegível</th>
-                      <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub, textAlign: "center" }}>Dias com Direito ({MESES[mesAtual.mes]})</th>
-                      <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub, textAlign: "right" }}>Valor a Receber</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filtrados.map(colab => {
-                      const temDireito = colab.direitoAlimentacao !== false;
-                      const r = resumosMes[colab.id];
-                      const diasValue = temDireito && r ? r.diasCartao : 0;
-                      const jLabel = Jlabel(colab) || "Sem jornada";
-
-                      return (
-                        <tr key={colab.id} style={{ borderBottom: `1px solid ${t.border}`, transition: "background 0.15s" }}>
-                          {/* Colaborador Info */}
-                          <td style={{ padding: "14px 18px" }}>
-                            <div style={{ fontSize: "14px", fontWeight: 700, color: t.text }}>{colab.nome}</div>
-                            <div style={{ fontSize: "11px", color: t.textMuted }}>Mat. {colab.matricula}</div>
-                          </td>
-                          {/* Jornada */}
-                          <td style={{ padding: "14px 18px" }}>
-                            <span style={{ fontSize: "12.5px", color: t.textSub, fontWeight: 500 }}>{jLabel}</span>
-                          </td>
-                          {/* Elegivel switch button */}
-                          <td style={{ padding: "14px 18px", textAlign: "center" }}>
-                            <button
-                              onClick={() => alternarDireitoAlimentacao(colab.id, !temDireito)}
-                              style={{
-                                border: "none",
-                                borderRadius: 20,
-                                background: temDireito ? "rgba(16,185,129,0.15)" : t.surfaceAlt,
-                                color: temDireito ? "#10B981" : t.textMuted,
-                                fontSize: "11px",
-                                fontWeight: 700,
-                                padding: "5px 12px",
-                                cursor: "pointer",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 4,
-                                borderStyle: "solid",
-                                borderWidth: "1px",
-                                borderColor: temDireito ? "rgba(16,185,129,0.3)" : t.border,
-                                transition: "all 0.15s"
-                              }}
-                            >
-                              <span style={{ width: 6, height: 6, borderRadius: "50%", background: temDireito ? "#10B981" : t.textMuted }} />
-                              {temDireito ? "Elegível" : "Não Elegível"}
-                            </button>
-                          </td>
-                          {/* Calculated Days */}
-                          <td style={{ padding: "14px 18px", textAlign: "center" }}>
-                            <div style={{ fontSize: "16px", fontWeight: 800, color: diasValue > 0 ? "#10B981" : t.textMuted, fontVariantNumeric: "tabular-nums" }}>
-                              {diasValue} {diasValue === 1 ? "dia" : "dias"}
-                            </div>
-                          </td>
-                          {/* Calculated Value to Receive */}
-                          <td style={{ padding: "14px 18px", textAlign: "right" }}>
-                            {(() => {
-                              const valorCalculado = diasValue * valorDiarioAlimentacao;
-                              const valorFinal = Math.min(valorCalculado, limiteMaximoAlimentacao);
-                              const atingiuTeto = valorCalculado > limiteMaximoAlimentacao;
-                              
-                              return (
-                                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
-                                  <div style={{ fontSize: "15px", fontWeight: 800, color: diasValue > 0 ? "#10B981" : t.textMuted, fontVariantNumeric: "tabular-nums" }}>
-                                    {valorFinal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
-                                  </div>
-                                  {atingiuTeto && (
-                                    <div style={{ fontSize: "10.5px", color: "#EF4444", fontWeight: "600", marginTop: 2 }}>
-                                      Teto atingido
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                </div>
-              </div>
-            )}
-          </>
-        ) : guiaAtiva === "atestados" ? (
+            {subFiltroAprovacoes === "correcoes" ? (
+              <SolicitacoesCorrecaoView
+                t={t}
+                currentUser={currentUser}
+                solicitacoes={solicitacoesCorrecao}
+                onAprovar={onAprovarSolicitacaoCorrecao || (async () => {})}
+                onRejeitar={onRejeitarSolicitacaoCorrecao || (async () => {})}
+              />
+            ) : subFiltroAprovacoes === "atestados" ? (
           <>
             {/* ATESTADOS TAB CONTENT */}
             {/* Metric widgets for Atestados */}
@@ -4276,7 +4239,7 @@ export function AdmOperadorPanel({
               </div>
             )}
           </>
-        ) : guiaAtiva === "pontos_manuais" ? (
+        ) : subFiltroAprovacoes === "pontos_manuais" ? (
           <>
             {/* PONTOS MANUAIS TAB CONTENT */}
             <div style={{ background: t.surfaceAlt, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: "20px", marginBottom: 20 }}>
@@ -4514,7 +4477,7 @@ export function AdmOperadorPanel({
               </div>
             )}
           </>
-        ) : guiaAtiva === "pre_pontos" ? (
+        ) : subFiltroAprovacoes === "pre_pontos" ? (
           <>
             {/* PRÉ-PONTOS / VALIDAÇÃO DE CLIQUES TAB CONTENT */}
             <div style={{ background: t.surfaceAlt, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: "20px", marginBottom: 20 }}>
@@ -4780,13 +4743,619 @@ export function AdmOperadorPanel({
               );
             })()}
           </>
-        ) : (
+        ) : subFiltroAprovacoes === "denuncias" ? (
           <DenunciasView
             t={t}
             denuncias={denuncias}
             onUpdateStatus={onUpdateDenunciaStatus || (async () => {})}
             onDelete={onDeleteDenuncia || (async () => {})}
           />
+        ) : (
+          <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 16, padding: 24 }}>
+            <div style={{ marginBottom: 24, borderBottom: `1px solid ${t.border}`, paddingBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: t.text }}>📢 Enviar Novo Comunicado / Alerta</h3>
+              <p style={{ margin: "4px 0 0 0", fontSize: 13, color: t.textSub }}>
+                Envie notificações diretas aos colaboradores. O alerta será exibido em destaque assim que o usuário navegar pelo sistema.
+              </p>
+            </div>
+
+            {/* Form */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 640, marginBottom: 32 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: t.textSub, marginBottom: 6 }}>
+                  DESTINATÁRIO
+                </label>
+                <div style={{ display: "flex", gap: 12 }}>
+                  <button
+                    type="button"
+                    onClick={() => setAlertaDestinoTipo("TODOS")}
+                    style={{
+                      flex: 1,
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      border: `1.5px solid ${alertaDestinoTipo === "TODOS" ? t.accent : t.border}`,
+                      background: alertaDestinoTipo === "TODOS" ? t.surfaceAlt : t.surface,
+                      color: alertaDestinoTipo === "TODOS" ? t.accent : t.text,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      cursor: "pointer"
+                    }}
+                  >
+                    🌐 Todos os Colaboradores
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAlertaDestinoTipo("ESPECIFICO")}
+                    style={{
+                      flex: 1,
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      border: `1.5px solid ${alertaDestinoTipo === "ESPECIFICO" ? t.accent : t.border}`,
+                      background: alertaDestinoTipo === "ESPECIFICO" ? t.surfaceAlt : t.surface,
+                      color: alertaDestinoTipo === "ESPECIFICO" ? t.accent : t.text,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      cursor: "pointer"
+                    }}
+                  >
+                    👤 Colaborador Específico
+                  </button>
+                </div>
+              </div>
+
+              {alertaDestinoTipo === "ESPECIFICO" && (
+                <div>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: t.textSub, marginBottom: 6 }}>
+                    SELECIONE O COLABORADOR OU DIGITE A MATRÍCULA
+                  </label>
+                  <select
+                    value={alertaMatricula}
+                    onChange={e => setAlertaMatricula(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      border: `1.5px solid ${t.border}`,
+                      background: t.surface,
+                      color: t.text,
+                      fontSize: 13,
+                      fontFamily: "inherit"
+                    }}
+                  >
+                    <option value="">-- Selecione o colaborador --</option>
+                    {users.map(u => (
+                      <option key={u.id} value={u.matricula}>
+                        {u.nome} (Mat. {u.matricula})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: t.textSub, marginBottom: 6 }}>
+                  MENSAGEM DO COMUNICADO
+                </label>
+                <textarea
+                  rows={3}
+                  value={alertaMensagem}
+                  onChange={e => setAlertaMensagem(e.target.value)}
+                  placeholder="Digite a mensagem do comunicado ou alerta..."
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: `1.5px solid ${t.border}`,
+                    background: t.surface,
+                    color: t.text,
+                    fontSize: 13,
+                    fontFamily: "inherit",
+                    resize: "vertical",
+                    boxSizing: "border-box"
+                  }}
+                />
+              </div>
+
+              <div>
+                <button
+                  type="button"
+                  disabled={alertaSending || !alertaMensagem.trim() || (alertaDestinoTipo === "ESPECIFICO" && !alertaMatricula.trim())}
+                  onClick={async () => {
+                    const msg = alertaMensagem.trim();
+                    const destMat = alertaDestinoTipo === "TODOS" ? "TODOS" : alertaMatricula.trim();
+                    if (!msg) return;
+                    if (alertaDestinoTipo === "ESPECIFICO" && !destMat) return;
+
+                    setAlertaSending(true);
+                    try {
+                      const newAlerta: Alerta = {
+                        id: "alerta_" + Date.now() + "_" + Math.random().toString(36).substr(2, 4),
+                        mensagem: msg,
+                        destinatarioMatricula: destMat,
+                        criadoEm: new Date().toISOString(),
+                        criadoPor: currentUser.nome,
+                        lidoPorMatriculas: []
+                      };
+
+                      if (setAlertas) {
+                        setAlertas(prev => [newAlerta, ...prev]);
+                      }
+                      if (saveAlertaToDb) {
+                        await saveAlertaToDb(newAlerta);
+                      }
+                      setAlertaMensagem("");
+                      setAlertaMatricula("");
+                      alert("Alerta enviado com sucesso!");
+                    } catch (err) {
+                      console.error("Erro ao enviar alerta:", err);
+                    } finally {
+                      setAlertaSending(false);
+                    }
+                  }}
+                  style={{
+                    background: t.accent,
+                    color: "#ffffff",
+                    border: "none",
+                    borderRadius: 10,
+                    padding: "11px 20px",
+                    fontWeight: 800,
+                    fontSize: 13,
+                    cursor: "pointer",
+                    opacity: (alertaSending || !alertaMensagem.trim() || (alertaDestinoTipo === "ESPECIFICO" && !alertaMatricula.trim())) ? 0.5 : 1
+                  }}
+                >
+                  {alertaSending ? "Enviando..." : "📢 Publicar Comunicado / Alerta"}
+                </button>
+              </div>
+            </div>
+
+            {/* Table of Sent Alerts */}
+            <div style={{ borderTop: `1px solid ${t.border}`, paddingTop: 20 }}>
+              <h4 style={{ margin: "0 0 16px 0", fontSize: 15, fontWeight: 800, color: t.text }}>
+                📋 Histórico de Alertas Cadastrados ({alertas.length})
+              </h4>
+              {alertas.length === 0 ? (
+                <p style={{ fontSize: 13, color: t.textSub }}>Nenhum alerta cadastrado no momento.</p>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1.5px solid ${t.border}`, textAlign: "left", color: t.textSub, fontSize: 11, textTransform: "uppercase" }}>
+                        <th style={{ padding: "10px 12px" }}>Destinatário</th>
+                        <th style={{ padding: "10px 12px" }}>Mensagem</th>
+                        <th style={{ padding: "10px 12px" }}>Data de Envio</th>
+                        <th style={{ padding: "10px 12px", textAlign: "right" }}>Ação</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {alertas.map(alerta => {
+                        const isTodos = alerta.destinatarioMatricula === "TODOS";
+                        const targetUser = !isTodos ? users.find(u => u.matricula === alerta.destinatarioMatricula) : null;
+                        return (
+                          <tr key={alerta.id} style={{ borderBottom: `1px solid ${t.border}` }}>
+                            <td style={{ padding: "12px", fontWeight: 700, color: t.text }}>
+                              {isTodos ? "🌐 Todos" : `👤 ${targetUser ? targetUser.nome : alerta.destinatarioMatricula} (Mat. ${alerta.destinatarioMatricula})`}
+                            </td>
+                            <td style={{ padding: "12px", color: t.text }}>{alerta.mensagem}</td>
+                            <td style={{ padding: "12px", color: t.textSub, fontSize: 12 }}>
+                              {new Date(alerta.criadoEm).toLocaleString("pt-BR")}
+                            </td>
+                            <td style={{ padding: "12px", textAlign: "right" }}>
+                              {confirmDeleteAlertaId === alerta.id ? (
+                                <div style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                                  <span style={{ fontSize: 11, color: t.danger, fontWeight: 700 }}>Remover?</span>
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      const targetId = alerta.id;
+                                      setConfirmDeleteAlertaId(null);
+                                      if (setAlertas) {
+                                        setAlertas(prev => prev.filter(a => a.id !== targetId));
+                                      }
+                                      if (deleteAlertaFromDb) {
+                                        try {
+                                          await deleteAlertaFromDb(targetId);
+                                        } catch (err) {
+                                          console.warn("Erro ao deletar alerta do banco:", err);
+                                        }
+                                      }
+                                    }}
+                                    style={{
+                                      background: "#DC2626",
+                                      color: "#ffffff",
+                                      border: "none",
+                                      borderRadius: 6,
+                                      padding: "4px 8px",
+                                      fontSize: 12,
+                                      fontWeight: 700,
+                                      cursor: "pointer"
+                                    }}
+                                  >
+                                    Sim
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteAlertaId(null)}
+                                    style={{
+                                      background: t.surfaceAlt,
+                                      color: t.textSub,
+                                      border: `1px solid ${t.border}`,
+                                      borderRadius: 6,
+                                      padding: "4px 8px",
+                                      fontSize: 12,
+                                      fontWeight: 600,
+                                      cursor: "pointer"
+                                    }}
+                                  >
+                                    Não
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteAlertaId(alerta.id)}
+                                  style={{
+                                    background: t.dangerBg,
+                                    border: `1px solid ${t.dangerBorder}`,
+                                    color: t.danger,
+                                    borderRadius: 6,
+                                    padding: "6px 10px",
+                                    cursor: "pointer",
+                                    fontSize: 12,
+                                    fontWeight: 600
+                                  }}
+                                >
+                                  🗑️ Excluir
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+          </>
+        ) : guiaAtiva === "beneficios" ? (
+          <>
+            {/* VALE-ALIMENTAÇÃO / BENEFÍCIOS TAB CONTENT */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 22 }}>
+              {[
+                ["Colaboradores Elegíveis", totalElegiveisAlimentacao, t.accent, t.accentGlow, t.borderFocus],
+                ["Total de Dias de Direito", totalDiasAlimentacao, "#10B981", "rgba(16,185,129,0.1)", "rgba(16,185,129,0.3)"],
+                ["Média de Dias / Colaborador", `${mediaDiasAlimentacao} dias`, "#F59E0B", "rgba(245,158,11,0.1)", "rgba(245,158,11,0.3)"],
+                ["Total Estimado a Pagar", totalEstimadoAlimentacaoPagar.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }), "#3b82f6", "rgba(59,130,246,0.1)", "rgba(59,130,246,0.3)"]
+              ].map(([label, val, color, bg, border], idx) => (
+                <div key={idx} style={{ background: t.surface, border: `1.5px solid ${border}`, borderRadius: 12, padding: "14px 16px" }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: color as string, fontVariantNumeric: "tabular-nums" }}>{val}</div>
+                  <div style={{ fontSize: 12, color: t.textSub, marginTop: 3 }}>{label as string}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ background: t.surfaceAlt, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "16px 20px", marginBottom: 20 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 18 }}>💡</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginBottom: 4 }}>Sobre o Cálculo do Vale-Alimentação</div>
+                  <div style={{ fontSize: 12, color: t.textSub, lineHeight: "1.5" }}>
+                    Os dias de direito ao vale-alimentação correspondem apenas aos dias em que o funcionário <strong>efetivamente trabalhou</strong> no mínimo <strong>{minimoHorasDia} horas</strong> no posto. O atestado (seja de dia completo ou parcial) abona as horas/faltas no espelho de ponto, mas <strong>nunca contabiliza como horas trabalhadas para o vale-alimentação</strong>. Férias, feriados e afastamentos também não geram direito ao benefício. O pagamento é limitado ao teto máximo de <strong>R$ {limiteMaximoAlimentacao}</strong> (configurado no topo) por funcionário.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: "260px" }}>
+                <input
+                  placeholder="Buscar funcionário na gestão de alimentação..."
+                  value={busca}
+                  onChange={e => setBusca(e.target.value)}
+                  style={{ width: "100%", boxSizing: "border-box", background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 10, color: t.text, fontSize: 14, padding: "10px 16px", outline: "none", fontFamily: "inherit" }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={copiarTabelaAlimentacao}
+                  style={{
+                    background: t.surfaceAlt,
+                    border: `1.5px solid ${t.border}`,
+                    borderRadius: 10,
+                    padding: "9px 16px",
+                    cursor: "pointer",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    color: t.textSub,
+                    fontFamily: "inherit",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    transition: "all 0.15s"
+                  }}
+                >
+                  📋 Copiar Dados
+                </button>
+                <button
+                  onClick={exportarTabelaAlimentacao}
+                  style={{
+                    background: "rgba(16,185,129,0.12)",
+                    border: "1px solid rgba(16,185,129,0.3)",
+                    borderRadius: 10,
+                    padding: "9px 16px",
+                    cursor: "pointer",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    color: "#10B981",
+                    fontFamily: "inherit",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    transition: "all 0.15s"
+                  }}
+                >
+                  📥 Exportar XLS
+                </button>
+              </div>
+            </div>
+
+            {filtrados.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "48px", color: t.textMuted, fontSize: 14 }}>Nenhum funcionário encontrado.</div>
+            ) : (
+              <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 14, overflow: "hidden" }}>
+                <div style={{ overflowX: "auto" }} className="no-scrollbar">
+                  <table style={{ minWidth: 680, width: "100%", borderCollapse: "collapse", textAlign: "left", fontFamily: "inherit" }}>
+                    <thead>
+                      <tr style={{ background: t.surfaceAlt, borderBottom: `1.5px solid ${t.border}` }}>
+                        <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Nome / Matrícula</th>
+                        <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub }}>Jornada</th>
+                        <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub, textAlign: "center" }}>Elegível</th>
+                        <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub, textAlign: "center" }}>Dias com Direito ({MESES[mesAtual.mes]})</th>
+                        <th style={{ padding: "14px 18px", fontSize: "12.5px", fontWeight: 700, color: t.textSub, textAlign: "right" }}>Valor a Receber</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtrados.map(colab => {
+                        const temDireito = colab.direitoAlimentacao !== false;
+                        const r = resumosMes[colab.id];
+                        const diasValue = temDireito && r ? r.diasCartao : 0;
+                        const jLabel = Jlabel(colab) || "Sem jornada";
+
+                        return (
+                          <tr key={colab.id} style={{ borderBottom: `1px solid ${t.border}`, transition: "background 0.15s" }}>
+                            <td style={{ padding: "14px 18px" }}>
+                              <div style={{ fontSize: "14px", fontWeight: 700, color: t.text }}>{colab.nome}</div>
+                              <div style={{ fontSize: "11px", color: t.textMuted }}>Mat. {colab.matricula}</div>
+                            </td>
+                            <td style={{ padding: "14px 18px" }}>
+                              <span style={{ fontSize: "12.5px", color: t.textSub, fontWeight: 500 }}>{jLabel}</span>
+                            </td>
+                            <td style={{ padding: "14px 18px", textAlign: "center" }}>
+                              <button
+                                onClick={() => alternarDireitoAlimentacao(colab.id, !temDireito)}
+                                style={{
+                                  border: "none",
+                                  borderRadius: 20,
+                                  background: temDireito ? "rgba(16,185,129,0.15)" : t.surfaceAlt,
+                                  color: temDireito ? "#10B981" : t.textMuted,
+                                  fontSize: "11px",
+                                  fontWeight: 700,
+                                  padding: "5px 12px",
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  borderStyle: "solid",
+                                  borderWidth: "1px",
+                                  borderColor: temDireito ? "rgba(16,185,129,0.3)" : t.border,
+                                  transition: "all 0.15s"
+                                }}
+                              >
+                                <span style={{ width: 6, height: 6, borderRadius: "50%", background: temDireito ? "#10B981" : t.textMuted }} />
+                                {temDireito ? "Elegível" : "Não Elegível"}
+                              </button>
+                            </td>
+                            <td style={{ padding: "14px 18px", textAlign: "center" }}>
+                              <div style={{ fontSize: "16px", fontWeight: 800, color: diasValue > 0 ? "#10B981" : t.textMuted, fontVariantNumeric: "tabular-nums" }}>
+                                {diasValue} {diasValue === 1 ? "dia" : "dias"}
+                              </div>
+                            </td>
+                            <td style={{ padding: "14px 18px", textAlign: "right" }}>
+                              {(() => {
+                                const valorCalculado = diasValue * valorDiarioAlimentacao;
+                                const valorFinal = Math.min(valorCalculado, limiteMaximoAlimentacao);
+                                const atingiuTeto = valorCalculado > limiteMaximoAlimentacao;
+                                
+                                return (
+                                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
+                                    <div style={{ fontSize: "15px", fontWeight: 800, color: diasValue > 0 ? "#10B981" : t.textMuted, fontVariantNumeric: "tabular-nums" }}>
+                                      {valorFinal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+                                    </div>
+                                    {atingiuTeto && (
+                                      <div style={{ fontSize: "10.5px", color: "#EF4444", fontWeight: "600", marginTop: 2 }}>
+                                        Teto atingido
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {/* RELATÓRIOS DASHBOARD */}
+            <div style={{ background: t.surfaceAlt, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: "20px", marginBottom: 20 }}>
+              <h3 style={{ margin: "0 0 6px 0", color: t.text, fontSize: "16px", fontWeight: 800, display: "flex", alignItems: "center", gap: 8 }}>
+                📈 Central de Relatórios e Exportações Executivas
+              </h3>
+              <p style={{ margin: 0, color: t.textSub, fontSize: "13px", lineHeight: "1.5" }}>
+                Gere documentos oficiais, espelhos consolidados de ponto, relatórios de benefícios e relatórios de atestados em PDF ou HTML para impressão e folha de pagamento.
+              </p>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginBottom: 24 }}>
+              {/* Card 1: Relatório Consolidado de Espelho de Ponto */}
+              <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: 20, display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 32, marginBottom: 10 }}>📊</div>
+                  <h4 style={{ margin: "0 0 6px 0", color: t.text, fontSize: "16px", fontWeight: 800 }}>
+                    Relatório Consolidado de Frequência
+                  </h4>
+                  <p style={{ margin: 0, color: t.textSub, fontSize: "13px", lineHeight: "1.4" }}>
+                    Gera o documento consolidado de espelhos de ponto de todos os colaboradores ativos com totais de horas trabalhadas, faltas, adicionais e inconsistências.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={gerarConsolidadoHTML}
+                  style={{
+                    background: t.accent,
+                    color: "#ffffff",
+                    border: "none",
+                    borderRadius: 10,
+                    padding: "12px 18px",
+                    fontSize: "13.5px",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                    boxShadow: `0 2px 8px ${t.accentGlow}`
+                  }}
+                >
+                  📄 Gerar Relatório Consolidado (HTML/PDF)
+                </button>
+              </div>
+
+              {/* Card 2: Relatório de Benefício / Vale-Alimentação */}
+              <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: 20, display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 32, marginBottom: 10 }}>🎴</div>
+                  <h4 style={{ margin: "0 0 6px 0", color: t.text, fontSize: "16px", fontWeight: 800 }}>
+                    Relatório de Cartão Alimentação
+                  </h4>
+                  <p style={{ margin: 0, color: t.textSub, fontSize: "13px", lineHeight: "1.4" }}>
+                    Exportação executiva para a operadora de benefícios com a quantidade exata de dias de direito trabalhados por colaborador na competência atual.
+                  </p>
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={exportarTabelaAlimentacao}
+                    style={{
+                      flex: 1,
+                      background: "rgba(16,185,129,0.12)",
+                      color: "#059669",
+                      border: "1.5px solid rgba(16,185,129,0.3)",
+                      borderRadius: 10,
+                      padding: "10px",
+                      fontSize: "13px",
+                      fontWeight: 800,
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6
+                    }}
+                  >
+                    📄 Imprimir / HTML
+                  </button>
+                  <button
+                    type="button"
+                    onClick={copiarTabelaAlimentacao}
+                    style={{
+                      flex: 1,
+                      background: t.surfaceAlt,
+                      color: t.text,
+                      border: `1.5px solid ${t.border}`,
+                      borderRadius: 10,
+                      padding: "10px",
+                      fontSize: "13px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6
+                    }}
+                  >
+                    📋 Copiar Tabela
+                  </button>
+                </div>
+              </div>
+
+              {/* Card 3: Relatório de Atestados Médicos */}
+              <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: 20, display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 32, marginBottom: 10 }}>📋</div>
+                  <h4 style={{ margin: "0 0 6px 0", color: t.text, fontSize: "16px", fontWeight: 800 }}>
+                    Relatório de Atestados Médicos (PDF)
+                  </h4>
+                  <p style={{ margin: 0, color: t.textSub, fontSize: "13px", lineHeight: "1.4" }}>
+                    Relatório analítico contendo todos os atestados lançados no mês com respectiva CID, dias abanados, médico responsável e status de auditoria.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => gerarRelatorioAtestadosPDF(todosAtestados, filtroMesAtestado, empresaConfig)}
+                  style={{
+                    background: "#D97706",
+                    color: "#ffffff",
+                    border: "none",
+                    borderRadius: 10,
+                    padding: "12px 18px",
+                    fontSize: "13.5px",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                    boxShadow: "0 2px 8px rgba(217,119,6,0.25)"
+                  }}
+                >
+                  📥 Baixar PDF de Atestados
+                </button>
+              </div>
+            </div>
+
+            {/* General Overview Table inside Relatórios */}
+            <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: 20 }}>
+              <h4 style={{ margin: "0 0 14px 0", color: t.text, fontSize: "15px", fontWeight: 800 }}>
+                📊 Resumo da Competência Atual ({MESES_FULL[mesAtual.mes]} / {mesAtual.ano})
+              </h4>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+                <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 12, color: t.textSub }}>Total de Colaboradores</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: t.text, marginTop: 4 }}>{colaboradores.length}</div>
+                </div>
+                <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 12, color: t.textSub }}>Elegíveis ao Alimentação</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: t.accent, marginTop: 4 }}>{totalElegiveisAlimentacao}</div>
+                </div>
+                <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 12, color: t.textSub }}>Total de Faltas Registradas</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: totalFaltas > 0 ? "#DC2626" : "#059669", marginTop: 4 }}>{totalFaltas}</div>
+                </div>
+                <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 12, color: t.textSub }}>Atestados Lançados</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: "#D97706", marginTop: 4 }}>{todosAtestados.length}</div>
+                </div>
+              </div>
+            </div>
+          </>
         )}
 
       </div>
@@ -5775,3 +6344,5 @@ function ModalLancamento({ t, userId, dayKey, users, pontosGlobal, jornada, onSa
     </div>
   );
 }
+
+export default AdmOperadorPanel;

@@ -5,6 +5,9 @@ export interface AtestadoItem {
   userName: string;
   userMatricula: string;
   dayKey: string; // YYYY-MM-DD
+  dataInicio?: string;
+  dataFim?: string;
+  totalDias?: number;
   cid: string;
   fotoAtestado?: string;
   obs?: string;
@@ -286,8 +289,14 @@ export function gerarRelatorioAtestadosPDF(
     </div>
   ` : atestadosFiltrados.map((item, idx) => {
     const infoCid = getCidInfo(item.cid);
-    const [y, m, d] = item.dayKey.split("-");
-    const dataFmt = `${d}/${m}/${y}`;
+    const fmtBR = (key?: string) => {
+      if (!key || !key.includes("-")) return key || "";
+      const [y, m, d] = key.split("-");
+      return `${d}/${m}/${y}`;
+    };
+    const dataFmt = (item.dataInicio && item.dataFim && item.dataInicio !== item.dataFim)
+      ? `Período: ${fmtBR(item.dataInicio)} até ${fmtBR(item.dataFim)} (${item.totalDias || 1} dias)`
+      : `Data: ${fmtBR(item.dayKey || item.dataInicio)}`;
 
     return `
       <div class="atestado-card">
@@ -297,7 +306,7 @@ export function gerarRelatorioAtestadosPDF(
             <span class="emp-mat">(Matrícula: ${item.userMatricula})</span>
           </div>
           <div>
-            <span style="font-size: 9pt; font-weight: 700; color: #0f172a; margin-right: 10px;">Data: ${dataFmt}</span>
+            <span style="font-size: 9pt; font-weight: 700; color: #0f172a; margin-right: 10px;">${dataFmt}</span>
             <span class="tag-tipo ${item.parcial ? "tag-parcial" : "tag-inteiro"}">
               ${item.parcial ? "Atestado Parcial" : "Dia Completo"}
             </span>

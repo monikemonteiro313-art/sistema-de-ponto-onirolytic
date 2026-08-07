@@ -8,33 +8,9 @@ import { GerenciarMarcacoesView } from "./components/GerenciarMarcacoesView";
 import { watchBestPosition } from "./utils/geolocationHelper";
 import { requestAllNativePermissions } from "./utils/nativePermissions";
 
-function lazyWithRetry(
-  componentImport: () => Promise<any>,
-  exportName: string
-): any {
-  return lazy(async () => {
-    try {
-      const module = await componentImport();
-      const Component = module[exportName] || module.default;
-      if (!Component) {
-        throw new Error(`Component ${exportName} not found in module`);
-      }
-      return { default: Component };
-    } catch (error) {
-      console.error(`Error loading chunk for ${exportName}, attempting automatic page reload:`, error);
-      const hasRefreshed = sessionStorage.getItem(`refreshed-chunk-${exportName}`);
-      if (!hasRefreshed) {
-        sessionStorage.setItem(`refreshed-chunk-${exportName}`, "true");
-        window.location.reload();
-      }
-      throw error;
-    }
-  });
-}
-
-const EmployeePanel = lazyWithRetry(() => import("./components/EmployeePanel"), "EmployeePanel");
-const AdmPanel = lazyWithRetry(() => import("./components/AdmPanel"), "AdmPanel");
-const AdmOperadorPanel = lazyWithRetry(() => import("./components/AdmOperadorPanel"), "AdmOperadorPanel");
+import { EmployeePanel } from "./components/EmployeePanel";
+import { AdmPanel } from "./components/AdmPanel";
+import { AdmOperadorPanel } from "./components/AdmOperadorPanel";
 
 import {
   initializeDbIfEmpty,
@@ -63,6 +39,8 @@ import {
   saveAlertaToDb,
   deleteAlertaFromDb,
   markAlertaAsReadInDb,
+  getIsUsingOfflineCache,
+  forceServerFetch,
   fetchAllDenuncias,
   saveDenunciaToDb,
   updateDenunciaInDb,
@@ -352,7 +330,74 @@ export default function App() {
   const [screen, setScreen] = useState<"login" | "wizard" | "termo" | "main">(initialScreen);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [isFirebaseBlocked, setIsFirebaseBlocked] = useState<boolean>(false);
+  const [isOfflineData, setIsOfflineData] = useState<boolean>(false);
+  const [isSyncingData, setIsSyncingData] = useState<boolean>(false);
   const isSyncingRef = useRef<boolean>(false);
+
+  const refreshDataFromServer = async (showNotification = true) => {
+    setIsSyncingData(true);
+    try {
+      const safeFetch = async <T,>(fn: () => Promise<T>, fallback: T, name: string): Promise<T> => {
+        try {
+          return await fn();
+        } catch (error) {
+          console.warn(`[Refresh Server] Failed to fetch ${name}:`, error);
+          return fallback;
+        }
+      };
+
+      const [rawDbUsers, rawDbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
+        safeFetch(() => fetchAllUsers(), [] as User[], "users"),
+        safeFetch(() => fetchAllPontos(0), {} as PontosGlobal, "pontos"),
+        safeFetch(() => fetchAuditLogs(), [] as AuditLogEntry[], "auditLogs"),
+        safeFetch(() => fetchMinimoHoras(), 7, "minimoHoras"),
+        safeFetch(() => fetchEmpresaConfig(), { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" } as EmpresaConfig, "empresaConfig"),
+        safeFetch(() => fetchFeriados(), [] as string[], "feriados"),
+        safeFetch(() => fetchAllPrePontos(), [] as PrePonto[], "prePontos"),
+        safeFetch(() => fetchAllFolhasAceite(), [] as FolhaAceite[], "folhasAceite"),
+        safeFetch(() => fetchAllAlertas(), [] as Alerta[], "alertas"),
+        safeFetch(() => fetchAllDenuncias(), [] as Denuncia[], "denuncias"),
+        safeFetch(() => fetchAllSolicitacoesCorrecao(), [] as SolicitacaoCorrecao[], "solicitacoesCorrecao")
+      ]);
+
+      const dbPontos = sanitizePontosGlobal(rawDbPontos);
+      if (rawDbUsers.length > 0) updateUsers(rawDbUsers);
+      updatePontos(dbPontos);
+      setAuditLogs(dbLogs);
+      setMinimoHorasDia(dbMin);
+      setEmpresaConfig(dbEmpresa);
+      setFeriados(dbFeriados);
+      setPrePontos(dbPrePontos || []);
+      updateFolhasAceite(dbFolhas || []);
+      updateAlertas(dbAlertas || []);
+      setDenuncias(dbDenuncias || []);
+      setSolicitacoesCorrecao(dbSolicitacoes || []);
+
+      if (rawDbUsers.length > 0) {
+        setSafeLocalStorageItem("hr_cached_users", rawDbUsers);
+        saveUsersToIndexedDB(rawDbUsers).catch(e => console.warn(e));
+      }
+      setSafeLocalStorageItem("hr_cached_pontos", dbPontos);
+      setSafeLocalStorageItem("hr_cached_audit_logs", dbLogs);
+      setSafeLocalStorageItem("hr_cached_alertas", dbAlertas || []);
+
+      const offlineUsed = getIsUsingOfflineCache();
+      setIsOfflineData(offlineUsed);
+
+      if (showNotification) {
+        if (offlineUsed) {
+          alert("Aviso: Servidor indisponível no momento. Exibindo dados locais.");
+        } else {
+          alert("✅ Dados sincronizados do servidor com sucesso!");
+        }
+      }
+    } catch (err) {
+      console.error("Error refreshing data from server:", err);
+      setIsOfflineData(true);
+    } finally {
+      setIsSyncingData(false);
+    }
+  };
 
   // Load initial data from Firestore in background
   useEffect(() => {
@@ -436,6 +481,8 @@ export default function App() {
         setSafeLocalStorageItem("hr_cached_alertas", dbAlertas || []);
         setSafeLocalStorageItem("hr_cached_denuncias", dbDenuncias || []);
         setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", dbSolicitacoes || []);
+
+        setIsOfflineData(getIsUsingOfflineCache());
 
         // Push reconciled punches to Firestore asynchronously
         for (const userId of changedUserIds) {
@@ -1032,7 +1079,8 @@ export default function App() {
         editadoEm: revisadoEm,
         editadoPor: revisadoPor,
         justificativa: `Correção Aprovada por ${revisadoPor}: ${req.motivo}`,
-        tipo: "manual"
+        tipo: "manual",
+        statusAprovacao: "aprovado"
       };
 
       dayPunches[targetSlotIdx] = newPunch;
@@ -1751,7 +1799,6 @@ export default function App() {
               </div>
 
               {adminRoleMode === "dev" ? (
-                <Suspense fallback={<div style={{ padding: 40, textAlign: "center", color: t.textSub, fontFamily: "sans-serif" }}>Carregando Painel Administrativo...</div>}>
                   <AdmPanel
                     t={t}
                     users={users}
@@ -1776,6 +1823,9 @@ export default function App() {
                     solicitacoesCorrecao={solicitacoesCorrecao}
                     onAprovarSolicitacaoCorrecao={handleAprovarSolicitacaoCorrecao}
                     onRejeitarSolicitacaoCorrecao={handleRejeitarSolicitacaoCorrecao}
+                    onSyncData={refreshDataFromServer}
+                    isSyncingData={isSyncingData}
+                    isOfflineData={isOfflineData}
                     updateUserBloqueioAceite={async (userId, blocked) => {
 
                       await updateUserBloqueioAceite(userId, blocked);
@@ -1787,7 +1837,6 @@ export default function App() {
                       }
                     }}
                   />
-                </Suspense>
               ) : adminRoleMode === "gerenciar_marcacoes" ? (
                 <div style={{ background: t.bg, minHeight: "calc(100vh - 50px)" }}>
                   <GerenciarMarcacoesView
@@ -1831,7 +1880,6 @@ export default function App() {
                   />
                 </div>
               ) : (
-                <Suspense fallback={<div style={{ padding: 40, textAlign: "center", color: t.textSub, fontFamily: "sans-serif" }}>Carregando Painel do Operador...</div>}>
                   <AdmOperadorPanel
                     t={t}
                     users={users}
@@ -1855,13 +1903,17 @@ export default function App() {
                     solicitacoesCorrecao={solicitacoesCorrecao}
                     onAprovarSolicitacaoCorrecao={handleAprovarSolicitacaoCorrecao}
                     onRejeitarSolicitacaoCorrecao={handleRejeitarSolicitacaoCorrecao}
+                    alertas={alertas}
+                    setAlertas={updateAlertas}
+                    saveAlertaToDb={saveAlertaToDb}
+                    deleteAlertaFromDb={deleteAlertaFromDb}
+                    onSyncData={refreshDataFromServer}
+                    isSyncingData={isSyncingData}
+                    isOfflineData={isOfflineData}
                   />
-
-                </Suspense>
               )}
             </>
           ) : (
-            <Suspense fallback={<div style={{ padding: 40, textAlign: "center", color: t.textSub, fontFamily: "sans-serif" }}>Carregando Painel do Funcionário...</div>}>
               <EmployeePanel
                 t={t}
                 currentUser={currentUser}
@@ -1871,8 +1923,9 @@ export default function App() {
                 setPontosGlobal={updatePontos}
                 onAddLog={handleAddLog}
                 feriados={feriados}
-                syncNow={syncNow}
-                isSyncing={isSyncing}
+                syncNow={() => refreshDataFromServer(true)}
+                isSyncing={isSyncingData || isSyncing}
+                isOfflineData={isOfflineData}
                 syncError={syncError}
                 setSyncError={setSyncError}
                 registerPrePonto={registerPrePonto}
@@ -1894,7 +1947,6 @@ export default function App() {
                   }
                 }}
               />
-            </Suspense>
           )}
         </div>
       )}

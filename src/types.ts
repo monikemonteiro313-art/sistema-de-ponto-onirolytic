@@ -8,6 +8,10 @@ export interface Jornada {
   diasSemana: number[];
   horasDia: number;
   descricao: string;
+  sabadoEspecial?: boolean;
+  sabadoEntrada?: string | null;
+  sabadoSaida?: string | null;
+  sabadoHoras?: number;
 }
 
 export interface PeriodoFerias {

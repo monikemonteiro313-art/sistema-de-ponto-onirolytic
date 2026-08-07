@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { Check, Calendar, Clock, Unlock, Shield, SquarePen, ShieldCheck, Stethoscope, Folder, X, Upload, FileText, AlertTriangle, Eye, ArrowLeft, RefreshCw, File, Bell } from "lucide-react";
+import { Check, Calendar, Clock, Unlock, Shield, SquarePen, ShieldCheck, Stethoscope, Folder, X, Upload, FileText, AlertTriangle, Eye, ArrowLeft, RefreshCw, WifiOff, File, Bell } from "lucide-react";
 import { ThemeColors, User, Batida, DiaPontos, PontosGlobal, FolhaAceite, Alerta } from "../types";
 import { getOverlapWithNightShift, calcularDia, resumoMesCalculado, baixarArquivoAtestado, compressImageBase64 } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
@@ -13,6 +13,7 @@ import {
   setPref,
   saveOfflinePunch,
   loadOfflineQueue,
+  clearOfflineQueue,
   saveLastPunchTimestamp,
   checkClockTampering,
   migrateLocalStorageToPreferences,
@@ -96,6 +97,7 @@ interface EmployeePanelProps {
     longitude?: number | null;
     accuracy?: number | null;
   }) => Promise<void>;
+  isOfflineData?: boolean;
 }
 
 export function EmployeePanel({ 
@@ -109,6 +111,7 @@ export function EmployeePanel({
   feriados = [],
   syncNow,
   isSyncing = false,
+  isOfflineData = false,
   syncError,
   setSyncError,
   registerPrePonto,
@@ -126,6 +129,7 @@ export function EmployeePanel({
   const [isLgpdOpen, setIsLgpdOpen] = useState(false);
   const [solicitarCorrecaoOpen, setSolicitarCorrecaoOpen] = useState(false);
   const [offlineModalOpen, setOfflineModalOpen] = useState(false);
+  const [offlineListFromDisk, setOfflineListFromDisk] = useState<any[]>([]);
   const [alertaOntemDismissed, setAlertaOntemDismissed] = useState(false);
 
   // Lista de marcações pendentes salvas localmente (Biblioteca Offline)
@@ -290,6 +294,39 @@ export function EmployeePanel({
       console.error("Erro ao marcar alerta como lido:", err);
     } finally {
       setMarkingAlertRead(false);
+    }
+  };
+
+  const refreshOfflineListFromDisk = async () => {
+    try {
+      const queue = await loadOfflineQueue();
+      if (queue && queue.length > 0) {
+        const stepLabels = ["Entrada", "Saída Almoço", "Retorno Almoço", "Saída"];
+        const list = queue.map((item: any) => ({
+          dayKey: item.dayKey,
+          slotIdx: item.slotIdx,
+          slotLabel: stepLabels[item.slotIdx] || `Batida #${item.slotIdx + 1}`,
+          batida: {
+            hora: item.hora,
+            tipo: item.tipo,
+            registradoEm: item.registradoEm,
+            serverTime: "pending",
+            latitude: item.latitude,
+            longitude: item.longitude,
+            accuracy: item.accuracy,
+            consentimentoGeoloc: item.consentimentoGeoloc,
+            dispositivoLocalHora: item.dispositivoLocalHora,
+            gravadoOffline: true,
+            obs: item.obs
+          }
+        })).sort((a: any, b: any) => b.dayKey.localeCompare(a.dayKey) || b.slotIdx - a.slotIdx);
+        setOfflineListFromDisk(list);
+      } else {
+        setOfflineListFromDisk([]);
+      }
+    } catch (err) {
+      console.error("[Offline] Error reading disk queue for gallery:", err);
+      setOfflineListFromDisk([]);
     }
   };
 
@@ -663,7 +700,14 @@ export function EmployeePanel({
       const queue = await loadOfflineQueue();
       if (active && queue && queue.length > 0) {
         console.log(`[EmployeePanel Boot] Loaded ${queue.length} offline punches from Capacitor Preferences native disk. Merging into state...`);
-        setPontosGlobal(prev => applyOfflineQueueToPontos(prev, queue));
+        const merged = await applyOfflineQueueToPontos(pontosGlobal, currentUser.id);
+        if (active) {
+          const currentJson = JSON.stringify(pontosGlobal?.[currentUser.id] || {});
+          const mergedJson = JSON.stringify(merged?.[currentUser.id] || {});
+          if (currentJson !== mergedJson) {
+            setPontosGlobal(merged);
+          }
+        }
       }
 
       // Check tour state from Preferences
@@ -681,6 +725,33 @@ export function EmployeePanel({
     initPreferences();
     return () => { active = false; };
   }, [currentUser.id]);
+  // Re-merge offline queue whenever pontosGlobal updates from Firebase
+  // to prevent Firebase data from overwriting pending local punches
+  useEffect(() => {
+    let active = true;
+    async function remergeOfflineQueue() {
+      if (!currentUser?.id || !setPontosGlobal) return;
+      try {
+        const queue = await loadOfflineQueue();
+        if (active && queue && queue.length > 0) {
+          const merged = await applyOfflineQueueToPontos(pontosGlobal, currentUser.id);
+          if (active) {
+            const currentJson = JSON.stringify(pontosGlobal?.[currentUser.id] || {});
+            const mergedJson = JSON.stringify(merged?.[currentUser.id] || {});
+            if (currentJson !== mergedJson) {
+              setPontosGlobal(merged);
+              console.log(`[Offline] Re-merged ${queue.length} pending punch(es) after pontosGlobal update.`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[Offline] Error re-merging offline queue:", err);
+      }
+    }
+    remergeOfflineQueue();
+    return () => { active = false; };
+  }, [pontosGlobal, currentUser.id]);
+
   useEffect(() => {
     return () => {
       if (geoWatchId !== null) {
@@ -797,7 +868,7 @@ export function EmployeePanel({
           horaInicioParcial: atestadoIsParcial ? atestadoParcialInicio : undefined,
           horaFimParcial: atestadoIsParcial ? atestadoParcialFim : undefined,
           cid: atestadoCid.trim().toUpperCase(),
-          fotoAtestado: atestadoFoto,
+          fotoAtestado: index === 0 ? atestadoFoto : undefined,
           obs: atestadoObs.trim() || (atestadoIsParcial
             ? `Atestado Parcial (${atestadoParcialInicio} às ${atestadoParcialFim}) - CID: ${atestadoCid.trim().toUpperCase()}`
             : `Atestado Médico lançado pelo colaborador (CID: ${atestadoCid.trim().toUpperCase()})`),
@@ -1204,6 +1275,13 @@ export function EmployeePanel({
     // Anti-fraude: Clock Tampering Check
     const tamperCheck = await checkClockTampering();
     if (tamperCheck.isTampered) {
+      if (onAddLog) {
+        onAddLog(
+          "Fraude: Alteração de Relógio",
+          `${currentUser.nome} (${currentUser.matricula})`,
+          tamperCheck.message || "Tentativa de registro de ponto com relógio local adulterado ou retrocedido."
+        );
+      }
       alert(tamperCheck.message || "Relógio do dispositivo foi alterado. Conecte-se à internet para sincronizar o horário antes de bater o ponto.");
       setIsRegistering(false);
       setGeoActiveFor(null);
@@ -1348,6 +1426,13 @@ export function EmployeePanel({
   async function registrarAgora(idx: number, dayKey: string) {
     const tamperCheck = await checkClockTampering();
     if (tamperCheck.isTampered) {
+      if (onAddLog) {
+        onAddLog(
+          "Fraude: Alteração de Relógio",
+          `${currentUser.nome} (${currentUser.matricula})`,
+          tamperCheck.message || "Tentativa de registro de ponto com relógio local adulterado ou retrocedido."
+        );
+      }
       alert(tamperCheck.message || "Relógio do dispositivo foi alterado. Conecte-se à internet para sincronizar o horário antes de bater o ponto.");
       return;
     }
@@ -1389,6 +1474,13 @@ export function EmployeePanel({
 
     const tamperCheck = await checkClockTampering();
     if (tamperCheck.isTampered) {
+      if (onAddLog) {
+        onAddLog(
+          "Fraude: Alteração de Relógio",
+          `${currentUser.nome} (${currentUser.matricula})`,
+          tamperCheck.message || "Tentativa de registro de ponto com relógio local adulterado ou retrocedido."
+        );
+      }
       alert(tamperCheck.message || "Relógio do dispositivo foi alterado. Conecte-se à internet para sincronizar o horário antes de bater o ponto.");
       return;
     }
@@ -1692,6 +1784,46 @@ export function EmployeePanel({
       )}
       {/* Top Header */}
       <div style={{ width: "100%", maxWidth: 420, boxSizing: "border-box", marginBottom: 16 }}>
+        {isOfflineData && (
+          <div style={{
+            background: t.warningBg,
+            border: `1.5px solid ${t.warningBorder}`,
+            color: t.warning,
+            borderRadius: 10,
+            padding: "8px 14px",
+            fontSize: 12,
+            fontWeight: 700,
+            marginBottom: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <WifiOff size={15} />
+              <span>Dados locais (offline)</span>
+            </div>
+            {syncNow && (
+              <button
+                type="button"
+                onClick={() => syncNow()}
+                disabled={isSyncing}
+                style={{
+                  background: t.warning,
+                  color: "#000",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  fontWeight: 800,
+                  cursor: "pointer"
+                }}
+              >
+                {isSyncing ? "Tentando..." : "Sincronizar"}
+              </button>
+            )}
+          </div>
+        )}
+
         {/* User Greeting and Logout row */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", marginBottom: 12 }}>
           <div>
@@ -1699,6 +1831,31 @@ export function EmployeePanel({
             <div style={{ fontSize: "12px", color: t.textSub, marginTop: 2, textTransform: "capitalize" }}>{dateStr}</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {syncNow && (
+              <button
+                type="button"
+                onClick={() => syncNow()}
+                disabled={isSyncing}
+                style={{
+                  background: t.surfaceAlt,
+                  border: `1px solid ${t.border}`,
+                  borderRadius: 9,
+                  padding: "6px 12px",
+                  cursor: isSyncing ? "not-allowed" : "pointer",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  color: t.accent,
+                  fontFamily: "inherit",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5
+                }}
+                title="Sincronizar dados com o servidor"
+              >
+                <RefreshCw size={13} style={{ animation: isSyncing ? "spin 1s linear infinite" : "none" }} />
+                <span>{isSyncing ? "..." : "Sincronizar"}</span>
+              </button>
+            )}
             {onToggleTheme && (
               <button
                 onClick={onToggleTheme}
@@ -1843,7 +2000,10 @@ export function EmployeePanel({
 
           {/* Botão Guia Registros sem Internet (Biblioteca Offline) */}
           <button
-            onClick={() => setOfflineModalOpen(true)}
+            onClick={() => {
+              refreshOfflineListFromDisk();
+              setOfflineModalOpen(true);
+            }}
             title="Acessar Biblioteca de Registros sem Internet"
             style={{
               gridColumn: "span 2",
@@ -1871,7 +2031,7 @@ export function EmployeePanel({
               <span style={{ fontSize: 16 }}>📡</span>
               <span>REGISTROS SEM INTERNET</span>
             </div>
-            {pendingOfflinePunchesList.length > 0 ? (
+            {(pendingOfflinePunchesList.length > 0 || offlineListFromDisk.length > 0) ? (
               <span style={{
                 background: "#d97706",
                 color: "#ffffff",
@@ -2284,8 +2444,16 @@ export function EmployeePanel({
 
         {countPendingSync() > 0 && (
           <div
-            onClick={syncNow}
-            title="Clique para sincronizar suas batidas com o servidor"
+                        onClick={async () => {
+              if (!syncNow) return;
+              try {
+                await syncNow();
+                await clearOfflineQueue();
+                await refreshOfflineListFromDisk();
+              } catch (err) {
+                console.error("[Sync] Falha:", err);
+              }
+            }} title="Clique para sincronizar suas batidas com o servidor"
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -2837,12 +3005,20 @@ export function EmployeePanel({
             </div>
 
             {/* Sync Button */}
-            {pendingOfflinePunchesList.length > 0 && (
+            {(pendingOfflinePunchesList.length > 0 || offlineListFromDisk.length > 0) && (
               <>
                 <button
                   onClick={async () => {
                     if (syncNow) {
-                      await syncNow();
+                      try {
+                        await syncNow();
+                        // Sync succeeded → clear offline queue from native disk
+                        await clearOfflineQueue();
+                        await refreshOfflineListFromDisk();
+                        console.log("[Sync] Fila offline sincronizada e limpa com sucesso.");
+                      } catch (err) {
+                        console.error("[Sync] Falha ao sincronizar:", err);
+                      }
                     }
                   }}
                   disabled={isSyncing}
@@ -2888,7 +3064,7 @@ export function EmployeePanel({
 
             {/* List of Offline Punches */}
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {pendingOfflinePunchesList.length === 0 ? (
+              {offlineListFromDisk.length === 0 ? (
                 <div style={{
                   textAlign: "center",
                   padding: "32px 16px",
@@ -4982,3 +5158,5 @@ export function EmployeePanel({
     </div>
   );
 }
+
+export default EmployeePanel;

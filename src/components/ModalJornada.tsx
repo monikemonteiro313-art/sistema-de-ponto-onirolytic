@@ -265,10 +265,111 @@ export function ModalJornada({
                 </div>
               </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 8, borderTop: `1px dashed ${t.border}` }}>
-                <span style={{ fontSize: 12, color: t.textMuted }}>Total de horas / dia:</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 8, borderTop: `1px dashed ${t.border}`, marginBottom: jornadaCustom.diasSemana.includes(6) ? 12 : 0 }}>
+                <span style={{ fontSize: 12, color: t.textMuted }}>Total de horas / dia útil:</span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: t.accent }}>{jornadaCustom.horasDia}h</span>
               </div>
+
+              {/* Se Sábado estiver selecionado nos Dias da Semana */}
+              {jornadaCustom.diasSemana.includes(6) && (
+                <div style={{ paddingTop: 12, borderTop: `1px solid ${t.border}` }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 10 }}>
+                    <input
+                      type="checkbox"
+                      checked={!!jornadaCustom.sabadoEspecial}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setJornadaCustom(prev => {
+                          const sabEntrada = prev.sabadoEntrada || "08:00";
+                          const sabSaida = prev.sabadoSaida || "12:00";
+                          const [eh, em] = sabEntrada.split(":").map(Number);
+                          const [sh, sm] = sabSaida.split(":").map(Number);
+                          const diff = Math.max(0, (sh * 60 + sm) - (eh * 60 + em)) / 60;
+                          return {
+                            ...prev,
+                            sabadoEspecial: checked,
+                            sabadoEntrada: sabEntrada,
+                            sabadoSaida: sabSaida,
+                            sabadoHoras: Number(diff.toFixed(2))
+                          };
+                        });
+                      }}
+                    />
+                    <span style={{ fontSize: 12, fontWeight: 700, color: t.text }}>
+                      Configurar Sábado com Horário Reduzido (2 batidas)
+                    </span>
+                  </label>
+
+                  {jornadaCustom.sabadoEspecial && (
+                    <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, padding: 12 }}>
+                      <div style={{ fontSize: 11.5, color: t.textSub, marginBottom: 10 }}>
+                        📌 No sábado serão registradas apenas <strong>2 batidas (Entrada e Saída)</strong> sem intervalo de almoço.
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                        <div>
+                          <label style={{ display: "block", fontSize: 11, color: t.textMuted, marginBottom: 4 }}>Entrada Sábado</label>
+                          <input
+                            type="time"
+                            value={jornadaCustom.sabadoEntrada || "08:00"}
+                            onChange={e => {
+                              const val = e.target.value;
+                              setJornadaCustom(prev => {
+                                const sabSaida = prev.sabadoSaida || "12:00";
+                                const [eh, em] = val.split(":").map(Number);
+                                const [sh, sm] = sabSaida.split(":").map(Number);
+                                const diff = Math.max(0, (sh * 60 + sm) - (eh * 60 + em)) / 60;
+                                return { ...prev, sabadoEntrada: val, sabadoHoras: Number(diff.toFixed(2)) };
+                              });
+                            }}
+                            style={{
+                              width: "100%",
+                              boxSizing: "border-box",
+                              background: t.inputBg,
+                              border: `1.5px solid ${t.border}`,
+                              borderRadius: 8,
+                              color: t.text,
+                              fontSize: 13,
+                              padding: "7px 10px",
+                              outline: "none"
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: "block", fontSize: 11, color: t.textMuted, marginBottom: 4 }}>Saída Sábado</label>
+                          <input
+                            type="time"
+                            value={jornadaCustom.sabadoSaida || "12:00"}
+                            onChange={e => {
+                              const val = e.target.value;
+                              setJornadaCustom(prev => {
+                                const sabEntrada = prev.sabadoEntrada || "08:00";
+                                const [eh, em] = sabEntrada.split(":").map(Number);
+                                const [sh, sm] = val.split(":").map(Number);
+                                const diff = Math.max(0, (sh * 60 + sm) - (eh * 60 + em)) / 60;
+                                return { ...prev, sabadoSaida: val, sabadoHoras: Number(diff.toFixed(2)) };
+                              });
+                            }}
+                            style={{
+                              width: "100%",
+                              boxSizing: "border-box",
+                              background: t.inputBg,
+                              border: `1.5px solid ${t.border}`,
+                              borderRadius: 8,
+                              color: t.text,
+                              fontSize: 13,
+                              padding: "7px 10px",
+                              outline: "none"
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 8, fontSize: 11.5, color: t.accent, fontWeight: 700 }}>
+                        Horas no sábado: {jornadaCustom.sabadoHoras ?? 4}h
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

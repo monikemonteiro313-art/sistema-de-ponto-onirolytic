@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { Search, Calendar, Clock, ShieldCheck, MapPin, Edit3, Info, Eye, History, AlertTriangle, ChevronLeft, ChevronRight, CheckCircle2 } from "lucide-react";
 import { ThemeColors, User, PontosGlobal, Batida, DiaPontos, AuditLogEntry } from "../types";
 import { calcularDia, resumoMesCalculado } from "../utils/hrHelpers";
@@ -86,6 +86,18 @@ export function GerenciarMarcacoesView({
         u.nome.toLowerCase().includes(query)
     );
   }, [validUsers, searchMatricula]);
+
+  // Automatically update selectedUserId when searching so the espelho de ponto switches to the searched employee
+  useEffect(() => {
+    if (searchMatricula.trim() !== "") {
+      if (filteredUsers.length > 0) {
+        const isCurrentSelectedInFiltered = filteredUsers.some((u) => u.id === selectedUserId);
+        if (!isCurrentSelectedInFiltered || filteredUsers.length === 1) {
+          setSelectedUserId(filteredUsers[0].id);
+        }
+      }
+    }
+  }, [searchMatricula, filteredUsers]);
 
   const selectedUser = useMemo(() => {
     return validUsers.find((u) => u.id === selectedUserId) || null;
@@ -456,9 +468,9 @@ export function GerenciarMarcacoesView({
 
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 {atestadosPendentes.map((grupo) => {
-                  const datasFmt = grupo.dias
-                    .map(d => d.dayKey.split("-").reverse().join("/"))
-                    .join(", ");
+                  const datasFmt = grupo.dias.length > 1
+                    ? `de ${grupo.dias[0].dayKey.split("-").reverse().join("/")} até ${grupo.dias[grupo.dias.length - 1].dayKey.split("-").reverse().join("/")}`
+                    : grupo.dias[0].dayKey.split("-").reverse().join("/");
                   const isProcessing = atestadoProcessando === grupo.groupId;
 
                   return (

@@ -50,9 +50,19 @@ export function toMin(timeStr: string | null): number | null {
   return h * 60 + m;
 }
 
-export function calcularHorasDia(jornadaId: string | null, jornadaCustom: Jornada | null): number {
+export function calcularHorasDia(jornadaId: string | null, jornadaCustom: Jornada | null, diaSemana?: number): number {
   const j = jornadaId === "personalizada" ? jornadaCustom : (jornadaId ? getJornada(jornadaId) : null);
-  if (!j || !j.entrada || !j.saida) return j?.horasDia || 8;
+  if (!j) return 8;
+
+  if (diaSemana === 6 && j.sabadoEspecial) {
+    if (j.sabadoHoras !== undefined) return j.sabadoHoras;
+    if (j.sabadoEntrada && j.sabadoSaida) {
+      return calcHoursBetween(j.sabadoEntrada, j.sabadoSaida);
+    }
+    return 4;
+  }
+
+  if (!j.entrada || !j.saida) return j.horasDia || 8;
   const toM = (t: string) => {
     const [h, m] = t.split(":").map(Number);
     return h * 60 + m;
@@ -233,7 +243,8 @@ export function calcularDia(
     return { status: "futuro" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
-  const horasJornada = jornadaIdParaODia ? calcularHorasDia(jornadaIdParaODia, jornadaCustomParaODia) : 8;
+  const isSabadoEspecial = diaSem === 6 && !!jornada?.sabadoEspecial;
+  const horasJornada = jornadaIdParaODia ? calcularHorasDia(jornadaIdParaODia, jornadaCustomParaODia, diaSem) : 8;
   const ocorrencia = batidas.find((b): b is Batida => b !== null && !!b.ocorrencia && (b.ocorrencia !== "atestado" || b.statusAtestado !== "recusado"));
 
   // Afastamento
@@ -307,7 +318,7 @@ export function calcularDia(
   let saidaAntMin = 0;
   let horasExtra = 0;
 
-  const isFlexible = !!u.apenasSomarHoras || !jornada || !jornada.entrada || !jornada.saida;
+  const isFlexible = !!u.apenasSomarHoras || !jornada || (!isSabadoEspecial && (!jornada.entrada || !jornada.saida)) || (isSabadoEspecial && (!jornada.sabadoEntrada || !jornada.sabadoSaida));
 
   if (isFlexible) {
     const minutosCredito = Math.round(horasAbonadasTotal * 60);
@@ -321,14 +332,17 @@ export function calcularDia(
     }
   } else {
     // 1. Entrada atrasada
-    if (jornada.entrada && bEntrada) {
-      const prevEntrada = toMin(jornada.entrada);
-      const realEntrada = entradaReal.getHours() * 60 + entradaReal.getMinutes();
-      const diff = realEntrada - prevEntrada;
-      if (diff > toleranciaMin) {
-        atrasoMin += diff;
-      } else if (diff < -toleranciaMin) {
-        horasExtra += Math.abs(diff) / 60;
+    const entradaEsperada = isSabadoEspecial ? (jornada.sabadoEntrada || jornada.entrada) : jornada.entrada;
+    if (entradaEsperada && bEntrada) {
+      const prevEntrada = toMin(entradaEsperada);
+      if (prevEntrada !== null) {
+        const realEntrada = entradaReal.getHours() * 60 + entradaReal.getMinutes();
+        const diff = realEntrada - prevEntrada;
+        if (diff > toleranciaMin) {
+          atrasoMin += diff;
+        } else if (diff < -toleranciaMin) {
+          horasExtra += Math.abs(diff) / 60;
+        }
       }
     }
 
@@ -375,9 +389,9 @@ export function calcularDia(
   const isAtestadoParcial = !!atestadoParcialObj;
   const status = isAtestadoParcial ? ("atestado" as const) : (atrasoMin > 0 || saidaAntMin > 0) ? ("parcial" as const) : ("completo" as const);
 
-  // Vale-Alimentação: exigência de no mínimo 7h (ou minimoHorasDia) de trabalho EFETIVO no posto.
-  // O atestado (parcial ou total) abona a falta/jornada, mas NUNCA contabiliza como horas trabalhadas para alimentação.
-  const contaParaCartao = horasEfetivas >= 7;
+  // Vale-Alimentação: se sábado especial, exige a própria jornada do sábado (ex: 4h), senão 7h
+  const metaHorasCartao = isSabadoEspecial ? (jornada?.sabadoHoras ?? 4) : 7;
+  const contaParaCartao = horasEfetivas >= metaHorasCartao;
 
   return { status, horasTrabalhadas, horasEfetivas, horasJornada, atrasoMin, saidaAntMin, horasExtra, contaParaCartao, adicNoturnoHoras, adicNoturnoTexto };
 }

@@ -2,6 +2,7 @@ import React, { useState, useMemo } from "react";
 import { ShieldAlert, Lock, Search, Filter, CheckCircle2, Clock, FileText, Trash2, Eye, X, MessageSquare, AlertTriangle, ArrowRight, ShieldCheck, Image as ImageIcon } from "lucide-react";
 import { ThemeColors, Denuncia } from "../types";
 import { Btn, Tag } from "./SharedUI";
+import { Paginacao } from "./Paginacao";
 
 interface DenunciasViewProps {
   t: ThemeColors;
@@ -18,6 +19,12 @@ export function DenunciasView({ t, denuncias = [], onUpdateStatus, onDelete }: D
   const [responseText, setResponseText] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Reset page when filter or search changes
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [filterStatus, search]);
 
   // Derived Statistics
   const total = denuncias.length;
@@ -258,8 +265,11 @@ export function DenunciasView({ t, denuncias = [], onUpdateStatus, onDelete }: D
           </p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {filteredList.map((item) => (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {filteredList
+              .slice((currentPage - 1) * 10, currentPage * 10)
+              .map((item) => (
             <div
               key={item.id}
               style={{
@@ -592,7 +602,15 @@ export function DenunciasView({ t, denuncias = [], onUpdateStatus, onDelete }: D
               </div>
             </div>
           ))}
-        </div>
+          </div>
+          <Paginacao
+            totalItems={filteredList.length}
+            itemsPerPage={10}
+            currentPage={currentPage}
+            onPageChange={setCurrentPage}
+            t={t}
+          />
+        </>
       )}
 
       {/* Expanded Photo Lightbox Modal */}

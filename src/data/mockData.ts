@@ -10,7 +10,11 @@ export const JORNADAS_PREDEFINIDAS: Jornada[] = [
     saida: "17:00",
     diasSemana: [1, 2, 3, 4, 5, 6],
     horasDia: 8,
-    descricao: "Seg–Sex: 07h-11h / 13h-17h (8h) · Sáb: 07h-11h (4h) · Total: 44h/sem"
+    descricao: "Seg–Sex: 07h-11h / 13h-17h (8h) · Sáb: 07h-11h (4h) · Total: 44h/sem",
+    sabadoEspecial: true,
+    sabadoEntrada: "07:00",
+    sabadoSaida: "11:00",
+    sabadoHoras: 4
   },
   {
     id: "posto_08_18_sab",
@@ -21,7 +25,11 @@ export const JORNADAS_PREDEFINIDAS: Jornada[] = [
     saida: "18:00",
     diasSemana: [1, 2, 3, 4, 5, 6],
     horasDia: 8,
-    descricao: "Seg–Sex: 08h-12h / 14h-18h (8h) · Sáb: 08h-12h (4h) · Total: 44h/sem"
+    descricao: "Seg–Sex: 08h-12h / 14h-18h (8h) · Sáb: 08h-12h (4h) · Total: 44h/sem",
+    sabadoEspecial: true,
+    sabadoEntrada: "08:00",
+    sabadoSaida: "12:00",
+    sabadoHoras: 4
   },
   {
     id: "posto_09_19_sab",
@@ -32,7 +40,11 @@ export const JORNADAS_PREDEFINIDAS: Jornada[] = [
     saida: "19:00",
     diasSemana: [1, 2, 3, 4, 5, 6],
     horasDia: 8,
-    descricao: "Seg–Sex: 09h-13h / 15h-19h (8h) · Sáb: 09h-13h (4h) · Total: 44h/sem"
+    descricao: "Seg–Sex: 09h-13h / 15h-19h (8h) · Sáb: 09h-13h (4h) · Total: 44h/sem",
+    sabadoEspecial: true,
+    sabadoEntrada: "09:00",
+    sabadoSaida: "13:00",
+    sabadoHoras: 4
   },
   {
     id: "clt_comp_1h",

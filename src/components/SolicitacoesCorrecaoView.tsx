@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { Clock, CheckCircle2, XCircle, AlertTriangle, MapPin, Search, Filter, Lock, Check, X, MessageSquare, ExternalLink, Calendar } from "lucide-react";
 import { ThemeColors, SolicitacaoCorrecao } from "../types";
 import { Btn, Tag } from "./SharedUI";
+import { Paginacao } from "./Paginacao";
 
 interface SolicitacoesCorrecaoViewProps {
   t: ThemeColors;
@@ -24,6 +25,12 @@ export function SolicitacoesCorrecaoView({
   const [filterStatus, setFilterStatus] = useState<"todas" | "pendente" | "aprovado" | "rejeitado">("pendente");
   const [search, setSearch] = useState("");
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Reset page on filter or search change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterStatus, search]);
 
   // Rejection Modal State
   const [rejectModalId, setRejectModalId] = useState<string | null>(null);
@@ -140,31 +147,79 @@ export function SolicitacoesCorrecaoView({
           </div>
         </div>
 
-        {/* Stats */}
+        {/* Interactive Stats Cards (acting as single source of truth for filtering) */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 10, padding: "8px 14px", textAlign: "center" }}>
+          <div
+            onClick={() => setFilterStatus("todas")}
+            style={{
+              background: filterStatus === "todas" ? t.accentGlow : t.surface,
+              border: filterStatus === "todas" ? `2px solid ${t.accent}` : `1.5px solid ${t.border}`,
+              borderRadius: 10,
+              padding: "8px 14px",
+              textAlign: "center",
+              cursor: "pointer",
+              transition: "all 0.18s"
+            }}
+            title="Filtrar: Mostrar Todas"
+          >
             <span style={{ fontSize: 11, color: t.textMuted, display: "block", textTransform: "uppercase", fontWeight: 700 }}>Total</span>
             <span style={{ fontSize: 17, fontWeight: 800, color: t.text }}>{total}</span>
           </div>
 
-          <div style={{ background: t.warningBg, border: `1.5px solid ${t.warningBorder}`, borderRadius: 10, padding: "8px 14px", textAlign: "center" }}>
+          <div
+            onClick={() => setFilterStatus("pendente")}
+            style={{
+              background: filterStatus === "pendente" ? "rgba(245,158,11,0.22)" : t.warningBg,
+              border: filterStatus === "pendente" ? `2px solid ${t.warning}` : `1.5px solid ${t.warningBorder}`,
+              borderRadius: 10,
+              padding: "8px 14px",
+              textAlign: "center",
+              cursor: "pointer",
+              transition: "all 0.18s"
+            }}
+            title="Filtrar: Mostrar Pendentes"
+          >
             <span style={{ fontSize: 11, color: t.warning, display: "block", textTransform: "uppercase", fontWeight: 700 }}>Pendentes</span>
             <span style={{ fontSize: 17, fontWeight: 800, color: t.warning }}>{pendentes}</span>
           </div>
 
-          <div style={{ background: t.successBg, border: `1.5px solid ${t.successBorder}`, borderRadius: 10, padding: "8px 14px", textAlign: "center" }}>
+          <div
+            onClick={() => setFilterStatus("aprovado")}
+            style={{
+              background: filterStatus === "aprovado" ? "rgba(34,197,94,0.22)" : t.successBg,
+              border: filterStatus === "aprovado" ? `2px solid ${t.success}` : `1.5px solid ${t.successBorder}`,
+              borderRadius: 10,
+              padding: "8px 14px",
+              textAlign: "center",
+              cursor: "pointer",
+              transition: "all 0.18s"
+            }}
+            title="Filtrar: Mostrar Aprovadas"
+          >
             <span style={{ fontSize: 11, color: t.success, display: "block", textTransform: "uppercase", fontWeight: 700 }}>Aprovadas</span>
             <span style={{ fontSize: 17, fontWeight: 800, color: t.success }}>{aprovadas}</span>
           </div>
 
-          <div style={{ background: t.dangerBg, border: `1.5px solid ${t.dangerBorder}`, borderRadius: 10, padding: "8px 14px", textAlign: "center" }}>
+          <div
+            onClick={() => setFilterStatus("rejeitado")}
+            style={{
+              background: filterStatus === "rejeitado" ? "rgba(239,68,68,0.22)" : t.dangerBg,
+              border: filterStatus === "rejeitado" ? `2px solid ${t.danger}` : `1.5px solid ${t.dangerBorder}`,
+              borderRadius: 10,
+              padding: "8px 14px",
+              textAlign: "center",
+              cursor: "pointer",
+              transition: "all 0.18s"
+            }}
+            title="Filtrar: Mostrar Rejeitadas"
+          >
             <span style={{ fontSize: 11, color: t.danger, display: "block", textTransform: "uppercase", fontWeight: 700 }}>Rejeitadas</span>
             <span style={{ fontSize: 17, fontWeight: 800, color: t.danger }}>{rejeitadas}</span>
           </div>
         </div>
       </div>
 
-      {/* Filter and Search Bar */}
+      {/* Search Bar */}
       <div
         style={{
           display: "flex",
@@ -175,34 +230,14 @@ export function SolicitacoesCorrecaoView({
           marginBottom: 20
         }}
       >
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {[
-            { id: "pendente", label: `Pendentes (${pendentes})` },
-            { id: "aprovado", label: `Aprovadas (${aprovadas})` },
-            { id: "rejeitado", label: `Rejeitadas (${rejeitadas})` },
-            { id: "todas", label: `Todas (${total})` }
-          ].map(f => (
-            <button
-              key={f.id}
-              onClick={() => setFilterStatus(f.id as any)}
-              style={{
-                background: filterStatus === f.id ? t.accent : t.surfaceAlt,
-                color: filterStatus === f.id ? "#fff" : t.textSub,
-                border: `1.5px solid ${filterStatus === f.id ? t.accent : t.border}`,
-                borderRadius: 9,
-                padding: "7px 14px",
-                fontSize: 12.5,
-                fontWeight: 600,
-                cursor: "pointer",
-                transition: "all 0.18s"
-              }}
-            >
-              {f.label}
-            </button>
-          ))}
+        <div style={{ fontSize: 13, fontWeight: 600, color: t.textSub, display: "flex", alignItems: "center", gap: 6 }}>
+          <Filter size={14} color={t.accent} />
+          Exibindo: <span style={{ color: t.accent, fontWeight: 700 }}>
+            {filterStatus === "todas" ? "Todas" : filterStatus === "pendente" ? "Pendentes" : filterStatus === "aprovado" ? "Aprovadas" : "Rejeitadas"}
+          </span>
         </div>
 
-        <div style={{ position: "relative", minWidth: 260 }}>
+        <div style={{ position: "relative", minWidth: 260, flexGrow: 1, maxWidth: 360 }}>
           <Search size={16} color={t.textMuted} style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
           <input
             type="text"
@@ -245,9 +280,12 @@ export function SolicitacoesCorrecaoView({
           </p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {filteredList.map((item) => (
-            <div
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {filteredList
+              .slice((currentPage - 1) * 10, currentPage * 10)
+              .map((item) => (
+              <div
               key={item.id}
               style={{
                 background: t.surface,
@@ -424,7 +462,15 @@ export function SolicitacoesCorrecaoView({
               )}
             </div>
           ))}
-        </div>
+          </div>
+          <Paginacao
+            totalItems={filteredList.length}
+            itemsPerPage={10}
+            currentPage={currentPage}
+            onPageChange={setCurrentPage}
+            t={t}
+          />
+        </>
       )}
 
       {/* Reject Reason Modal */}
