@@ -14,6 +14,7 @@ import {
   saveOfflinePunch,
   loadOfflineQueue,
   clearOfflineQueue,
+  clearSyncedPunches,
   saveLastPunchTimestamp,
   checkClockTampering,
   migrateLocalStorageToPreferences,
@@ -177,7 +178,31 @@ export function EmployeePanel({
       for (let idx = 0; idx < dayArray.length; idx++) {
         const b = dayArray[idx];
         if (b && b.ocorrencia === "atestado" && b.statusAtestado === "recusado" && !b.vistoPeloColaborador) {
-          return { dayKey, batidaIdx: idx, batida: b };
+          const targetGroup = b.atestadoGroupId;
+          const targetCid = b.cid;
+          const targetMotivo = b.motivoRecusaAtestado;
+          const matchingDays: string[] = [];
+
+          Object.keys(userDays).forEach(dk => {
+            const arr = userDays[dk];
+            if (!arr) return;
+            arr.forEach(item => {
+              if (item && item.ocorrencia === "atestado" && item.statusAtestado === "recusado" && !item.vistoPeloColaborador) {
+                const isSameGroup = targetGroup && item.atestadoGroupId === targetGroup;
+                const isSameDetails = !targetGroup && item.cid === targetCid && item.motivoRecusaAtestado === targetMotivo;
+                if (isSameGroup || isSameDetails) {
+                  if (!matchingDays.includes(dk)) matchingDays.push(dk);
+                }
+              }
+            });
+          });
+
+          matchingDays.sort();
+          const dataInicio = matchingDays[0]?.split("-").reverse().join("/") || dayKey.split("-").reverse().join("/");
+          const dataFim = matchingDays[matchingDays.length - 1]?.split("-").reverse().join("/") || dataInicio;
+          const totalDias = matchingDays.length;
+
+          return { dayKey, batidaIdx: idx, batida: b, dataInicio, dataFim, totalDias, targetGroup, targetCid, targetMotivo };
         }
       }
     }
@@ -185,8 +210,8 @@ export function EmployeePanel({
   }, [pontosGlobal, currentUser?.id]);
 
   const meusAtestadosList = useMemo(() => {
-    const list: {
-      dayKey: string;
+    const map = new Map<string, {
+      groupKey: string;
       cid: string;
       statusAtestado: "pendente" | "aceito" | "recusado";
       motivoRecusaAtestado?: string;
@@ -195,33 +220,73 @@ export function EmployeePanel({
       parcial?: boolean;
       obs?: string;
       fotoAtestado?: string;
-    }[] = [];
+      dias: { dayKey: string }[];
+    }>();
 
-    if (!pontosGlobal || !currentUser?.id) return list;
+    if (!pontosGlobal || !currentUser?.id) return [];
     const userDays = pontosGlobal[currentUser.id];
-    if (!userDays) return list;
+    if (!userDays) return [];
 
     Object.keys(userDays).forEach(dayKey => {
       const dayArray = userDays[dayKey];
       if (!dayArray) return;
       dayArray.forEach(b => {
         if (b && b.ocorrencia === "atestado") {
-          list.push({
-            dayKey,
-            cid: b.cid || "N/A",
-            statusAtestado: b.statusAtestado || "pendente",
-            motivoRecusaAtestado: b.motivoRecusaAtestado,
-            revisadoPor: b.revisadoPor,
-            revisadoEm: b.revisadoEm,
-            parcial: b.parcial,
-            obs: b.obs,
-            fotoAtestado: b.fotoAtestado
-          });
+          const groupKey = b.atestadoGroupId
+            ? `${currentUser.id}_${b.atestadoGroupId}`
+            : (b.registradoEm && b.registradoEm !== "pending"
+                ? `${currentUser.id}_batch_${b.cid || 'NA'}_${b.registradoEm}`
+                : `${currentUser.id}_obs_${b.cid || 'NA'}_${(b.obs || '').trim()}`);
+
+          if (!map.has(groupKey)) {
+            map.set(groupKey, {
+              groupKey,
+              cid: b.cid || "N/A",
+              statusAtestado: b.statusAtestado || "pendente",
+              motivoRecusaAtestado: b.motivoRecusaAtestado,
+              revisadoPor: b.revisadoPor,
+              revisadoEm: b.revisadoEm,
+              parcial: b.parcial,
+              obs: b.obs,
+              fotoAtestado: b.fotoAtestado,
+              dias: []
+            });
+          }
+
+          const item = map.get(groupKey)!;
+          if (!item.dias.some(d => d.dayKey === dayKey)) {
+            item.dias.push({ dayKey });
+          }
+          if (!item.fotoAtestado && b.fotoAtestado) {
+            item.fotoAtestado = b.fotoAtestado;
+          }
+          if (b.statusAtestado === "recusado") {
+            item.statusAtestado = "recusado";
+            item.motivoRecusaAtestado = b.motivoRecusaAtestado;
+          } else if (b.statusAtestado === "aceito" && item.statusAtestado === "pendente") {
+            item.statusAtestado = "aceito";
+          }
         }
       });
     });
 
-    return list.sort((a, b) => b.dayKey.localeCompare(a.dayKey));
+    const result = Array.from(map.values()).map(item => {
+      item.dias.sort((a, b) => a.dayKey.localeCompare(b.dayKey));
+      const dayKeyMin = item.dias[0].dayKey;
+      const dayKeyMax = item.dias[item.dias.length - 1].dayKey;
+      const dataInicio = dayKeyMin.split("-").reverse().join("/");
+      const dataFim = dayKeyMax.split("-").reverse().join("/");
+      const totalDias = item.dias.length;
+      return {
+        ...item,
+        dayKey: dayKeyMax,
+        dataInicio,
+        dataFim,
+        totalDias
+      };
+    });
+
+    return result.sort((a, b) => b.dayKey.localeCompare(a.dayKey));
   }, [pontosGlobal, currentUser?.id]);
 
   // Alerta de Ponto Incompleto do Dia Anterior (só aparece a partir do dia seguinte)
@@ -734,13 +799,28 @@ export function EmployeePanel({
       try {
         const queue = await loadOfflineQueue();
         if (active && queue && queue.length > 0) {
-          const merged = await applyOfflineQueueToPontos(pontosGlobal, currentUser.id);
-          if (active) {
-            const currentJson = JSON.stringify(pontosGlobal?.[currentUser.id] || {});
-            const mergedJson = JSON.stringify(merged?.[currentUser.id] || {});
-            if (currentJson !== mergedJson) {
-              setPontosGlobal(merged);
-              console.log(`[Offline] Re-merged ${queue.length} pending punch(es) after pontosGlobal update.`);
+          const userDays = pontosGlobal?.[currentUser.id] || {};
+          const syncedItems = queue.filter(item => {
+            const dayArr = userDays[item.dayKey];
+            if (!dayArr) return false;
+            const b = dayArr[item.slotIdx];
+            return b && !b.gravadoOffline && b.serverTime !== "pending";
+          });
+          if (syncedItems.length > 0) {
+            await clearSyncedPunches(syncedItems);
+            await refreshOfflineListFromDisk();
+          }
+
+          const remainingQueue = await loadOfflineQueue();
+          if (active && remainingQueue && remainingQueue.length > 0) {
+            const merged = await applyOfflineQueueToPontos(pontosGlobal, currentUser.id);
+            if (active) {
+              const currentJson = JSON.stringify(pontosGlobal?.[currentUser.id] || {});
+              const mergedJson = JSON.stringify(merged?.[currentUser.id] || {});
+              if (currentJson !== mergedJson) {
+                setPontosGlobal(merged);
+                console.log(`[Offline] Re-merged ${remainingQueue.length} pending punch(es) after pontosGlobal update.`);
+              }
             }
           }
         }
@@ -1708,9 +1788,13 @@ export function EmployeePanel({
               border: `1px solid ${t.border}`
             }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 12, color: t.textMuted }}>Data do Atestado:</span>
+                <span style={{ fontSize: 12, color: t.textMuted }}>
+                  {atestadoRecusadoPendente.totalDias > 1 ? `Período (${atestadoRecusadoPendente.totalDias} dias):` : "Data do Atestado:"}
+                </span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: t.text }}>
-                  {atestadoRecusadoPendente.dayKey.split("-").reverse().join("/")}
+                  {atestadoRecusadoPendente.totalDias > 1
+                    ? `${atestadoRecusadoPendente.dataInicio} a ${atestadoRecusadoPendente.dataFim}`
+                    : atestadoRecusadoPendente.dataInicio}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
@@ -1748,21 +1832,38 @@ export function EmployeePanel({
               type="button"
               onClick={() => {
                 const item = atestadoRecusadoPendente;
-                const userRegs = pontosGlobal[currentUser.id] || {};
-                const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
-                if (dayArray[item.batidaIdx]) {
-                  dayArray[item.batidaIdx] = {
-                    ...dayArray[item.batidaIdx]!,
-                    vistoPeloColaborador: true
+                if (!item) return;
+                const { targetGroup, targetCid, targetMotivo } = item;
+
+                setPontosGlobal(prev => {
+                  const userRegs = prev[currentUser.id] || {};
+                  const updatedDays = { ...userRegs };
+
+                  Object.keys(updatedDays).forEach(dk => {
+                    const arr = updatedDays[dk];
+                    if (!arr) return;
+                    let changed = false;
+                    const newArr = arr.map(b => {
+                      if (b && b.ocorrencia === "atestado" && b.statusAtestado === "recusado" && !b.vistoPeloColaborador) {
+                        const isSameGroup = targetGroup && b.atestadoGroupId === targetGroup;
+                        const isSameDetails = !targetGroup && b.cid === targetCid && b.motivoRecusaAtestado === targetMotivo;
+                        if (isSameGroup || isSameDetails) {
+                          changed = true;
+                          return { ...b, vistoPeloColaborador: true };
+                        }
+                      }
+                      return b;
+                    });
+                    if (changed) {
+                      updatedDays[dk] = newArr;
+                    }
+                  });
+
+                  return {
+                    ...prev,
+                    [currentUser.id]: updatedDays
                   };
-                }
-                setPontosGlobal(prev => ({
-                  ...prev,
-                  [currentUser.id]: {
-                    ...userRegs,
-                    [item.dayKey]: dayArray
-                  }
-                }));
+                });
               }}
               style={{
                 width: "100%",
@@ -3744,7 +3845,7 @@ export function EmployeePanel({
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                             <span style={{ fontSize: 13, fontWeight: 700, color: t.text }}>
-                              📅 {item.dayKey.split("-").reverse().join("/")} {item.parcial ? "(Horas)" : ""}
+                              📅 {item.totalDias > 1 ? `${item.dataInicio} a ${item.dataFim} (${item.totalDias} dias)` : item.dataInicio} {item.parcial ? "(Horas)" : ""}
                             </span>
                             <span style={{
                               fontSize: 10.5,

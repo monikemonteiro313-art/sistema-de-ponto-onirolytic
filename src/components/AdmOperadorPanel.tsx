@@ -687,13 +687,7 @@ export function AdmOperadorPanel({
   const [atestadoZoom, setAtestadoZoom] = useState<number>(1);
   const [atestadoRotacao, setAtestadoRotacao] = useState<number>(0);
   const [filtroMesAtestado, setFiltroMesAtestado] = useState<string>("todos");
-  const [atestadoParaRecusar, setAtestadoParaRecusar] = useState<{
-    userId: number;
-    userName: string;
-    dayKey: string;
-    batidaIdx: number;
-    cid: string;
-  } | null>(null);
+  const [atestadoParaRecusar, setAtestadoParaRecusar] = useState<any | null>(null);
   const [justificativaRecusaInput, setJustificativaRecusaInput] = useState("");
 
   const computedPrePontos = useMemo(() => {
@@ -792,23 +786,25 @@ export function AdmOperadorPanel({
     return correcoes + atestados + pontosManuais + prePontos + denunciasQtd;
   }, [solicitacoesCorrecao, pendenciasCalculadas, denuncias]);
 
-  async function handleAceitarAtestado(item: { userId: number; userName: string; dayKey: string; batidaIdx: number; cid: string }) {
+  async function handleAceitarAtestado(item: typeof todosAtestados[0]) {
     const userRegs = pontosGlobal[item.userId] || {};
-    const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
-    if (dayArray[item.batidaIdx]) {
-      dayArray[item.batidaIdx] = {
-        ...dayArray[item.batidaIdx]!,
-        statusAtestado: "aceito",
-        statusAprovacao: "aprovado",
-        motivoRecusaAtestado: undefined,
-        revisadoEm: new Date().toISOString(),
-        revisadoPor: currentUser.nome
-      };
-    }
-    const updatedUserDays = {
-      ...userRegs,
-      [item.dayKey]: dayArray
-    };
+    const updatedUserDays = { ...userRegs };
+
+    item.dias.forEach(d => {
+      const dayArray = [...(updatedUserDays[d.dayKey] || [null, null, null, null])];
+      if (dayArray[d.batidaIdx]) {
+        dayArray[d.batidaIdx] = {
+          ...dayArray[d.batidaIdx]!,
+          statusAtestado: "aceito",
+          statusAprovacao: "aprovado",
+          motivoRecusaAtestado: undefined,
+          revisadoEm: new Date().toISOString(),
+          revisadoPor: currentUser.nome
+        };
+      }
+      updatedUserDays[d.dayKey] = dayArray;
+    });
+
     const updated = {
       ...pontosGlobal,
       [item.userId]: updatedUserDays
@@ -817,9 +813,10 @@ export function AdmOperadorPanel({
     await saveUserPontosToDb(item.userId, updatedUserDays);
 
     if (onAddLog) {
+      const periodoStr = item.totalDias > 1 ? `${item.dataInicio} a ${item.dataFim} (${item.totalDias} dias)` : item.dataInicio;
       onAddLog(
         "Aprovou Atestado Médico",
-        `${item.userName} (${item.dayKey})`,
+        `${item.userName} (${periodoStr})`,
         `CID: ${item.cid} - Homologado e aceito por ${currentUser.nome}`
       );
     }
@@ -831,24 +828,24 @@ export function AdmOperadorPanel({
 
     const item = atestadoParaRecusar;
     const userRegs = pontosGlobal[item.userId] || {};
-    const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
+    const updatedUserDays = { ...userRegs };
 
-    if (dayArray[item.batidaIdx]) {
-      dayArray[item.batidaIdx] = {
-        ...dayArray[item.batidaIdx]!,
-        statusAtestado: "recusado",
-        statusAprovacao: "recusado",
-        motivoRecusaAtestado: justificativaRecusaInput.trim(),
-        revisadoEm: new Date().toISOString(),
-        revisadoPor: currentUser.nome,
-        vistoPeloColaborador: false
-      };
-    }
+    item.dias.forEach(d => {
+      const dayArray = [...(updatedUserDays[d.dayKey] || [null, null, null, null])];
+      if (dayArray[d.batidaIdx]) {
+        dayArray[d.batidaIdx] = {
+          ...dayArray[d.batidaIdx]!,
+          statusAtestado: "recusado",
+          statusAprovacao: "recusado",
+          motivoRecusaAtestado: justificativaRecusaInput.trim(),
+          revisadoEm: new Date().toISOString(),
+          revisadoPor: currentUser.nome,
+          vistoPeloColaborador: false
+        };
+      }
+      updatedUserDays[d.dayKey] = dayArray;
+    });
 
-    const updatedUserDays = {
-      ...userRegs,
-      [item.dayKey]: dayArray
-    };
     const updated = {
       ...pontosGlobal,
       [item.userId]: updatedUserDays
@@ -858,9 +855,10 @@ export function AdmOperadorPanel({
     await saveUserPontosToDb(item.userId, updatedUserDays);
 
     if (onAddLog) {
+      const periodoStr = item.totalDias > 1 ? `${item.dataInicio} a ${item.dataFim} (${item.totalDias} dias)` : item.dataInicio;
       onAddLog(
         "Recusou Atestado Médico",
-        `${item.userName} (${item.dayKey})`,
+        `${item.userName} (${periodoStr})`,
         `CID: ${item.cid} - Recusado por ${currentUser.nome}. Justificativa: "${justificativaRecusaInput.trim()}"`
       );
     }
@@ -2318,12 +2316,11 @@ export function AdmOperadorPanel({
   }, [colaboradores, busca, filtroJornada]);
 
   const todosAtestados = useMemo(() => {
-    const list: {
+    const map = new Map<string, {
       userId: number;
       userName: string;
       userMatricula: string;
-      dayKey: string;
-      batidaIdx: number;
+      groupKey: string;
       cid: string;
       fotoAtestado?: string;
       obs?: string;
@@ -2333,7 +2330,8 @@ export function AdmOperadorPanel({
       motivoRecusaAtestado?: string;
       revisadoEm?: string;
       revisadoPor?: string;
-    }[] = [];
+      dias: { dayKey: string; batidaIdx: number }[];
+    }>();
 
     users.forEach(u => {
       const userDays = pontosGlobal[u.id];
@@ -2345,14 +2343,18 @@ export function AdmOperadorPanel({
 
         dayArray.forEach((b, idx) => {
           if (b && b.ocorrencia === "atestado") {
-            const alreadyAdded = list.some(item => item.userId === u.id && item.dayKey === dayKey);
-            if (!alreadyAdded) {
-              list.push({
+            const groupKey = b.atestadoGroupId
+              ? `${u.id}_${b.atestadoGroupId}`
+              : (b.registradoEm && b.registradoEm !== "pending"
+                  ? `${u.id}_batch_${b.cid || 'NA'}_${b.registradoEm}`
+                  : `${u.id}_obs_${b.cid || 'NA'}_${(b.obs || '').trim()}`);
+
+            if (!map.has(groupKey)) {
+              map.set(groupKey, {
                 userId: u.id,
                 userName: u.nome,
                 userMatricula: u.matricula,
-                dayKey,
-                batidaIdx: idx,
+                groupKey,
                 cid: b.cid || "N/A",
                 fotoAtestado: b.fotoAtestado,
                 obs: b.obs,
@@ -2361,23 +2363,58 @@ export function AdmOperadorPanel({
                 statusAtestado: b.statusAtestado || "pendente",
                 motivoRecusaAtestado: b.motivoRecusaAtestado,
                 revisadoEm: b.revisadoEm,
-                revisadoPor: b.revisadoPor
+                revisadoPor: b.revisadoPor,
+                dias: []
               });
+            }
+
+            const item = map.get(groupKey)!;
+            if (!item.dias.some(d => d.dayKey === dayKey && d.batidaIdx === idx)) {
+              item.dias.push({ dayKey, batidaIdx: idx });
+            }
+            if (!item.fotoAtestado && b.fotoAtestado) {
+              item.fotoAtestado = b.fotoAtestado;
+            }
+            if (b.statusAtestado === "recusado") {
+              item.statusAtestado = "recusado";
+              item.motivoRecusaAtestado = b.motivoRecusaAtestado;
+            } else if (b.statusAtestado === "aceito" && item.statusAtestado === "pendente") {
+              item.statusAtestado = "aceito";
             }
           }
         });
       });
     });
 
-    return list.sort((a, b) => b.dayKey.localeCompare(a.dayKey));
+    const result = Array.from(map.values()).map(item => {
+      item.dias.sort((a, b) => a.dayKey.localeCompare(b.dayKey));
+      const dayKeyMin = item.dias[0].dayKey;
+      const dayKeyMax = item.dias[item.dias.length - 1].dayKey;
+      const dataInicio = dayKeyMin.split("-").reverse().join("/");
+      const dataFim = dayKeyMax.split("-").reverse().join("/");
+      const totalDias = item.dias.length;
+      return {
+        ...item,
+        dayKey: dayKeyMax,
+        dayKeyMin,
+        dayKeyMax,
+        dataInicio,
+        dataFim,
+        totalDias
+      };
+    });
+
+    return result.sort((a, b) => b.dayKeyMax.localeCompare(a.dayKeyMax));
   }, [users, pontosGlobal]);
 
   const mesesDisponiveisAtestados = useMemo(() => {
     const setMeses = new Set<string>();
     todosAtestados.forEach(a => {
-      if (a.dayKey && a.dayKey.length >= 7) {
-        setMeses.add(a.dayKey.slice(0, 7));
-      }
+      a.dias.forEach(d => {
+        if (d.dayKey && d.dayKey.length >= 7) {
+          setMeses.add(d.dayKey.slice(0, 7));
+        }
+      });
     });
     const now = new Date();
     for (let i = 0; i < 6; i++) {
@@ -2392,7 +2429,7 @@ export function AdmOperadorPanel({
   const filtradosAtestados = useMemo(() => {
     let list = todosAtestados;
     if (filtroMesAtestado !== "todos") {
-      list = list.filter(a => a.dayKey.startsWith(filtroMesAtestado));
+      list = list.filter(a => a.dias.some(d => d.dayKey.startsWith(filtroMesAtestado)));
     }
     if (!busca.trim()) return list;
     const term = busca.toLowerCase();
@@ -2401,7 +2438,9 @@ export function AdmOperadorPanel({
         a.userName.toLowerCase().includes(term) ||
         a.userMatricula.toLowerCase().includes(term) ||
         a.cid.toLowerCase().includes(term) ||
-        a.dayKey.includes(term)
+        a.dataInicio.includes(term) ||
+        a.dataFim.includes(term) ||
+        a.dias.some(d => d.dayKey.includes(term))
     );
   }, [todosAtestados, busca, filtroMesAtestado]);
 
@@ -3931,22 +3970,17 @@ export function AdmOperadorPanel({
                             color: atest.parcial ? "#D97706" : "#2563EB"
                           }}
                         >
-                          {atest.parcial ? "Parcial (Horas)" : "Dia Completo"}
+                          {atest.parcial ? "Parcial (Horas)" : atest.totalDias > 1 ? `Atestado (${atest.totalDias} dias)` : "Dia Completo"}
                         </span>
                       </div>
 
                       <div style={{ display: "flex", gap: 12, alignItems: "center", background: t.surfaceAlt, padding: "8px 12px", borderRadius: 10 }}>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 11, color: t.textMuted }}>Data do Atestado</div>
+                          <div style={{ fontSize: 11, color: t.textMuted }}>
+                            {atest.totalDias > 1 ? `Período (${atest.totalDias} dias)` : "Data do Atestado"}
+                          </div>
                           <div style={{ fontSize: 13, fontWeight: 700, color: t.text }}>
-                            {(() => {
-                              try {
-                                const [year, month, day] = atest.dayKey.split("-");
-                                return `${day}/${month}/${year}`;
-                              } catch {
-                                return atest.dayKey;
-                              }
-                            })()}
+                            {atest.totalDias > 1 ? `${atest.dataInicio} a ${atest.dataFim}` : atest.dataInicio}
                           </div>
                         </div>
                         <div style={{ textAlign: "right" }}>
@@ -4163,7 +4197,7 @@ export function AdmOperadorPanel({
                     <div>
                       <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: t.text }}>Recusar Atestado Médico</h3>
                       <p style={{ margin: 0, fontSize: 12, color: t.textMuted }}>
-                        Colaborador: <strong>{atestadoParaRecusar.userName}</strong> ({atestadoParaRecusar.dayKey.split("-").reverse().join("/")})
+                        Colaborador: <strong>{atestadoParaRecusar.userName}</strong> ({atestadoParaRecusar.totalDias > 1 ? `${atestadoParaRecusar.dataInicio} a ${atestadoParaRecusar.dataFim} (${atestadoParaRecusar.totalDias} dias)` : atestadoParaRecusar.dataInicio})
                       </p>
                     </div>
                   </div>

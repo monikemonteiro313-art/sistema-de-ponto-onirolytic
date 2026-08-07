@@ -122,7 +122,11 @@ export async function clearSyncedPunches(confirmedPunches: OfflinePunchItem[]): 
       );
       return !isConfirmed;
     });
-    await setPref("offline_punches_queue", JSON.stringify(remaining));
+    if (remaining.length === 0) {
+      await clearOfflineQueue();
+    } else {
+      await setPref("offline_punches_queue", JSON.stringify(remaining));
+    }
     console.log(`[Preferences] Cleared ${confirmedPunches.length} synced punches. Remaining in queue: ${remaining.length}`);
   } catch (err) {
     console.error("[Preferences] Error clearing synced punches:", err);
@@ -131,11 +135,12 @@ export async function clearSyncedPunches(confirmedPunches: OfflinePunchItem[]): 
 
 /**
  * Remove ENTIRE offline queue from native disk.
- * Call after syncNow() returns success.
+ * Call after syncNow() returns success or when all punches are synced.
  */
 export async function clearOfflineQueue(): Promise<void> {
   try {
     await Preferences.remove({ key: "offline_punches_queue" });
+    await setPref("offline_punches_queue", "[]");
     console.log("[Preferences] Fila offline completa removida do disco.");
   } catch (err) {
     console.error("[Preferences] Erro ao limpar fila offline:", err);

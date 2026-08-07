@@ -52,6 +52,7 @@ import {
   checkFirebaseConnectivity
 } from "./lib/firebaseService";
 import { savePontosToIndexedDB, getPontosFromIndexedDB, saveUsersToIndexedDB, getUsersFromIndexedDB, saveAuthSessionToIndexedDB, getAuthSessionFromIndexedDB, addToSyncQueue, getSyncQueue, removeFromSyncQueue } from "./lib/indexedDbService";
+import { clearOfflineQueue } from "./utils/preferencesService";
 import { PwaInstallPrompt } from "./components/PwaInstallPrompt";
 import { AlertTriangle } from "lucide-react";
 
@@ -95,6 +96,7 @@ function areBatidasEqual(b1: any, b2: any): boolean {
   if ((b1.tipo || "auto") !== (b2.tipo || "auto")) return false;
   if (b1.registradoEm !== b2.registradoEm) return false;
   if ((b1.statusAprovacao || "aprovado") !== (b2.statusAprovacao || "aprovado")) return false;
+  if ((b1.vistoPeloColaborador || false) !== (b2.vistoPeloColaborador || false)) return false;
   if ((b1.duplicadoOculto || false) !== (b2.duplicadoOculto || false)) return false;
   if ((b1.obs || "") !== (b2.obs || "")) return false;
   if ((b1.motivoAjuste || "") !== (b2.motivoAjuste || "")) return false;
@@ -159,26 +161,35 @@ function reconcilePontos(local: PontosGlobal | null, server: PontosGlobal | null
         } else if (!localPunch && serverPunch) {
           newDayArray.push(serverPunch);
         } else if (localPunch && serverPunch) {
+          let chosenPunch: any = null;
           // Check revision/approval timestamp first
           const localRevTime = (localPunch.revisadoEm || localPunch.editadoEm) ? new Date(localPunch.revisadoEm || localPunch.editadoEm).getTime() : 0;
           const serverRevTime = (serverPunch.revisadoEm || serverPunch.editadoEm) ? new Date(serverPunch.revisadoEm || serverPunch.editadoEm).getTime() : 0;
 
           if (localRevTime > serverRevTime) {
-            newDayArray.push(localPunch);
+            chosenPunch = localPunch;
           } else if (serverRevTime > localRevTime) {
-            newDayArray.push(serverPunch);
+            chosenPunch = serverPunch;
           } else if (localPunch.statusAprovacao && localPunch.statusAprovacao !== "pendente" && (!serverPunch.statusAprovacao || serverPunch.statusAprovacao === "pendente")) {
-            newDayArray.push(localPunch);
+            chosenPunch = localPunch;
           } else if (serverPunch.statusAprovacao && serverPunch.statusAprovacao !== "pendente" && (!localPunch.statusAprovacao || localPunch.statusAprovacao === "pendente")) {
-            newDayArray.push(serverPunch);
+            chosenPunch = serverPunch;
           } else {
             const localRegTime = localPunch.registradoEm ? new Date(localPunch.registradoEm).getTime() : 0;
             const serverRegTime = serverPunch.registradoEm ? new Date(serverPunch.registradoEm).getTime() : 0;
             if (localRegTime > serverRegTime) {
-              newDayArray.push(localPunch);
+              chosenPunch = localPunch;
             } else {
-              newDayArray.push(serverPunch);
+              chosenPunch = serverPunch;
             }
+          }
+
+          if (chosenPunch) {
+            const isVisto = Boolean(localPunch.vistoPeloColaborador || serverPunch.vistoPeloColaborador);
+            newDayArray.push({
+              ...chosenPunch,
+              vistoPeloColaborador: isVisto
+            });
           }
         } else {
           newDayArray.push(null);
@@ -736,6 +747,7 @@ export default function App() {
             const cleanDays = sanitizeDaysForFirebase(days);
             await saveUserPontosToDb(userId, cleanDays);
             await removeFromSyncQueue(item.id);
+            await clearOfflineQueue().catch(() => {});
             console.log(`[Sync Queue] Pontos do usuário ${userId} salvos no Firebase com sucesso!`);
             
             setPontos(current => {
@@ -773,7 +785,8 @@ export default function App() {
         if (!prevDays || !areUserDaysEqual(nextDays, prevDays)) {
           const cleanDays = sanitizeDaysForFirebase(nextDays);
           
-          saveUserPontosToDb(userId, cleanDays).then(() => {
+          saveUserPontosToDb(userId, cleanDays).then(async () => {
+            await clearOfflineQueue().catch(() => {});
             setPontos(current => {
               const updated = clearUserSyncFlags(current, userId);
               setSafeLocalStorageItem("hr_cached_pontos", updated);
