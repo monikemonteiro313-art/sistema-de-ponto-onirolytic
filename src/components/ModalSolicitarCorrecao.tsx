@@ -114,10 +114,6 @@ export function ModalSolicitarCorrecao({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!navigator.onLine) {
-      setFormError("Solicitação de correção requer internet para envio ao gestor.");
-      return;
-    }
     if (!dateVal) {
       setFormError("Por favor, selecione a data da batida.");
       return;

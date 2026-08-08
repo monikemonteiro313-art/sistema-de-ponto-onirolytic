@@ -239,7 +239,7 @@ export interface SolicitacaoCorrecao {
   latitude?: number | null;
   longitude?: number | null;
   accuracy?: number | null;
-  status: "pendente" | "aprovado" | "rejeitado";
+  status: "pendente" | "aprovado" | "rejeitado" | "recusado";
   motivoRejeicao?: string | null;
   criadoEm: string;
   revisadoEm?: string | null;

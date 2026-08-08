@@ -245,6 +245,68 @@ function reconcileAuditLogs(local: AuditLogEntry[] | null, server: AuditLogEntry
   return { merged, pending };
 }
 
+function reconcileSolicitacoesCorrecao(
+  local: SolicitacaoCorrecao[] | null,
+  server: SolicitacaoCorrecao[] | null
+): { merged: SolicitacaoCorrecao[]; pending: SolicitacaoCorrecao[] } {
+  const serverList = server || [];
+  const localList = local || [];
+  const serverMap = new Map(serverList.map(s => [s.id, s]));
+  const pending: SolicitacaoCorrecao[] = [];
+  const merged = [...serverList];
+
+  for (const sol of localList) {
+    if (!sol || !sol.id) continue;
+    if (!serverMap.has(sol.id)) {
+      pending.push(sol);
+      merged.push(sol);
+    } else {
+      const serverSol = serverMap.get(sol.id)!;
+      const localTime = sol.revisadoEm ? new Date(sol.revisadoEm).getTime() : new Date(sol.criadoEm).getTime();
+      const serverTime = serverSol.revisadoEm ? new Date(serverSol.revisadoEm).getTime() : new Date(serverSol.criadoEm).getTime();
+      if (localTime > serverTime && sol.status !== serverSol.status) {
+        pending.push(sol);
+        const idx = merged.findIndex(m => m.id === sol.id);
+        if (idx >= 0) merged[idx] = sol;
+      }
+    }
+  }
+
+  merged.sort((a, b) => new Date(b.criadoEm || 0).getTime() - new Date(a.criadoEm || 0).getTime());
+  return { merged, pending };
+}
+
+function reconcilePrePontos(
+  local: PrePonto[] | null,
+  server: PrePonto[] | null
+): { merged: PrePonto[]; pending: PrePonto[] } {
+  const serverList = server || [];
+  const localList = local || [];
+  const serverMap = new Map(serverList.map(p => [p.id, p]));
+  const pending: PrePonto[] = [];
+  const merged = [...serverList];
+
+  for (const pre of localList) {
+    if (!pre || !pre.id) continue;
+    if (!serverMap.has(pre.id)) {
+      pending.push(pre);
+      merged.push(pre);
+    } else {
+      const serverPre = serverMap.get(pre.id)!;
+      const localTime = pre.atualizadoEm ? new Date(pre.atualizadoEm).getTime() : new Date(pre.quando).getTime();
+      const serverTime = serverPre.atualizadoEm ? new Date(serverPre.atualizadoEm).getTime() : new Date(serverPre.quando).getTime();
+      if (localTime > serverTime && pre.status !== serverPre.status) {
+        pending.push(pre);
+        const idx = merged.findIndex(m => m.id === pre.id);
+        if (idx >= 0) merged[idx] = pre;
+      }
+    }
+  }
+
+  merged.sort((a, b) => new Date(b.quando || 0).getTime() - new Date(a.quando || 0).getTime());
+  return { merged, pending };
+}
+
 function sanitizeDaysForFirebase(days: Record<string, (any | null)[]>): Record<string, (any | null)[]> {
   if (!days) return days;
   const clean = JSON.parse(JSON.stringify(days));
@@ -378,11 +440,19 @@ export default function App() {
       setMinimoHorasDia(dbMin);
       setEmpresaConfig(dbEmpresa);
       setFeriados(dbFeriados);
-      setPrePontos(dbPrePontos || []);
       updateFolhasAceite(dbFolhas || []);
       updateAlertas(dbAlertas || []);
       setDenuncias(dbDenuncias || []);
-      setSolicitacoesCorrecao(dbSolicitacoes || []);
+
+      // Reconcile solicitacoesCorrecao & prePontos
+      const cachedSolicitacoes = getSafeLocalStorageItem<SolicitacaoCorrecao[]>("hr_cached_solicitacoes_correcao", []);
+      const { merged: reconciledSolicitacoes, pending: pendingSolicitacoes } = reconcileSolicitacoesCorrecao(cachedSolicitacoes, dbSolicitacoes);
+
+      const cachedPrePontos = getSafeLocalStorageItem<PrePonto[]>("hr_cached_pre_pontos", []);
+      const { merged: reconciledPrePontos, pending: pendingPrePontos } = reconcilePrePontos(cachedPrePontos, dbPrePontos);
+
+      setSolicitacoesCorrecao(reconciledSolicitacoes);
+      setPrePontos(reconciledPrePontos);
 
       if (rawDbUsers.length > 0) {
         setSafeLocalStorageItem("hr_cached_users", rawDbUsers);
@@ -391,6 +461,16 @@ export default function App() {
       setSafeLocalStorageItem("hr_cached_pontos", dbPontos);
       setSafeLocalStorageItem("hr_cached_audit_logs", dbLogs);
       setSafeLocalStorageItem("hr_cached_alertas", dbAlertas || []);
+      setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", reconciledSolicitacoes);
+      setSafeLocalStorageItem("hr_cached_pre_pontos", reconciledPrePontos);
+
+      // Async push pending offline items
+      for (const sol of pendingSolicitacoes) {
+        saveSolicitacaoCorrecaoToDb(sol).catch(e => console.warn("Failed sync solicitacao:", e));
+      }
+      for (const pre of pendingPrePontos) {
+        savePrePontoToDb(pre).catch(e => console.warn("Failed sync prePonto:", e));
+      }
 
       const offlineUsed = getIsUsingOfflineCache();
       setIsOfflineData(offlineUsed);
@@ -464,17 +544,25 @@ export default function App() {
         const cachedLogs = getSafeLocalStorageItem<AuditLogEntry[]>("hr_cached_audit_logs", []);
         const { merged: reconciledLogs, pending: pendingLogs } = reconcileAuditLogs(cachedLogs, dbLogs);
 
+        // Reconcile Solicitacoes de Correcao (Offline -> Online)
+        const cachedSolicitacoes = getSafeLocalStorageItem<SolicitacaoCorrecao[]>("hr_cached_solicitacoes_correcao", []);
+        const { merged: reconciledSolicitacoes, pending: pendingSolicitacoes } = reconcileSolicitacoesCorrecao(cachedSolicitacoes, dbSolicitacoes);
+
+        // Reconcile PrePontos (Offline -> Online)
+        const cachedPrePontos = getSafeLocalStorageItem<PrePonto[]>("hr_cached_pre_pontos", []);
+        const { merged: reconciledPrePontos, pending: pendingPrePontos } = reconcilePrePontos(cachedPrePontos, dbPrePontos);
+
         if (dbUsers.length > 0) setUsers(dbUsers);
         setPontos(reconciledPontos);
         setAuditLogs(reconciledLogs);
         setMinimoHorasDia(dbMin);
         setEmpresaConfig(dbEmpresa);
         setFeriados(dbFeriados);
-        setPrePontos(dbPrePontos || []);
+        setPrePontos(reconciledPrePontos);
         setFolhasAceite(dbFolhas || []);
         setAlertas(dbAlertas || []);
         setDenuncias(dbDenuncias || []);
-        setSolicitacoesCorrecao(dbSolicitacoes || []);
+        setSolicitacoesCorrecao(reconciledSolicitacoes);
 
         // Cache locally for offline survival
         if (dbUsers.length > 0) {
@@ -487,11 +575,11 @@ export default function App() {
         setSafeLocalStorageItem("hr_cached_empresa_config", dbEmpresa);
         setSafeLocalStorageItem("hr_cached_feriados", dbFeriados);
         setSafeLocalStorageItem("hr_cached_wizard_done", wizardDone);
-        setSafeLocalStorageItem("hr_cached_pre_pontos", dbPrePontos || []);
+        setSafeLocalStorageItem("hr_cached_pre_pontos", reconciledPrePontos);
         setSafeLocalStorageItem("hr_cached_folhas_aceite", dbFolhas || []);
         setSafeLocalStorageItem("hr_cached_alertas", dbAlertas || []);
         setSafeLocalStorageItem("hr_cached_denuncias", dbDenuncias || []);
-        setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", dbSolicitacoes || []);
+        setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", reconciledSolicitacoes);
 
         setIsOfflineData(getIsUsingOfflineCache());
 
@@ -508,6 +596,22 @@ export default function App() {
           console.log(`[Sync] Uploading pending offline audit log: ${log.acao}`);
           saveAuditLogToDb(log).catch(err => {
             console.error("[Sync] Failed to sync offline audit log:", err);
+          });
+        }
+
+        // Push pending solicitacoes to Firestore asynchronously
+        for (const sol of pendingSolicitacoes) {
+          console.log(`[Sync] Uploading pending offline solicitacao correcao: ${sol.id}`);
+          saveSolicitacaoCorrecaoToDb(sol).catch(err => {
+            console.error("[Sync] Failed to sync offline solicitacao correcao:", err);
+          });
+        }
+
+        // Push pending prePontos to Firestore asynchronously
+        for (const pre of pendingPrePontos) {
+          console.log(`[Sync] Uploading pending offline prePonto: ${pre.id}`);
+          savePrePontoToDb(pre).catch(err => {
+            console.error("[Sync] Failed to sync offline prePonto:", err);
           });
         }
         
@@ -1238,6 +1342,34 @@ export default function App() {
         }
       }
 
+      // 5. Reconcile solicitacoes de correcao
+      const dbSolicitacoes = await fetchAllSolicitacoesCorrecao();
+      if (dbSolicitacoes) {
+        const cached = getSafeLocalStorageItem<SolicitacaoCorrecao[]>("hr_cached_solicitacoes_correcao", []);
+        const { merged: reconciled, pending } = reconcileSolicitacoesCorrecao(cached, dbSolicitacoes);
+        setSolicitacoesCorrecao(reconciled);
+        setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", reconciled);
+        for (const sol of pending) {
+          await saveSolicitacaoCorrecaoToDb(sol).catch(err => {
+            console.error("[Sync] Solicitacao sync failed:", err);
+          });
+        }
+      }
+
+      // 6. Reconcile pre-pontos
+      const dbPrePontos = await fetchAllPrePontos();
+      if (dbPrePontos) {
+        const cached = getSafeLocalStorageItem<PrePonto[]>("hr_cached_pre_pontos", []);
+        const { merged: reconciled, pending } = reconcilePrePontos(cached, dbPrePontos);
+        setPrePontos(reconciled);
+        setSafeLocalStorageItem("hr_cached_pre_pontos", reconciled);
+        for (const pre of pending) {
+          await savePrePontoToDb(pre).catch(err => {
+            console.error("[Sync] PrePonto sync failed:", err);
+          });
+        }
+      }
+
       console.log("[Sync] Manual sync completed successfully!");
       setSyncError(null);
       setIsFirebaseBlocked(false);
@@ -1327,6 +1459,36 @@ export default function App() {
         }
       } catch (err) {
         console.warn("[Sync] Network/Visibility trigger failed to fetch logs:", err);
+      }
+
+      try {
+        const dbSolicitacoes = await fetchAllSolicitacoesCorrecao();
+        if (dbSolicitacoes) {
+          const cached = getSafeLocalStorageItem<SolicitacaoCorrecao[]>("hr_cached_solicitacoes_correcao", []);
+          const { merged: reconciled, pending } = reconcileSolicitacoesCorrecao(cached, dbSolicitacoes);
+          setSolicitacoesCorrecao(reconciled);
+          setSafeLocalStorageItem("hr_cached_solicitacoes_correcao", reconciled);
+          for (const sol of pending) {
+            saveSolicitacaoCorrecaoToDb(sol).catch(err => console.error("[Sync] BG sync solicitacao error:", err));
+          }
+        }
+      } catch (err) {
+        console.warn("[Sync] Network/Visibility trigger failed for solicitacoes:", err);
+      }
+
+      try {
+        const dbPrePontos = await fetchAllPrePontos();
+        if (dbPrePontos) {
+          const cached = getSafeLocalStorageItem<PrePonto[]>("hr_cached_pre_pontos", []);
+          const { merged: reconciled, pending } = reconcilePrePontos(cached, dbPrePontos);
+          setPrePontos(reconciled);
+          setSafeLocalStorageItem("hr_cached_pre_pontos", reconciled);
+          for (const pre of pending) {
+            savePrePontoToDb(pre).catch(err => console.error("[Sync] BG sync prePonto error:", err));
+          }
+        }
+      } catch (err) {
+        console.warn("[Sync] Network/Visibility trigger failed for prePontos:", err);
       } finally {
         isSyncingRef.current = false;
       }
@@ -1949,6 +2111,7 @@ export default function App() {
                 alertas={alertas}
                 setAlertas={updateAlertas}
                 markAlertaAsReadInDb={markAlertaAsReadInDb}
+                solicitacoesCorrecao={solicitacoesCorrecao}
                 onSendSolicitacaoCorrecao={handleSendSolicitacaoCorrecao}
                 updateUserBloqueioAceite={async (userId, blocked) => {
                   await updateUserBloqueioAceite(userId, blocked);

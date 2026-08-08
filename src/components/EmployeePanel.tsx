@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Check, Calendar, Clock, Unlock, Shield, SquarePen, ShieldCheck, Stethoscope, Folder, X, Upload, FileText, AlertTriangle, Eye, ArrowLeft, RefreshCw, WifiOff, File, Bell } from "lucide-react";
-import { ThemeColors, User, Batida, DiaPontos, PontosGlobal, FolhaAceite, Alerta } from "../types";
+import { ThemeColors, User, Batida, DiaPontos, PontosGlobal, FolhaAceite, Alerta, SolicitacaoCorrecao } from "../types";
 import { getOverlapWithNightShift, calcularDia, resumoMesCalculado, baixarArquivoAtestado, compressImageBase64 } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
 import { LgpdModal } from "./LgpdModal";
@@ -98,6 +98,7 @@ interface EmployeePanelProps {
     longitude?: number | null;
     accuracy?: number | null;
   }) => Promise<void>;
+  solicitacoesCorrecao?: SolicitacaoCorrecao[];
   isOfflineData?: boolean;
 }
 
@@ -123,6 +124,7 @@ export function EmployeePanel({
   updateUserBloqueioAceite,
   alertas = [],
   setAlertas,
+  solicitacoesCorrecao = [],
   markAlertaAsReadInDb,
   onSendSolicitacaoCorrecao
 }: EmployeePanelProps) {
@@ -2879,6 +2881,67 @@ export function EmployeePanel({
               </div>
               <span style={{ fontSize: 18, color: t.accent, fontWeight: "bold" }}>➔</span>
             </div>
+
+            {/* List of user's correction requests */}
+            {(() => {
+              const mySols = (solicitacoesCorrecao || []).filter(
+                s => String(s.userId) === String(currentUser.id) || (currentUser.matricula && s.matricula === currentUser.matricula)
+              );
+              if (mySols.length === 0) return null;
+              const slotLabels = ["1ª Entrada", "1ª Saída", "2ª Entrada", "2ª Saída"];
+              return (
+                <div style={{ marginTop: 10, width: "100%" }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 800, color: t.textSub, textTransform: "uppercase", marginBottom: 6, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span>📋 Minhas Solicitações de Ajuste ({mySols.length})</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 180, overflowY: "auto" }}>
+                    {mySols.map((sol) => {
+                      const isPend = sol.status === "pendente";
+                      const isAprov = sol.status === "aprovado";
+                      const isRej = sol.status === "rejeitado" || sol.status === "recusado";
+                      return (
+                        <div
+                          key={sol.id}
+                          style={{
+                            background: isPend ? t.surfaceAlt : isAprov ? t.successBg : t.dangerBg,
+                            border: `1px solid ${isPend ? t.border : isAprov ? t.successBorder : t.dangerBorder}`,
+                            borderRadius: 10,
+                            padding: "8px 12px",
+                            fontSize: 12
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
+                            <span style={{ fontWeight: 800, color: t.text }}>
+                              📅 {sol.data.split("-").reverse().join("/")} às {sol.hora} <span style={{ fontSize: 11, color: t.textMuted }}>({slotLabels[sol.slotIdx] || "Ajuste"})</span>
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 10.5,
+                                fontWeight: 800,
+                                padding: "2px 6px",
+                                borderRadius: 6,
+                                background: isPend ? t.accentGlow : isAprov ? t.success : t.danger,
+                                color: isPend ? t.accent : "#fff"
+                              }}
+                            >
+                              {isPend ? "⏳ Em Análise" : isAprov ? "✅ Aprovado" : "❌ Recusado"}
+                            </span>
+                          </div>
+                          <div style={{ color: t.textSub, fontSize: 11.5, marginTop: 2 }}>
+                            <strong>Motivo:</strong> {sol.motivo}
+                          </div>
+                          {isRej && sol.motivoRejeicao && (
+                            <div style={{ color: t.danger, fontSize: 11, fontWeight: 700, marginTop: 3 }}>
+                              Motivo da recusa: {sol.motivoRejeicao}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )
       )}
