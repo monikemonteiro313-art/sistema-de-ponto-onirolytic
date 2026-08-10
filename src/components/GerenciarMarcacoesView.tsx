@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Search, Calendar, Clock, ShieldCheck, MapPin, Edit3, Info, Eye, History, AlertTriangle, ChevronLeft, ChevronRight, CheckCircle2 } from "lucide-react";
-import { ThemeColors, User, PontosGlobal, Batida, DiaPontos, AuditLogEntry } from "../types";
+import { ThemeColors, User, PontosGlobal, Batida, DiaPontos, AuditLogEntry, FolgaRemunerada } from "../types";
 import { calcularDia, resumoMesCalculado } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
 
@@ -13,6 +13,7 @@ interface GerenciarMarcacoesViewProps {
   onSalvarPonto: (userId: number, dayKey: string, batidaIdx: number, novaHora: string, justificativa: string) => Promise<void>;
   onDecisaoAtestado?: (userId: number, groupId: string, dias: {dayKey: string, slotIdx: number}[], decisao: "aceito" | "recusado" | "excluir", justificativa: string) => Promise<void>;
   feriados?: string[];
+  folgasRemuneradas?: FolgaRemunerada[];
   minimoHorasDia?: number;
 }
 
@@ -27,6 +28,7 @@ export function GerenciarMarcacoesView({
   onSalvarPonto,
   onDecisaoAtestado,
   feriados = [],
+  folgasRemuneradas = [],
   minimoHorasDia = 7,
 }: GerenciarMarcacoesViewProps) {
   const validUsers = useMemo(() => {
@@ -181,7 +183,7 @@ export function GerenciarMarcacoesView({
 
       const userDays = pontosGlobal[selectedUserId] || {};
       const dayPunches: DiaPontos = userDays[dayKey] || [null, null, null, null];
-      const calc = calcularDia(selectedUserId, dayKey, users, pontosGlobal, feriados);
+      const calc = calcularDia(selectedUserId, dayKey, users, pontosGlobal, feriados, 10, folgasRemuneradas);
 
       daysArr.push({
         d,

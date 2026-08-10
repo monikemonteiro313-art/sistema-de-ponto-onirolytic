@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { RefreshCw, WifiOff } from "lucide-react";
-import { ThemeColors, User, PontosGlobal, Jornada, EmpresaConfig, PeriodoFerias, DiaPontos, PrePonto, Batida, AuditLogEntry, Denuncia, SolicitacaoCorrecao, Alerta } from "../types";
+import { ThemeColors, User, PontosGlobal, Jornada, EmpresaConfig, PeriodoFerias, DiaPontos, PrePonto, Batida, AuditLogEntry, Denuncia, SolicitacaoCorrecao, Alerta, FolgaRemunerada } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { ModalJornada } from "./ModalJornada";
 import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
@@ -549,6 +549,8 @@ interface AdmOperadorPanelProps {
   empresaConfig: EmpresaConfig;
   setEmpresaConfig: (val: EmpresaConfig) => void;
   feriados?: string[];
+  folgasRemuneradas?: FolgaRemunerada[];
+  setFolgasRemuneradas?: React.Dispatch<React.SetStateAction<FolgaRemunerada[]>> | ((val: FolgaRemunerada[]) => void);
   prePontos?: PrePonto[];
   onOpenGerenciarMarcacoes?: () => void;
   denuncias?: Denuncia[];
@@ -581,6 +583,7 @@ export function AdmOperadorPanel({
   empresaConfig,
   setEmpresaConfig,
   feriados = [],
+  folgasRemuneradas = [],
   prePontos = [],
   onOpenGerenciarMarcacoes,
   denuncias = [],
@@ -963,7 +966,7 @@ export function AdmOperadorPanel({
     const u = users.find(x => x.id === userId);
     if (!u) return;
     const J = u.jornadaId === "personalizada" ? u.jornadaCustom : getJornada(u.jornadaId || "");
-    const resumo = resumoMesCalculado(userId, mesAtual.ano, mesAtual.mes, users, pontosGlobal, minimoHorasDia, feriados);
+    const resumo = resumoMesCalculado(userId, mesAtual.ano, mesAtual.mes, users, pontosGlobal, minimoHorasDia, feriados, folgasRemuneradas);
     const dias = [];
     const total = new Date(mesAtual.ano, mesAtual.mes + 1, 0).getDate();
 
@@ -971,7 +974,7 @@ export function AdmOperadorPanel({
       const date = new Date(mesAtual.ano, mesAtual.mes, d);
       const key = date.toISOString().slice(0, 10);
       const batidas = pontosGlobal[userId]?.[key] || [null, null, null, null];
-      const calc = calcularDia(userId, key, users, pontosGlobal, feriados);
+      const calc = calcularDia(userId, key, users, pontosGlobal, feriados, 10, folgasRemuneradas);
       const diaSem = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"][date.getDay()];
 
       const fmtB = (b: any) => {
@@ -1357,7 +1360,7 @@ export function AdmOperadorPanel({
       const diasFaltasArr = [];
       for (let day = 1; day <= totalDays; day++) {
         const dayKey = `${mesAtual.ano}-${String(mesAtual.mes + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-        const rDia = calcularDia(u.id, dayKey, users, pontosGlobal, feriados);
+        const rDia = calcularDia(u.id, dayKey, users, pontosGlobal, feriados, 10, folgasRemuneradas);
         if (rDia && rDia.status === "falta") {
           diasFaltasArr.push(day);
         }
@@ -1381,7 +1384,7 @@ export function AdmOperadorPanel({
       let totalAdicNoturno = 0;
       for (let day = 1; day <= totalDays; day++) {
         const dayKey = `${mesAtual.ano}-${String(mesAtual.mes + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-        const rDia = calcularDia(u.id, dayKey, users, pontosGlobal, feriados);
+        const rDia = calcularDia(u.id, dayKey, users, pontosGlobal, feriados, 10, folgasRemuneradas);
         if (rDia && rDia.adicNoturnoHoras > 0) {
           totalAdicNoturno += rDia.adicNoturnoHoras;
         }
@@ -2519,8 +2522,16 @@ export function AdmOperadorPanel({
       const userRegs = prev[item.userId] || {};
       const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
       if (dayArray[item.batidaIdx]) {
+        const curPunch = dayArray[item.batidaIdx]!;
+        let isoStr = curPunch.iso || curPunch.hora;
+        if (isoStr && typeof isoStr === "string" && !isoStr.includes("T") && /^\d{1,2}:\d{2}(:\d{2})?$/.test(isoStr)) {
+          const timeWithSec = isoStr.length === 5 ? `${isoStr}:00` : isoStr;
+          isoStr = new Date(`${item.dayKey}T${timeWithSec}`).toISOString();
+        }
         dayArray[item.batidaIdx] = {
-          ...dayArray[item.batidaIdx]!,
+          ...curPunch,
+          hora: isoStr || curPunch.hora,
+          iso: isoStr || curPunch.iso,
           statusAprovacao: "aprovado",
           motivoRejeicaoAjuste: undefined,
           revisadoEm: new Date().toISOString(),
@@ -3788,6 +3799,7 @@ export function AdmOperadorPanel({
               await saveUserPontosToDb(userId, userDays);
             }}
             feriados={feriados}
+            folgasRemuneradas={folgasRemuneradas}
             minimoHorasDia={minimoHorasDia}
           />
         ) : guiaAtiva === "aprovacoes" ? (

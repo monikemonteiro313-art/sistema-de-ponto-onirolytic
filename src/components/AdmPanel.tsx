@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map as MapIcon, FileText, Globe, Database, Server, HardDrive, RefreshCw, WifiOff, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote, Settings, ChevronDown, Wrench, Filter } from "lucide-react";
-import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao } from "../types";
+import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao, FolgaRemunerada } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { PwModal, CreateModal, DeleteModal, EditMatriculaModal } from "./AdmModals";
 import { FeriasModal } from "./FeriasModal";
@@ -79,6 +79,8 @@ interface AdmPanelProps {
   onAddLog?: (acao: string, alvo: string, detalhe?: string) => void;
   feriados?: string[];
   setFeriados?: React.Dispatch<React.SetStateAction<string[]>>;
+  folgasRemuneradas?: FolgaRemunerada[];
+  setFolgasRemuneradas?: React.Dispatch<React.SetStateAction<FolgaRemunerada[]>>;
   pontosGlobal?: PontosGlobal;
   setPontosGlobal?: React.Dispatch<React.SetStateAction<PontosGlobal>>;
   folhasAceite?: FolhaAceite[];
@@ -110,6 +112,8 @@ export function AdmPanel({
   onAddLog,
   feriados = [],
   setFeriados = () => {},
+  folgasRemuneradas = [],
+  setFolgasRemuneradas = () => {},
   pontosGlobal = {},
   setPontosGlobal,
   folhasAceite = [],
@@ -130,7 +134,7 @@ export function AdmPanel({
   isSyncingData = false,
   isOfflineData = false
 }: AdmPanelProps) {
-  const [tab, setTab] = useState<"colaboradores" | "gerenciar_marcacoes" | "solicitacoes_correcao" | "adm" | "alertas" | "denuncias" | "auditoria" | "feriados" | "arquivo_morto" | "armazenamento" | "guia_manutencao" | "aceites">("colaboradores");
+  const [tab, setTab] = useState<"colaboradores" | "gerenciar_marcacoes" | "solicitacoes_correcao" | "adm" | "alertas" | "denuncias" | "auditoria" | "feriados" | "folgas" | "arquivo_morto" | "armazenamento" | "guia_manutencao" | "aceites">("colaboradores");
 
   const [blocoNotas, setBlocoNotas] = useState(() => localStorage.getItem("bloco_notas_gestor") || "");
   const [blocoNotasSalvoMsg, setBlocoNotasSalvoMsg] = useState(false);
@@ -150,6 +154,18 @@ export function AdmPanel({
   const [pageColab, setPageColab] = useState(1);
   const [pageAudit, setPageAudit] = useState(1);
   const [pageAceites, setPageAceites] = useState(1);
+
+  // Folga Remunerada Form State
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [folgaDataInicio, setFolgaDataInicio] = useState<string>(todayStr);
+  const [folgaDataFim, setFolgaDataFim] = useState<string>(todayStr);
+  const [folgaTipo, setFolgaTipo] = useState<"completo" | "parcial">("completo");
+  const [folgaHoraInicio, setFolgaHoraInicio] = useState<string>("08:00");
+  const [folgaHoraFim, setFolgaHoraFim] = useState<string>("12:00");
+  const [folgaMotivo, setFolgaMotivo] = useState<string>("");
+  const [folgaSelecaoModo, setFolgaSelecaoModo] = useState<"todos" | "manual">("todos");
+  const [folgaSelectedUserIds, setFolgaSelectedUserIds] = useState<number[]>([]);
+  const [folgaCreating, setFolgaCreating] = useState<boolean>(false);
 
   // Filtros avançados para a aba de Auditoria
   const [filterAuditMes, setFilterAuditMes] = useState<string>("");
@@ -1046,7 +1062,7 @@ export function AdmPanel({
       setFolhasAceite(prev => {
         const next = [...prev];
         activeColabs.forEach(u => {
-          const res = resumoMesCalculado(u.id, year, month, users, pontosGlobal, minimoHorasDia, feriados);
+          const res = resumoMesCalculado(u.id, year, month, users, pontosGlobal, minimoHorasDia, feriados, folgasRemuneradas);
           const folhaId = `${u.id}_${year}_${month}`;
           const existingIdx = next.findIndex(f => f.id === folhaId);
 
@@ -1083,7 +1099,7 @@ export function AdmPanel({
       const u = users.find(x => x.id === uId);
       if (!u) return;
 
-      const res = resumoMesCalculado(u.id, year, month, users, pontosGlobal, minimoHorasDia, feriados);
+      const res = resumoMesCalculado(u.id, year, month, users, pontosGlobal, minimoHorasDia, feriados, folgasRemuneradas);
       const folhaId = `${u.id}_${year}_${month}`;
 
       setFolhasAceite(prev => {
@@ -1171,7 +1187,7 @@ export function AdmPanel({
 
       const J = u.jornadaId === "personalizada" ? u.jornadaCustom : getJornada(u.jornadaId || "");
       const userList = [u];
-      const resumo = resumoMesCalculado(folha.userId, folha.ano, folha.mes, userList, pontosGlobal, minimoHorasDia, feriados);
+      const resumo = resumoMesCalculado(folha.userId, folha.ano, folha.mes, userList, pontosGlobal, minimoHorasDia, feriados, folgasRemuneradas);
       const dias = [];
       const total = new Date(folha.ano, folha.mes + 1, 0).getDate();
 
@@ -1179,7 +1195,7 @@ export function AdmPanel({
         const date = new Date(folha.ano, folha.mes, d);
         const key = date.toISOString().slice(0, 10);
         const batidas = pontosGlobal[folha.userId]?.[key] || [null, null, null, null];
-        const calc = calcularDia(folha.userId, key, userList, pontosGlobal, feriados);
+        const calc = calcularDia(folha.userId, key, userList, pontosGlobal, feriados, 10, folgasRemuneradas);
         const diaSem = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"][date.getDay()];
 
         const fmtB = (b: any) => {
@@ -1356,7 +1372,7 @@ export function AdmPanel({
     const J = u.jornadaId === "personalizada" ? u.jornadaCustom : getJornada(u.jornadaId || "");
     const userList = [u];
 
-    const resumo = resumoMesCalculado(u.id, year, month, userList, pontosGlobal, minimoHorasDia, feriados);
+    const resumo = resumoMesCalculado(u.id, year, month, userList, pontosGlobal, minimoHorasDia, feriados, folgasRemuneradas);
     const dias = [];
     const total = new Date(year, month + 1, 0).getDate();
 
@@ -1366,7 +1382,7 @@ export function AdmPanel({
       const date = new Date(year, month, d);
       const key = date.toISOString().slice(0, 10);
       const batidas = pontosGlobal[u.id]?.[key] || [null, null, null, null];
-      const calc = calcularDia(u.id, key, userList, pontosGlobal, feriados);
+      const calc = calcularDia(u.id, key, userList, pontosGlobal, feriados, 10, folgasRemuneradas);
       const diaSem = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"][date.getDay()];
 
       const fmtB = (b: any) => {
@@ -1883,9 +1899,9 @@ export function AdmPanel({
                 fontFamily: "inherit",
                 fontSize: "13.5px",
                 fontWeight: 600,
-                color: (tab === "aceites" || tab === "feriados") ? t.accent : t.textSub,
+                color: (tab === "aceites" || tab === "feriados" || tab === "folgas") ? t.accent : t.textSub,
                 padding: "12px 18px",
-                borderBottom: `2.5px solid ${(tab === "aceites" || tab === "feriados") ? t.accent : "transparent"}`,
+                borderBottom: `2.5px solid ${(tab === "aceites" || tab === "feriados" || tab === "folgas") ? t.accent : "transparent"}`,
                 transition: "all 0.2s",
                 display: "inline-flex",
                 alignItems: "center",
@@ -2427,6 +2443,7 @@ export function AdmPanel({
             await saveUserPontosToDb(userId, userDays);
           }}
           feriados={feriados}
+          folgasRemuneradas={folgasRemuneradas}
           minimoHorasDia={minimoHorasDia}
         />
       )}
@@ -2481,6 +2498,24 @@ export function AdmPanel({
               }}
             >
               Calendário Geral / Feriados
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("folgas")}
+              style={{
+                background: (tab as string) === "folgas" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "folgas" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "folgas" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Folgas Remuneradas
             </button>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
@@ -2663,6 +2698,581 @@ export function AdmPanel({
               >
                 Limpar Todos os Feriados
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Folgas Remuneradas tab */}
+      {tab === "folgas" && (
+        <div style={{ padding: "24px 28px", maxWidth: 1080, margin: "0 auto" }}>
+          {/* Sub-navigation Pills for Folha & Compliance */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+            <button
+              type="button"
+              onClick={() => setTab("aceites")}
+              style={{
+                background: (tab as string) === "aceites" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "aceites" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "aceites" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Aceite de Folhas
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("feriados")}
+              style={{
+                background: (tab as string) === "feriados" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "feriados" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "feriados" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Calendário Geral / Feriados
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("folgas")}
+              style={{
+                background: tab === "folgas" ? t.accent : t.surfaceAlt,
+                color: tab === "folgas" ? "#fff" : t.textSub,
+                border: `1.5px solid ${tab === "folgas" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Folgas Remuneradas
+            </button>
+          </div>
+
+          {/* Destaque Header Box */}
+          <div style={{
+            background: "linear-gradient(135deg, rgba(245,158,11,0.12) 0%, rgba(217,119,6,0.06) 100%)",
+            border: "1.5px solid rgba(245,158,11,0.35)",
+            borderRadius: 14,
+            padding: "18px 22px",
+            marginBottom: 24,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 16
+          }}>
+            <div style={{
+              background: "#F59E0B",
+              color: "#fff",
+              borderRadius: 10,
+              padding: 10,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 4px 12px rgba(245,158,11,0.25)"
+            }}>
+              <Plane size={22} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+                <h2 style={{ margin: 0, fontSize: 16, fontWeight: 750, color: t.text }}>
+                  Lançamento de Folga Remunerada
+                </h2>
+                <span style={{
+                  background: "rgba(245,158,11,0.2)",
+                  color: "#D97706",
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  padding: "3px 9px",
+                  borderRadius: 20,
+                  border: "1px solid rgba(245,158,11,0.4)",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px"
+                }}>
+                  ★ Em Destaque
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: 13, color: t.textSub, lineHeight: 1.45 }}>
+                Abona a jornada normal de trabalho sem prejuízo do salário do colaborador.
+                <strong style={{ color: "#D97706", marginLeft: 6 }}>
+                  Regra de Compliance: Este tipo de ocorrência NÃO cobre e NÃO gera direito ao Vale Alimentação/Refeição.
+                </strong>
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 24, alignItems: "start" }}>
+            {/* Lançamento Form Card */}
+            <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 14, padding: 22 }}>
+              <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 700, color: t.text, display: "flex", alignItems: "center", gap: 8 }}>
+                <Calendar size={18} color={t.accent} /> Nova Ocorrência de Folga
+              </h3>
+
+              {/* Selection Mode: Todos vs Manual */}
+              <div style={{ marginBottom: 18 }}>
+                <label style={{ fontSize: 12.5, fontWeight: 650, color: t.text, display: "block", marginBottom: 8 }}>
+                  Colaboradores Afetados (Apenas Ativos)
+                </label>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => setFolgaSelecaoModo("todos")}
+                    style={{
+                      flex: 1,
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      border: `1.5px solid ${folgaSelecaoModo === "todos" ? t.accent : t.border}`,
+                      background: folgaSelecaoModo === "todos" ? (t.accentGlow || "rgba(37,99,235,0.08)") : t.surfaceAlt,
+                      color: folgaSelecaoModo === "todos" ? t.accent : t.textSub,
+                      fontSize: 12.5,
+                      fontWeight: 650,
+                      cursor: "pointer",
+                      transition: "all 0.18s"
+                    }}
+                  >
+                    👥 Todos os Ativos ({validUsers.filter(u => !u.desativado).length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFolgaSelecaoModo("manual")}
+                    style={{
+                      flex: 1,
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      border: `1.5px solid ${folgaSelecaoModo === "manual" ? t.accent : t.border}`,
+                      background: folgaSelecaoModo === "manual" ? (t.accentGlow || "rgba(37,99,235,0.08)") : t.surfaceAlt,
+                      color: folgaSelecaoModo === "manual" ? t.accent : t.textSub,
+                      fontSize: 12.5,
+                      fontWeight: 650,
+                      cursor: "pointer",
+                      transition: "all 0.18s"
+                    }}
+                  >
+                    🎯 Selecionar Especificamente
+                  </button>
+                </div>
+
+                {folgaSelecaoModo === "manual" && (
+                  <div style={{
+                    marginTop: 12,
+                    maxHeight: 180,
+                    overflowY: "auto",
+                    border: `1.5px solid ${t.border}`,
+                    borderRadius: 10,
+                    padding: 10,
+                    background: t.surfaceAlt,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 6, borderBottom: `1px solid ${t.border}`, marginBottom: 4 }}>
+                      <span style={{ fontSize: 11.5, fontWeight: 650, color: t.textMuted }}>
+                        Selecione os colaboradores:
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const activeIds = validUsers.filter(u => !u.desativado).map(u => u.id);
+                          if (folgaSelectedUserIds.length === activeIds.length) {
+                            setFolgaSelectedUserIds([]);
+                          } else {
+                            setFolgaSelectedUserIds(activeIds);
+                          }
+                        }}
+                        style={{ background: "none", border: "none", color: t.accent, fontSize: 11, fontWeight: 650, cursor: "pointer" }}
+                      >
+                        {folgaSelectedUserIds.length === validUsers.filter(u => !u.desativado).length ? "Desmarcar Todos" : "Marcar Todos"}
+                      </button>
+                    </div>
+                    {validUsers.filter(u => !u.desativado).map(u => {
+                      const isSel = folgaSelectedUserIds.includes(u.id);
+                      return (
+                        <label
+                          key={u.id}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                            padding: "6px 8px",
+                            borderRadius: 6,
+                            background: isSel ? "rgba(37,99,235,0.08)" : "transparent",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            color: t.text
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSel}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setFolgaSelectedUserIds(prev => [...prev, u.id]);
+                              } else {
+                                setFolgaSelectedUserIds(prev => prev.filter(id => id !== u.id));
+                              }
+                            }}
+                            style={{ accentColor: t.accent }}
+                          />
+                          <div style={{ flex: 1, display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ fontWeight: 600 }}>{u.nome}</span>
+                            <span style={{ color: t.textMuted, fontSize: 11 }}>Mat: {u.matricula}</span>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Intervalo de Datas (Data Início e Data Fim) */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 18 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 650, color: t.text, display: "block", marginBottom: 6 }}>
+                    Data Início *
+                  </label>
+                  <input
+                    type="date"
+                    value={folgaDataInicio}
+                    onChange={(e) => {
+                      setFolgaDataInicio(e.target.value);
+                      if (e.target.value > folgaDataFim) {
+                        setFolgaDataFim(e.target.value);
+                      }
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "9px 12px",
+                      borderRadius: 8,
+                      border: `1.5px solid ${t.border}`,
+                      background: t.surfaceAlt,
+                      color: t.text,
+                      fontSize: 13,
+                      fontFamily: "inherit"
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 650, color: t.text, display: "block", marginBottom: 6 }}>
+                    Data Fim (Inclusivo) *
+                  </label>
+                  <input
+                    type="date"
+                    value={folgaDataFim}
+                    min={folgaDataInicio}
+                    onChange={(e) => setFolgaDataFim(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "9px 12px",
+                      borderRadius: 8,
+                      border: `1.5px solid ${t.border}`,
+                      background: t.surfaceAlt,
+                      color: t.text,
+                      fontSize: 13,
+                      fontFamily: "inherit"
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Tipo: Completo vs Parcial */}
+              <div style={{ marginBottom: 18 }}>
+                <label style={{ fontSize: 12.5, fontWeight: 650, color: t.text, display: "block", marginBottom: 8 }}>
+                  Duração da Folga
+                </label>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => setFolgaTipo("completo")}
+                    style={{
+                      flex: 1,
+                      padding: "9px 12px",
+                      borderRadius: 8,
+                      border: `1.5px solid ${folgaTipo === "completo" ? t.accent : t.border}`,
+                      background: folgaTipo === "completo" ? (t.accentGlow || "rgba(37,99,235,0.08)") : t.surfaceAlt,
+                      color: folgaTipo === "completo" ? t.accent : t.textSub,
+                      fontSize: 12,
+                      fontWeight: 650,
+                      cursor: "pointer"
+                    }}
+                  >
+                    ☀️ Dia Completo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFolgaTipo("parcial")}
+                    style={{
+                      flex: 1,
+                      padding: "9px 12px",
+                      borderRadius: 8,
+                      border: `1.5px solid ${folgaTipo === "parcial" ? t.accent : t.border}`,
+                      background: folgaTipo === "parcial" ? (t.accentGlow || "rgba(37,99,235,0.08)") : t.surfaceAlt,
+                      color: folgaTipo === "parcial" ? t.accent : t.textSub,
+                      fontSize: 12,
+                      fontWeight: 650,
+                      cursor: "pointer"
+                    }}
+                  >
+                    ⏱️ Parcial (Horário Específico)
+                  </button>
+                </div>
+
+                {folgaTipo === "parcial" && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 12 }}>
+                    <div>
+                      <label style={{ fontSize: 11.5, fontWeight: 650, color: t.textSub, display: "block", marginBottom: 4 }}>
+                        Hora Início
+                      </label>
+                      <input
+                        type="time"
+                        value={folgaHoraInicio}
+                        onChange={(e) => setFolgaHoraInicio(e.target.value)}
+                        style={{
+                          width: "100%",
+                          padding: "8px 10px",
+                          borderRadius: 8,
+                          border: `1.5px solid ${t.border}`,
+                          background: t.surfaceAlt,
+                          color: t.text,
+                          fontSize: 13,
+                          fontFamily: "inherit"
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11.5, fontWeight: 650, color: t.textSub, display: "block", marginBottom: 4 }}>
+                        Hora Fim
+                      </label>
+                      <input
+                        type="time"
+                        value={folgaHoraFim}
+                        onChange={(e) => setFolgaHoraFim(e.target.value)}
+                        style={{
+                          width: "100%",
+                          padding: "8px 10px",
+                          borderRadius: 8,
+                          border: `1.5px solid ${t.border}`,
+                          background: t.surfaceAlt,
+                          color: t.text,
+                          fontSize: 13,
+                          fontFamily: "inherit"
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Motivo */}
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ fontSize: 12, fontWeight: 650, color: t.text, display: "block", marginBottom: 6 }}>
+                  Motivo / Descrição da Folga
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Folga de Aniversário, Confraternização, Abono Diretoria"
+                  value={folgaMotivo}
+                  onChange={(e) => setFolgaMotivo(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    borderRadius: 8,
+                    border: `1.5px solid ${t.border}`,
+                    background: t.surfaceAlt,
+                    color: t.text,
+                    fontSize: 13,
+                    fontFamily: "inherit"
+                  }}
+                />
+              </div>
+
+              {/* Save Action */}
+              <button
+                type="button"
+                disabled={folgaCreating || (folgaSelecaoModo === "manual" && folgaSelectedUserIds.length === 0)}
+                onClick={async () => {
+                  if (folgaSelecaoModo === "manual" && folgaSelectedUserIds.length === 0) {
+                    showToast("Selecione pelo menos um colaborador ativo.", "warning");
+                    return;
+                  }
+                  if (!folgaDataInicio || !folgaDataFim) {
+                    showToast("Preencha a data de início e fim da folga.", "warning");
+                    return;
+                  }
+
+                  setFolgaCreating(true);
+                  try {
+                    const activeUsers = validUsers.filter(u => !u.desativado);
+                    const newFolga: FolgaRemunerada = {
+                      id: `folga_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                      userIds: folgaSelecaoModo === "manual" ? folgaSelectedUserIds : activeUsers.map(u => u.id),
+                      aplicarATodosAtivos: folgaSelecaoModo === "todos",
+                      dataInicio: folgaDataInicio,
+                      dataFim: folgaDataFim,
+                      tipo: folgaTipo,
+                      horaInicio: folgaTipo === "parcial" ? folgaHoraInicio : null,
+                      horaFim: folgaTipo === "parcial" ? folgaHoraFim : null,
+                      motivo: folgaMotivo.trim() || "Folga Remunerada",
+                      criadoEm: new Date().toISOString(),
+                      criadoPor: currentUser.nome
+                    };
+
+                    const updatedList = [newFolga, ...folgasRemuneradas];
+                    if (setFolgasRemuneradas) {
+                      setFolgasRemuneradas(updatedList);
+                    }
+                    if (onAddLog) {
+                      onAddLog(
+                        "Cadastrou Folga Remunerada",
+                        folgaSelecaoModo === "todos" ? "Todos os Colaboradores Ativos" : `${folgaSelectedUserIds.length} colaboradores`,
+                        `Período ${folgaDataInicio} até ${folgaDataFim} (${folgaTipo})`
+                      );
+                    }
+                    showToast("Folga remunerada cadastrada com sucesso!", "success");
+                    setFolgaMotivo("");
+                    setFolgaSelectedUserIds([]);
+                  } catch (err) {
+                    console.error("Erro ao salvar folga remunerada:", err);
+                    showToast("Erro ao cadastrar folga remunerada.", "danger");
+                  } finally {
+                    setFolgaCreating(false);
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  padding: "12px",
+                  borderRadius: 10,
+                  border: "none",
+                  background: t.accent,
+                  color: "#fff",
+                  fontSize: 13.5,
+                  fontWeight: 700,
+                  cursor: (folgaCreating || (folgaSelecaoModo === "manual" && folgaSelectedUserIds.length === 0)) ? "not-allowed" : "pointer",
+                  opacity: (folgaCreating || (folgaSelecaoModo === "manual" && folgaSelectedUserIds.length === 0)) ? 0.6 : 1,
+                  fontFamily: "inherit",
+                  boxShadow: "0 2px 8px rgba(37,99,235,0.25)"
+                }}
+              >
+                {folgaCreating ? "Salvando..." : "Salvar Folga Remunerada"}
+              </button>
+            </div>
+
+            {/* List of Registered Folgas */}
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text }}>
+                  Folgas Cadastradas
+                </h3>
+                <span style={{ fontSize: 12, fontWeight: 650, color: t.textMuted, background: t.surfaceAlt, padding: "4px 10px", borderRadius: 12, border: `1px solid ${t.border}` }}>
+                  {folgasRemuneradas.length} cadastradas
+                </span>
+              </div>
+
+              {folgasRemuneradas.length === 0 ? (
+                <div style={{
+                  background: t.surface,
+                  border: `1.5px dashed ${t.border}`,
+                  borderRadius: 12,
+                  padding: "32px 20px",
+                  textAlign: "center",
+                  color: t.textMuted
+                }}>
+                  <Plane size={32} style={{ opacity: 0.35, marginBottom: 8 }} />
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>Nenhuma folga remunerada cadastrada.</p>
+                  <p style={{ margin: "4px 0 0", fontSize: 11.5 }}>Utilize o formulário ao lado para lançar abonos em lote ou individuais.</p>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12, maxHeight: 520, overflowY: "auto" }}>
+                  {folgasRemuneradas.map(fr => {
+                    const countUsers = fr.aplicarATodosAtivos ? validUsers.filter(u => !u.desativado).length : (fr.userIds?.length || 0);
+                    return (
+                      <div
+                        key={fr.id}
+                        style={{
+                          background: t.surface,
+                          border: "1.5px solid rgba(245,158,11,0.3)",
+                          borderRadius: 12,
+                          padding: 14,
+                          position: "relative",
+                          boxShadow: "0 2px 6px rgba(0,0,0,0.03)"
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                          <span style={{
+                            background: "rgba(245,158,11,0.15)",
+                            color: "#D97706",
+                            fontSize: 11,
+                            fontWeight: 700,
+                            padding: "3px 8px",
+                            borderRadius: 6,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4
+                          }}>
+                            ★ Folga Remunerada ({fr.tipo === "parcial" ? `${fr.horaInicio} às ${fr.horaFim}` : "Dia Completo"})
+                          </span>
+                          <button
+                            type="button"
+                            title="Remover Folga"
+                            onClick={() => {
+                              if (confirm("Deseja realmente remover esta folga remunerada?")) {
+                                const nextList = folgasRemuneradas.filter(x => x.id !== fr.id);
+                                if (setFolgasRemuneradas) setFolgasRemuneradas(nextList);
+                                showToast("Folga removida com sucesso.", "warning");
+                              }
+                            }}
+                            style={{
+                              background: "rgba(239,68,68,0.1)",
+                              border: "none",
+                              color: t.danger,
+                              borderRadius: 6,
+                              padding: "4px 6px",
+                              cursor: "pointer"
+                            }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+
+                        <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginBottom: 4 }}>
+                          {fr.motivo || "Folga Remunerada"}
+                        </div>
+
+                        <div style={{ fontSize: 12, color: t.textSub, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                          <Calendar size={13} color={t.textMuted} />
+                          <span>
+                            {fr.dataInicio === fr.dataFim
+                              ? new Date(fr.dataInicio + "T12:00:00").toLocaleDateString("pt-BR")
+                              : `${new Date(fr.dataInicio + "T12:00:00").toLocaleDateString("pt-BR")} até ${new Date(fr.dataFim + "T12:00:00").toLocaleDateString("pt-BR")}`
+                            }
+                          </span>
+                        </div>
+
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 8, borderTop: `1px solid ${t.border}`, fontSize: 11 }}>
+                          <span style={{ color: t.textMuted, fontWeight: 600 }}>
+                            👥 {fr.aplicarATodosAtivos ? "Todos os Ativos" : `${countUsers} colaboradores`}
+                          </span>
+                          <span style={{ color: t.danger, fontWeight: 600, fontSize: 10.5, background: "rgba(239,68,68,0.08)", padding: "2px 6px", borderRadius: 4 }}>
+                            🚫 Sem Vale Alimentação
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -4336,6 +4946,24 @@ export function AdmPanel({
               }}
             >
               Calendário Geral / Feriados
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("folgas")}
+              style={{
+                background: (tab as string) === "folgas" ? t.accent : t.surfaceAlt,
+                color: (tab as string) === "folgas" ? "#fff" : t.textSub,
+                border: `1.5px solid ${(tab as string) === "folgas" ? t.accent : t.border}`,
+                borderRadius: 8,
+                padding: "6px 14px",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.18s"
+              }}
+            >
+              Folgas Remuneradas
             </button>
           </div>
 

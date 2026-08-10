@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { T } from "./components/Theme";
-import { User, ThemeColors, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao } from "./types";
+import { User, ThemeColors, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao, FolgaRemunerada } from "./types";
 import { LoginScreen } from "./components/LoginScreen";
 import { WizardScreen } from "./components/WizardScreen";
 import { TermoCienciaScreen } from "./components/TermoCienciaScreen";
@@ -27,6 +27,8 @@ import {
   saveMinimoHorasToDb,
   fetchFeriados,
   saveFeriadosToDb,
+  fetchFolgasRemuneradas,
+  saveFolgasRemuneradasToDb,
   fetchWizardDone,
   saveWizardDoneToDb,
   fetchAllPrePontos,
@@ -51,7 +53,7 @@ import {
   deleteSolicitacaoCorrecaoFromDb,
   checkFirebaseConnectivity
 } from "./lib/firebaseService";
-import { savePontosToIndexedDB, getPontosFromIndexedDB, saveUsersToIndexedDB, getUsersFromIndexedDB, saveAuthSessionToIndexedDB, getAuthSessionFromIndexedDB, addToSyncQueue, getSyncQueue, removeFromSyncQueue } from "./lib/indexedDbService";
+import { savePontosToIndexedDB, getPontosFromIndexedDB, saveUsersToIndexedDB, getUsersFromIndexedDB, saveAuthSessionToIndexedDB, getAuthSessionFromIndexedDB, addToSyncQueue, getSyncQueue, removeFromSyncQueue, removeUserFromSyncQueue } from "./lib/indexedDbService";
 import { clearOfflineQueue } from "./utils/preferencesService";
 import { PwaInstallPrompt } from "./components/PwaInstallPrompt";
 import { AlertTriangle } from "lucide-react";
@@ -368,6 +370,7 @@ export default function App() {
   const initialCachedMin = getSafeLocalStorageItem<number>("hr_cached_minimo_horas_dia", 7);
   const initialCachedEmpresa = getSafeLocalStorageItem<EmpresaConfig>("hr_cached_empresa_config", { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" });
   const initialCachedFeriados = getSafeLocalStorageItem<string[]>("hr_cached_feriados", []);
+  const initialCachedFolgasRemuneradas = getSafeLocalStorageItem<FolgaRemunerada[]>("hr_cached_folgas_remuneradas", []);
   const initialCachedPrePontos = getSafeLocalStorageItem<PrePonto[]>("hr_cached_pre_pontos", []);
   const initialCachedFolhas = getSafeLocalStorageItem<FolhaAceite[]>("hr_cached_folhas_aceite", []);
   const initialCachedAlertas = getSafeLocalStorageItem<Alerta[]>("hr_cached_alertas", []);
@@ -387,6 +390,7 @@ export default function App() {
   const [minimoHorasDia, setMinimoHorasDia] = useState<number>(initialCachedMin);
   const [empresaConfig, setEmpresaConfig] = useState<EmpresaConfig>(initialCachedEmpresa);
   const [feriados, setFeriados] = useState<string[]>(initialCachedFeriados);
+  const [folgasRemuneradas, setFolgasRemuneradas] = useState<FolgaRemunerada[]>(initialCachedFolgasRemuneradas);
   const [prePontos, setPrePontos] = useState<PrePonto[]>(initialCachedPrePontos);
   const [folhasAceite, setFolhasAceite] = useState<FolhaAceite[]>(initialCachedFolhas);
   const [alertas, setAlertas] = useState<Alerta[]>(initialCachedAlertas);
@@ -419,13 +423,14 @@ export default function App() {
         }
       };
 
-      const [rawDbUsers, rawDbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
+      const [rawDbUsers, rawDbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, dbFolgas, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
         safeFetch(() => fetchAllUsers(), [] as User[], "users"),
         safeFetch(() => fetchAllPontos(0), {} as PontosGlobal, "pontos"),
         safeFetch(() => fetchAuditLogs(), [] as AuditLogEntry[], "auditLogs"),
         safeFetch(() => fetchMinimoHoras(), 7, "minimoHoras"),
         safeFetch(() => fetchEmpresaConfig(), { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" } as EmpresaConfig, "empresaConfig"),
         safeFetch(() => fetchFeriados(), [] as string[], "feriados"),
+        safeFetch(() => fetchFolgasRemuneradas(), [] as FolgaRemunerada[], "folgasRemuneradas"),
         safeFetch(() => fetchAllPrePontos(), [] as PrePonto[], "prePontos"),
         safeFetch(() => fetchAllFolhasAceite(), [] as FolhaAceite[], "folhasAceite"),
         safeFetch(() => fetchAllAlertas(), [] as Alerta[], "alertas"),
@@ -440,6 +445,8 @@ export default function App() {
       setMinimoHorasDia(dbMin);
       setEmpresaConfig(dbEmpresa);
       setFeriados(dbFeriados);
+      setFolgasRemuneradas(dbFolgas || []);
+      setSafeLocalStorageItem("hr_cached_folgas_remuneradas", dbFolgas || []);
       updateFolhasAceite(dbFolhas || []);
       updateAlertas(dbAlertas || []);
       setDenuncias(dbDenuncias || []);
@@ -510,13 +517,14 @@ export default function App() {
           }
         };
 
-        const [rawDbUsers, rawDbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, wizardDone, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
+        const [rawDbUsers, rawDbPontos, dbLogs, dbMin, dbEmpresa, dbFeriados, dbFolgas, wizardDone, dbPrePontos, dbFolhas, dbAlertas, dbDenuncias, dbSolicitacoes] = await Promise.all([
           safeFetch(() => fetchAllUsers(), [] as User[], "users"),
           safeFetch(() => fetchAllPontos(0), {} as PontosGlobal, "pontos"),
           safeFetch(() => fetchAuditLogs(), [] as AuditLogEntry[], "auditLogs"),
           safeFetch(() => fetchMinimoHoras(), 7, "minimoHoras"),
           safeFetch(() => fetchEmpresaConfig(), { nome: "G&A Softwares S/A", cnpj: "42.109.845/0001-90" } as EmpresaConfig, "empresaConfig"),
           safeFetch(() => fetchFeriados(), [] as string[], "feriados"),
+          safeFetch(() => fetchFolgasRemuneradas(), [] as FolgaRemunerada[], "folgasRemuneradas"),
           safeFetch(() => fetchWizardDone(), false, "wizardDone"),
           safeFetch(() => fetchAllPrePontos(), [] as PrePonto[], "prePontos"),
           safeFetch(() => fetchAllFolhasAceite(), [] as FolhaAceite[], "folhasAceite"),
@@ -558,6 +566,7 @@ export default function App() {
         setMinimoHorasDia(dbMin);
         setEmpresaConfig(dbEmpresa);
         setFeriados(dbFeriados);
+        setFolgasRemuneradas(dbFolgas || []);
         setPrePontos(reconciledPrePontos);
         setFolhasAceite(dbFolhas || []);
         setAlertas(dbAlertas || []);
@@ -574,6 +583,7 @@ export default function App() {
         setSafeLocalStorageItem("hr_cached_minimo_horas_dia", dbMin);
         setSafeLocalStorageItem("hr_cached_empresa_config", dbEmpresa);
         setSafeLocalStorageItem("hr_cached_feriados", dbFeriados);
+        setSafeLocalStorageItem("hr_cached_folgas_remuneradas", dbFolgas || []);
         setSafeLocalStorageItem("hr_cached_wizard_done", wizardDone);
         setSafeLocalStorageItem("hr_cached_pre_pontos", reconciledPrePontos);
         setSafeLocalStorageItem("hr_cached_folhas_aceite", dbFolhas || []);
@@ -851,6 +861,7 @@ export default function App() {
             const cleanDays = sanitizeDaysForFirebase(days);
             await saveUserPontosToDb(userId, cleanDays);
             await removeFromSyncQueue(item.id);
+            await removeUserFromSyncQueue(userId).catch(() => {});
             await clearOfflineQueue().catch(() => {});
             console.log(`[Sync Queue] Pontos do usuário ${userId} salvos no Firebase com sucesso!`);
             
@@ -891,6 +902,7 @@ export default function App() {
           
           saveUserPontosToDb(userId, cleanDays).then(async () => {
             await clearOfflineQueue().catch(() => {});
+            await removeUserFromSyncQueue(userId).catch(() => {});
             setPontos(current => {
               const updated = clearUserSyncFlags(current, userId);
               setSafeLocalStorageItem("hr_cached_pontos", updated);
@@ -966,6 +978,17 @@ export default function App() {
 
       if (JSON.stringify(next) !== JSON.stringify(prev)) {
         saveFeriadosToDb(next).catch(err => console.warn("Failed to save feriados to Firestore (offline?):", err));
+      }
+      return next;
+    });
+  };
+
+  const updateFolgasRemuneradas = (newFolgasOrFn: FolgaRemunerada[] | ((prev: FolgaRemunerada[]) => FolgaRemunerada[])) => {
+    setFolgasRemuneradas((prev) => {
+      const next = typeof newFolgasOrFn === "function" ? newFolgasOrFn(prev) : newFolgasOrFn;
+      setSafeLocalStorageItem("hr_cached_folgas_remuneradas", next);
+      if (JSON.stringify(next) !== JSON.stringify(prev)) {
+        saveFolgasRemuneradasToDb(next).catch(err => console.warn("Failed to save folgasRemuneradas to Firestore (offline?):", err));
       }
       return next;
     });
@@ -1186,19 +1209,37 @@ export default function App() {
       const dayPunches = [...(userPontos[targetDayKey] || [null, null, null, null])];
       while (dayPunches.length < 4) dayPunches.push(null);
 
-      const [hh, mm] = targetHora.split(":").map(Number);
-      const isoDateObj = new Date(`${targetDayKey}T00:00:00`);
-      isoDateObj.setHours(hh, mm, 0, 0);
+      let isoString = "";
+      if (targetHora && targetHora.includes("T")) {
+        isoString = targetHora;
+      } else if (targetHora) {
+        const parts = targetHora.split(":");
+        const hh = parseInt(parts[0] || "0", 10);
+        const mm = parseInt(parts[1] || "0", 10);
+        const ss = parseInt(parts[2] || "0", 10);
+        const isoDateObj = new Date(`${targetDayKey}T00:00:00`);
+        isoDateObj.setHours(hh, mm, ss, 0);
+        isoString = isoDateObj.toISOString();
+      } else {
+        isoString = new Date().toISOString();
+      }
 
       const newPunch: Batida = {
-        hora: targetHora,
-        iso: isoDateObj.toISOString(),
+        hora: isoString,
+        iso: isoString,
+        registradoEm: isoString,
         editadoEm: revisadoEm,
         editadoPor: revisadoPor,
         justificativa: `Correção Aprovada por ${revisadoPor}: ${req.motivo}`,
         tipo: "manual",
         statusAprovacao: "aprovado"
       };
+
+      if (req.latitude && req.longitude) {
+        newPunch.latitude = req.latitude;
+        newPunch.longitude = req.longitude;
+        if (req.accuracy) newPunch.accuracy = req.accuracy;
+      }
 
       dayPunches[targetSlotIdx] = newPunch;
       userPontos[targetDayKey] = dayPunches;
@@ -1984,6 +2025,8 @@ export default function App() {
                     onAddLog={handleAddLog}
                     feriados={feriados}
                     setFeriados={updateFeriados}
+                    folgasRemuneradas={folgasRemuneradas}
+                    setFolgasRemuneradas={updateFolgasRemuneradas}
                     pontosGlobal={pontos}
                     setPontosGlobal={updatePontos}
                     folhasAceite={folhasAceite}
@@ -2051,6 +2094,7 @@ export default function App() {
                       await saveUserPontosToDb(userId, userDays);
                     }}
                     feriados={feriados}
+                    folgasRemuneradas={folgasRemuneradas}
                     minimoHorasDia={minimoHorasDia}
                   />
                 </div>
@@ -2071,6 +2115,8 @@ export default function App() {
                     empresaConfig={empresaConfig}
                     setEmpresaConfig={updateEmpresaConfig}
                     feriados={feriados}
+                    folgasRemuneradas={folgasRemuneradas}
+                    setFolgasRemuneradas={updateFolgasRemuneradas}
                     prePontos={prePontos}
                     denuncias={denuncias}
                     onUpdateDenunciaStatus={handleUpdateDenunciaStatus}
@@ -2098,6 +2144,7 @@ export default function App() {
                 setPontosGlobal={updatePontos}
                 onAddLog={handleAddLog}
                 feriados={feriados}
+                folgasRemuneradas={folgasRemuneradas}
                 syncNow={() => refreshDataFromServer(true)}
                 isSyncing={isSyncingData || isSyncing}
                 isOfflineData={isOfflineData}

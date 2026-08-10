@@ -246,4 +246,19 @@ export interface SolicitacaoCorrecao {
   revisadoPor?: string | null;
 }
 
+export interface FolgaRemunerada {
+  id: string;
+  userIds: number[]; // Lista de IDs de colaboradores selecionados
+  aplicarATodosAtivos?: boolean; // Se true, aplica a todos os colaboradores ativos
+  dataInicio: string; // YYYY-MM-DD
+  dataFim: string; // YYYY-MM-DD
+  tipo: "completo" | "parcial";
+  horaInicio?: string | null; // HH:mm se parcial
+  horaFim?: string | null; // HH:mm se parcial
+  motivo?: string;
+  criadoEm: string;
+  criadoPor?: string;
+}
+
+
 

@@ -1,4 +1,4 @@
-import { User, Jornada, PontosGlobal, Batida } from "../types";
+import { User, Jornada, PontosGlobal, Batida, FolgaRemunerada } from "../types";
 import { getJornada } from "../data/mockData";
 
 export function genSenha(): string {
@@ -192,16 +192,39 @@ export function calcHoursBetween(startStr?: string, endStr?: string): number {
   return Math.max(0, (minEnd - minStart) / 60);
 }
 
+export function parsePunchDate(b: Batida | null, dayKey: string): Date | null {
+  if (!b) return null;
+  const raw = b.iso || b.hora;
+  if (!raw) return null;
+  if (typeof raw === "string" && raw.includes("T")) {
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) return d;
+  }
+  if (typeof raw === "string" && /^\d{1,2}:\d{2}(:\d{2})?$/.test(raw)) {
+    const timeWithSeconds = raw.length === 5 ? `${raw}:00` : raw;
+    const d = new Date(`${dayKey}T${timeWithSeconds}`);
+    if (!isNaN(d.getTime())) return d;
+  }
+  const fallback = new Date(raw);
+  return isNaN(fallback.getTime()) ? null : fallback;
+}
+
 export function calcularDia(
   userId: number,
   dayKey: string,
   users: User[],
   pontosGlobal: PontosGlobal,
   feriadosGlobais?: string[],
-  toleranciaMin: number = 10
+  toleranciaMin: number = 10,
+  folgasRemuneradas?: FolgaRemunerada[]
 ) {
   const u = users.find(x => x.id === userId);
   if (!u) return null;
+
+  // ADM não entra nos cálculos de frequência, faltas ou folha
+  if (u.tipo === "adm-dev") {
+    return { status: "folga" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+  }
 
   // 1. Verificar férias
   const emFerias = u.ferias?.some(p => dayKey >= p.inicio && dayKey <= p.fim);
@@ -213,6 +236,38 @@ export function calcularDia(
   const eFeriado = feriadosGlobais?.includes(dayKey);
   if (eFeriado) {
     return { status: "feriado" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
+  }
+
+  // 3. Verificar folga remunerada
+  const folgaRem = folgasRemuneradas?.find(fr => {
+    const appliesToUser = fr.aplicarATodosAtivos || (fr.userIds && fr.userIds.includes(userId));
+    return appliesToUser && !u.desativado && dayKey >= fr.dataInicio && dayKey <= fr.dataFim;
+  });
+
+  if (folgaRem && folgaRem.tipo === "completo") {
+    const dateTemp = new Date(dayKey + "T12:00:00");
+    const dNumTemp = dateTemp.getDate();
+    let jId = u.jornadaId;
+    let jCust = u.jornadaCustom;
+    if (u.trocaJornadaDia && u.trocaJornadaIdAnterior && dNumTemp < u.trocaJornadaDia) {
+      jId = u.trocaJornadaIdAnterior;
+      jCust = null;
+    }
+    const diaSemTemp = dateTemp.getDay();
+    const horasJornadaTemp = jId ? calcularHorasDia(jId, jCust, diaSemTemp) : 8;
+    return {
+      status: "folga_remunerada" as const,
+      horasTrabalhadas: horasJornadaTemp,
+      horasEfetivas: 0,
+      horasJornada: horasJornadaTemp,
+      atrasoMin: 0,
+      saidaAntMin: 0,
+      horasExtra: 0,
+      contaParaCartao: false, // Folga remunerada NÃO cobre nem soma direito ao vale alimentação
+      adicNoturnoHoras: 0,
+      adicNoturnoTexto: "",
+      motivoFolgaRemunerada: folgaRem.motivo || "Folga Remunerada"
+    };
   }
 
   const date = new Date(dayKey + "T12:00:00");
@@ -278,10 +333,10 @@ export function calcularDia(
     return { status: "parcial" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada, atrasoMin: 0, saidaAntMin: Math.round(horasJornada * 60), horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
   }
 
-  const entradaReal = new Date(bEntrada.hora);
-  const saidaReal   = bSaida && bSaida.hora ? new Date(bSaida.hora) : null;
-  const dSaidaAlm   = bSaidaAlm && bSaidaAlm.hora ? new Date(bSaidaAlm.hora) : null;
-  const dRetorno    = bRetorno && bRetorno.hora ? new Date(bRetorno.hora) : null;
+  const entradaReal = parsePunchDate(bEntrada, dayKey);
+  const saidaReal   = parsePunchDate(bSaida, dayKey);
+  const dSaidaAlm   = parsePunchDate(bSaidaAlm, dayKey);
+  const dRetorno    = parsePunchDate(bRetorno, dayKey);
 
   // Horas efetivamente trabalhadas no posto (brutas, descontando intervalo de almoço)
   let msEfetivo = 0;
@@ -403,23 +458,43 @@ export function resumoMesCalculado(
   users: User[],
   pontosGlobal: PontosGlobal,
   minimoHorasDia: number,
-  feriadosGlobais?: string[]
+  feriadosGlobais?: string[],
+  folgasRemuneradas?: FolgaRemunerada[]
 ) {
   const u = users.find(x => x.id === userId);
+  if (!u || u.tipo === "adm-dev") {
+    return {
+      horasTrabalhadas: 0,
+      horasEsperadas: 0,
+      horasExtra: 0,
+      minutosAtraso: 0,
+      minutosAntecipacao: 0,
+      diasFalta: 0,
+      diasAtestado: 0,
+      diasAfastamento: 0,
+      diasCartao: 0,
+      diasFerias: 0,
+      diasFeriado: 0,
+      diasFolgaRemunerada: 0,
+      diasAdicionalNoturno: 0,
+      horasAdicionalNoturno: 0
+    };
+  }
+
   const temDireito = u?.direitoAlimentacao !== false;
 
   const total = new Date(ano, mes + 1, 0).getDate();
   let horasTrabalhadas = 0, horasEsperadas = 0, horasExtra = 0;
   let minutosAtraso = 0, minutosAntecipacao = 0;
   let diasFalta = 0, diasAtestado = 0, diasAfastamento = 0, horasParaCartao = 0;
-  let diasFerias = 0, diasFeriado = 0;
+  let diasFerias = 0, diasFeriado = 0, diasFolgaRemunerada = 0;
   let totalDiasAdicionalNoturno = 0;
   let totalHorasAdicionalNoturno = 0;
 
   for (let d = 1; d <= total; d++) {
     const date = new Date(ano, mes, d);
     const dayKey = date.toISOString().slice(0, 10);
-    const r = calcularDia(userId, dayKey, users, pontosGlobal, feriadosGlobais);
+    const r = calcularDia(userId, dayKey, users, pontosGlobal, feriadosGlobais, 10, folgasRemuneradas);
     if (!r) continue;
 
     if (r.adicNoturnoHoras && r.adicNoturnoHoras > 0) {
@@ -434,6 +509,12 @@ export function resumoMesCalculado(
     }
     if (r.status === "feriado") {
       diasFeriado++;
+      continue;
+    }
+    if (r.status === "folga_remunerada") {
+      diasFolgaRemunerada++;
+      horasEsperadas += r.horasJornada;
+      horasTrabalhadas += r.horasTrabalhadas;
       continue;
     }
     horasEsperadas    += r.horasJornada;
@@ -461,6 +542,7 @@ export function resumoMesCalculado(
     diasCartao:         temDireito ? Math.round(horasParaCartao) : 0,
     diasFerias,
     diasFeriado,
+    diasFolgaRemunerada,
     diasAdicionalNoturno: totalDiasAdicionalNoturno,
     horasAdicionalNoturno: Math.round(totalHorasAdicionalNoturno * 10) / 10
   };

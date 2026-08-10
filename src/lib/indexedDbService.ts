@@ -328,6 +328,30 @@ export async function removeFromSyncQueue(id: number): Promise<boolean> {
   }
 }
 
+export async function removeUserFromSyncQueue(userId: number): Promise<boolean> {
+  try {
+    const db = await initIndexedDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction("offlineQueue", "readwrite");
+      const store = tx.objectStore("offlineQueue");
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const items: QueueItem[] = req.result || [];
+        items.forEach(item => {
+          if (item.id && item.type === "saveUserPontos" && item.payload?.userId === userId) {
+            store.delete(item.id);
+          }
+        });
+        resolve(true);
+      };
+      req.onerror = () => resolve(false);
+    });
+  } catch (err) {
+    console.warn("[IndexedDB] removeUserFromSyncQueue error:", err);
+    return false;
+  }
+}
+
 export async function wipeAllLocalData(): Promise<void> {
   try {
     localStorage.clear();

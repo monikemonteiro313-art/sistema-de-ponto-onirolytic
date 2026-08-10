@@ -144,7 +144,7 @@ function updateDoc(docRef: any, data: any): Promise<any> {
   return runWithFallback((r) => firestoreUpdateDoc(r || docRef, data), docRef);
 }
 
-import { User, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Denuncia, SolicitacaoCorrecao } from "../types";
+import { User, PontosGlobal, AuditLogEntry, EmpresaConfig, PrePonto, FolhaAceite, Alerta, Denuncia, SolicitacaoCorrecao, FolgaRemunerada } from "../types";
 import { INITIAL_USERS, SEED_PONTOS } from "../data/mockData";
 
 export enum OperationType {
@@ -917,6 +917,27 @@ export async function saveBlocoNotasToDb(texto: string): Promise<void> {
     handleFirestoreError(error, OperationType.WRITE, "config/bloco_notas_gestor");
   }
 }
+
+export async function fetchFolgasRemuneradas(): Promise<FolgaRemunerada[]> {
+  try {
+    const docSnap = await getDoc(doc(db, "config", "folgasRemuneradas"));
+    if (docSnap && docSnap.exists()) {
+      return (docSnap.data().list || []) as FolgaRemunerada[];
+    }
+  } catch (error) {
+    console.warn("[Firebase] Error fetching folgasRemuneradas (offline?):", error);
+  }
+  return [];
+}
+
+export async function saveFolgasRemuneradasToDb(list: FolgaRemunerada[]): Promise<void> {
+  try {
+    await setDoc(doc(db, "config", "folgasRemuneradas"), cleanObject({ list }));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, "config/folgasRemuneradas");
+  }
+}
+
 
 
 

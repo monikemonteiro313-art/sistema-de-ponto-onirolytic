@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Check, Calendar, Clock, Unlock, Shield, SquarePen, ShieldCheck, Stethoscope, Folder, X, Upload, FileText, AlertTriangle, Eye, ArrowLeft, RefreshCw, WifiOff, File, Bell } from "lucide-react";
-import { ThemeColors, User, Batida, DiaPontos, PontosGlobal, FolhaAceite, Alerta, SolicitacaoCorrecao } from "../types";
+import { ThemeColors, User, Batida, DiaPontos, PontosGlobal, FolhaAceite, Alerta, SolicitacaoCorrecao, FolgaRemunerada } from "../types";
+import { saveUserPontosToDb } from "../lib/firebaseService";
 import { getOverlapWithNightShift, calcularDia, resumoMesCalculado, baixarArquivoAtestado, compressImageBase64 } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
 import { LgpdModal } from "./LgpdModal";
@@ -100,6 +101,7 @@ interface EmployeePanelProps {
   }) => Promise<void>;
   solicitacoesCorrecao?: SolicitacaoCorrecao[];
   isOfflineData?: boolean;
+  folgasRemuneradas?: FolgaRemunerada[];
 }
 
 export function EmployeePanel({ 
@@ -111,6 +113,7 @@ export function EmployeePanel({
   setPontosGlobal, 
   onAddLog, 
   feriados = [],
+  folgasRemuneradas = [],
   syncNow,
   isSyncing = false,
   isOfflineData = false,
@@ -1032,7 +1035,7 @@ export function EmployeePanel({
       }
     })();
 
-    const resumo = resumoMesCalculado(u.id, year, month, users, pontosGlobal, cachedMinimoHoras, feriados);
+    const resumo = resumoMesCalculado(u.id, year, month, users, pontosGlobal, cachedMinimoHoras, feriados, folgasRemuneradas);
     const dias = [];
     const total = new Date(year, month + 1, 0).getDate();
 
@@ -1050,7 +1053,7 @@ export function EmployeePanel({
       const date = new Date(year, month, d);
       const key = date.toISOString().slice(0, 10);
       const batidas = pontosGlobal[u.id]?.[key] || [null, null, null, null];
-      const calc = calcularDia(u.id, key, users, pontosGlobal, feriados);
+      const calc = calcularDia(u.id, key, users, pontosGlobal, feriados, 10, folgasRemuneradas);
       const diaSem = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"][date.getDay()];
 
       const fmtB = (b: any) => {
@@ -5183,6 +5186,145 @@ export function EmployeePanel({
             )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Modal Atestado Recusado - Alerta com botão Ciente */}
+      {atestadoRecusadoPendente && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0, 0, 0, 0.8)",
+          backdropFilter: "blur(6px)",
+          zIndex: 999998,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 20
+        }}>
+          <div style={{
+            background: t.surface,
+            border: `2px solid ${t.danger}`,
+            borderRadius: 18,
+            maxWidth: 500,
+            width: "100%",
+            padding: "28px 24px",
+            boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
+            animation: "fadeIn 0.3s ease-out"
+          }}>
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              marginBottom: 16,
+              paddingBottom: 12,
+              borderBottom: `1px solid ${t.border}`
+            }}>
+              <div style={{
+                background: t.dangerBg || "rgba(239,68,68,0.15)",
+                border: `1.5px solid ${t.danger}`,
+                borderRadius: "50%",
+                padding: 10,
+                color: t.danger,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center"
+              }}>
+                <AlertTriangle size={26} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: t.text }}>
+                  Atestado Médico Recusado
+                </h3>
+                <span style={{ fontSize: 12, color: t.textSub }}>
+                  {atestadoRecusadoPendente.totalDias > 1
+                    ? `Período: ${atestadoRecusadoPendente.dataInicio} a ${atestadoRecusadoPendente.dataFim} (${atestadoRecusadoPendente.totalDias} dias)`
+                    : `Data: ${atestadoRecusadoPendente.dataInicio}`}
+                </span>
+              </div>
+            </div>
+
+            <div style={{
+              background: t.surfaceAlt,
+              border: `1px solid ${t.dangerBorder || t.danger}`,
+              borderRadius: 12,
+              padding: "16px 20px",
+              marginBottom: 20
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: t.danger, marginBottom: 8, letterSpacing: "0.5px" }}>
+                MOTIVO DA RECUSA (RH / GESTOR):
+              </div>
+              <p style={{
+                margin: 0,
+                fontSize: 14.5,
+                lineHeight: 1.5,
+                color: t.text,
+                fontWeight: 600,
+                whiteSpace: "pre-wrap"
+              }}>
+                "{atestadoRecusadoPendente.targetMotivo || atestadoRecusadoPendente.batida?.motivoRecusaAtestado || "Atestado recusado durante a análise do RH."}"
+              </p>
+              {atestadoRecusadoPendente.targetCid && (
+                <div style={{ marginTop: 10, fontSize: 12, color: t.textSub }}>
+                  CID Registrado: <strong style={{ color: t.accent }}>{atestadoRecusadoPendente.targetCid}</strong>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={async () => {
+                  const userDays = { ...(pontosGlobal[currentUser.id] || {}) };
+                  const targetGroup = atestadoRecusadoPendente.targetGroup;
+                  const targetCid = atestadoRecusadoPendente.targetCid;
+                  const targetMotivo = atestadoRecusadoPendente.targetMotivo;
+
+                  Object.keys(userDays).forEach(dk => {
+                    const arr = userDays[dk];
+                    if (!arr) return;
+                    const newArr = arr.map(item => {
+                      if (item && item.ocorrencia === "atestado" && item.statusAtestado === "recusado" && !item.vistoPeloColaborador) {
+                        const isSameGroup = targetGroup && item.atestadoGroupId === targetGroup;
+                        const isSameDetails = !targetGroup && item.cid === targetCid && item.motivoRecusaAtestado === targetMotivo;
+                        if (isSameGroup || isSameDetails) {
+                          return { ...item, vistoPeloColaborador: true };
+                        }
+                      }
+                      return item;
+                    });
+                    userDays[dk] = newArr;
+                  });
+
+                  const next = { ...pontosGlobal, [currentUser.id]: userDays };
+                  setPontosGlobal(next);
+                  try {
+                    await saveUserPontosToDb(currentUser.id, userDays);
+                  } catch (err) {
+                    console.warn("[EmployeePanel] Error saving vistoPeloColaborador:", err);
+                  }
+                }}
+                style={{
+                  background: `linear-gradient(135deg, ${t.accent}, #2563EB)`,
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 12,
+                  padding: "12px 28px",
+                  fontSize: 14,
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  boxShadow: `0 4px 14px ${t.accentGlow}`,
+                  transition: "all 0.2s"
+                }}
+              >
+                <Check size={18} />
+                <span>Ciente / Entendido</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
