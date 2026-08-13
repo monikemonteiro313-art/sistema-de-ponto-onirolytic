@@ -1,5 +1,18 @@
 import { User, Jornada, PontosGlobal, Batida, FolgaRemunerada } from "../types";
-import { getJornada } from "../data/mockData";
+import { getJornada, SUPERADMIN_MAT } from "../data/mockData";
+
+export function isMatriculaMatch(uMat: string | null | undefined, searchMat: string | null | undefined): boolean {
+  if (!uMat || !searchMat) return false;
+  const clean1 = String(uMat).trim();
+  const clean2 = String(searchMat).trim();
+  if (!clean1 || !clean2) return false;
+  if (clean1.toLowerCase() === clean2.toLowerCase()) return true;
+  // Compare without leading zeros if both are numeric
+  const norm1 = clean1.replace(/^0+/, "");
+  const norm2 = clean2.replace(/^0+/, "");
+  if (norm1 && norm2 && norm1.toLowerCase() === norm2.toLowerCase()) return true;
+  return false;
+}
 
 export function genSenha(): string {
   const lower = "abcdefghijkmnpqrstuvwxyz";
@@ -16,9 +29,158 @@ export function genSenha(): string {
 
 export function genMatricula(users: User[]): string {
   const nums = users
-    .filter(u => /^\d+$/.test(u.matricula))
-    .map(u => parseInt(u.matricula, 10));
-  return String((nums.length ? Math.max(...nums) : 100000) + 1).padStart(6, "0");
+    .filter(u => u && u.matricula && !isMatriculaMatch(u.matricula, SUPERADMIN_MAT) && /^\d+$/.test(String(u.matricula).trim()))
+    .map(u => parseInt(String(u.matricula).trim(), 10))
+    .filter(n => n < 90000); // Filter out superadmin or abnormally large numbers
+  const nextNum = nums.length ? Math.max(...nums) + 1 : 1;
+  return String(nextNum).padStart(6, "0");
+}
+
+export function sanitizeAndDeduplicateUsers(rawUsers: User[]): { cleanUsers: User[]; duplicatesFound: boolean; remappedMatriculas: Record<string, string> } {
+  if (!rawUsers || rawUsers.length === 0) {
+    return { cleanUsers: [], duplicatesFound: false, remappedMatriculas: {} };
+  }
+
+  let duplicatesFound = false;
+  const remappedMatriculas: Record<string, string> = {};
+  const seenIds = new Set<number>();
+  const seenMatriculas = new Set<string>();
+
+  const list: User[] = [];
+
+  // Superadmin primary user (090909) priority: id === 1 or first adm-dev with 090909
+  const superAdmin = rawUsers.find(u => u && isMatriculaMatch(u.matricula, SUPERADMIN_MAT) && u.tipo === "adm-dev")
+    || rawUsers.find(u => u && u.id === 1 && u.tipo === "adm-dev")
+    || rawUsers.find(u => u && u.tipo === "adm-dev");
+
+  for (const user of rawUsers) {
+    if (!user) continue;
+    let u = { ...user };
+    u.matricula = u.matricula ? String(u.matricula).trim() : "";
+
+    // Deduplicate ID if repeated
+    if (seenIds.has(u.id)) {
+      duplicatesFound = true;
+      let maxId = 100;
+      for (const existingId of seenIds) {
+        if (existingId > maxId) maxId = existingId;
+      }
+      u.id = maxId + 1;
+    }
+    seenIds.add(u.id);
+
+    // Reserved matricula 090909 rule
+    if (isMatriculaMatch(u.matricula, SUPERADMIN_MAT)) {
+      if (superAdmin && u.id !== superAdmin.id) {
+        duplicatesFound = true;
+        const oldMat = u.matricula;
+        u.matricula = genMatricula([...list, ...rawUsers]);
+        remappedMatriculas[String(u.id)] = `${oldMat} -> ${u.matricula}`;
+      } else {
+        // Superadmin 090909 must ALWAYS be Onirolytic, adm-dev, with primeiroAcesso = false
+        u.nome = "Onirolytic";
+        u.tipo = "adm-dev";
+        u.matricula = SUPERADMIN_MAT;
+        u.primeiroAcesso = false;
+        if (!u.senha) u.senha = "Admin@090909";
+      }
+    }
+
+    // General duplicate matricula rule: exact lowercase string comparison
+    const normalizedKey = u.matricula.toLowerCase();
+    if (normalizedKey && seenMatriculas.has(normalizedKey) && !isMatriculaMatch(u.matricula, SUPERADMIN_MAT)) {
+      duplicatesFound = true;
+      const oldMat = u.matricula;
+      u.matricula = genMatricula([...list, ...rawUsers]);
+      remappedMatriculas[String(u.id)] = `${oldMat} -> ${u.matricula}`;
+      seenMatriculas.add(u.matricula.toLowerCase());
+    } else if (normalizedKey) {
+      seenMatriculas.add(normalizedKey);
+    }
+
+    list.push(u);
+  }
+
+  return { cleanUsers: list, duplicatesFound, remappedMatriculas };
+}
+
+export function reconcileUsers(localUsers: User[], firestoreUsers: User[]): { merged: User[]; changed: boolean } {
+  const userMap = new Map<number, User>();
+
+  // Helper to check if a password is just the default pattern
+  const isDefaultPw = (pw: string, mat: string) => {
+    if (!pw) return true;
+    const cleanP = pw.trim();
+    const cleanM = mat.trim();
+    return cleanP === `Senha@${cleanM}` || cleanP === `Senha@${cleanM.replace(/^0+/, "")}`;
+  };
+
+  // 1. Process Firestore users first
+  for (const fsU of firestoreUsers || []) {
+    if (!fsU || !fsU.id) continue;
+    const mat = fsU.matricula ? String(fsU.matricula).trim() : "";
+    const senha = fsU.senha ? String(fsU.senha).trim() : `Senha@${mat}`;
+    userMap.set(fsU.id, {
+      ...fsU,
+      matricula: mat,
+      senha: senha
+    });
+  }
+
+  // 2. Merge local cache users
+  for (const locU of localUsers || []) {
+    if (!locU || !locU.id) continue;
+    const locMat = locU.matricula ? String(locU.matricula).trim() : "";
+    const locSenha = locU.senha ? String(locU.senha).trim() : `Senha@${locMat}`;
+    const existing = userMap.get(locU.id);
+
+    if (!existing) {
+      // User only exists in local storage
+      userMap.set(locU.id, {
+        ...locU,
+        matricula: locMat,
+        senha: locSenha
+      });
+    } else {
+      // User exists in BOTH Firestore and Local cache
+      // IMPORTANT: Firestore database is the source of truth!
+      const fsMat = existing.matricula ? String(existing.matricula).trim() : "";
+      const fsSenha = existing.senha ? String(existing.senha).trim() : "";
+
+      // Prefer Firestore matricula if present
+      const finalMat = fsMat || locMat;
+
+      // Prefer custom non-default password
+      let finalSenha = fsSenha;
+      if (isDefaultPw(fsSenha, finalMat)) {
+        if (locSenha && !isDefaultPw(locSenha, finalMat)) {
+          finalSenha = locSenha;
+        } else {
+          finalSenha = fsSenha || locSenha || `Senha@${finalMat}`;
+        }
+      }
+
+      const merged: User = {
+        ...locU,
+        ...existing, // Firestore attributes override stale local cache!
+        matricula: finalMat,
+        senha: finalSenha,
+        nome: (isMatriculaMatch(finalMat, SUPERADMIN_MAT) || existing.id === 1) ? "Onirolytic" : (existing.nome || locU.nome),
+        primeiroAcesso: (isMatriculaMatch(finalMat, SUPERADMIN_MAT) || existing.id === 1) ? false : (existing.primeiroAcesso ?? locU.primeiroAcesso),
+      };
+      userMap.set(locU.id, merged);
+    }
+  }
+
+  const rawList = Array.from(userMap.values()).map(u => {
+    if (u && u.nome && u.nome.toLowerCase().includes("sheila")) {
+      return { ...u, matricula: "200201" };
+    }
+    return u;
+  });
+  const { cleanUsers, duplicatesFound } = sanitizeAndDeduplicateUsers(rawList);
+
+  return { merged: cleanUsers, changed: duplicatesFound };
 }
 
 export function validateAdminPw(pw: string): boolean {

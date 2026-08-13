@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Shield, Key, Lock, Eye, EyeOff, Ban, Copy, Check, Trash2, Unlock } from "lucide-react";
+import { Shield, Key, Lock, Eye, EyeOff, Ban, Copy, Check, Trash2, Unlock, AlertTriangle } from "lucide-react";
 import { ThemeColors, User } from "../types";
 import { Btn, PwInput, PwChecks, Tag } from "./SharedUI";
 import {
@@ -7,7 +7,8 @@ import {
   genMatricula,
   validateAdminPw,
   validateEmployeePw,
-  toMin
+  toMin,
+  isMatriculaMatch
 } from "../utils/hrHelpers";
 import { getJornada, SUPERADMIN_MAT } from "../data/mockData";
 
@@ -24,6 +25,7 @@ export function PwModal({ modal, setModal, t, onChangePw }: PwModalProps) {
   const [genMode, setGenMode] = useState<"manual" | "auto">("manual");
   const [generatedPw, setGeneratedPw] = useState("");
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
 
   const targetIsAdm = modal.user?.tipo === "adm-dev";
   const pwOk = targetIsAdm ? validateAdminPw(pw) : validateEmployeePw(pw);
@@ -34,6 +36,47 @@ export function PwModal({ modal, setModal, t, onChangePw }: PwModalProps) {
     setGeneratedPw(g);
     setPw(g);
     setPw2(g);
+    setError("");
+  }
+
+  function handleConfirm() {
+    setError("");
+    const finalPw = (genMode === "auto" ? generatedPw : pw).trim();
+
+    if (genMode === "auto") {
+      if (!finalPw) {
+        setError("Nenhuma senha foi gerada.");
+        return;
+      }
+      onChangePw(modal.user.id, finalPw);
+      return;
+    }
+
+    if (!finalPw) {
+      setError("Por favor, digite a nova senha.");
+      return;
+    }
+
+    if (finalPw.length < 8) {
+      setError("A senha não atende ao tamanho mínimo exigido (mínimo de 8 caracteres).");
+      return;
+    }
+
+    if (!pwOk) {
+      if (targetIsAdm) {
+        setError("A senha do Administrador deve conter letras maiúsculas, minúsculas, números e caracteres especiais (mínimo 8 caracteres).");
+      } else {
+        setError("A senha deve conter uma combinação de letras e números (mínimo 8 caracteres).");
+      }
+      return;
+    }
+
+    if (pw !== pw2) {
+      setError("As senhas digitadas não coincidem.");
+      return;
+    }
+
+    onChangePw(modal.user.id, finalPw);
   }
 
   function copyToClipboard(text: string) {
@@ -98,6 +141,27 @@ export function PwModal({ modal, setModal, t, onChangePw }: PwModalProps) {
           </div>
         )}
 
+        {error && (
+          <div
+            style={{
+              background: `${t.danger}15`,
+              border: `1.5px solid ${t.danger}`,
+              borderRadius: 10,
+              padding: "10px 14px",
+              marginBottom: 14,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: t.danger,
+              fontSize: "12.5px",
+              fontWeight: 600
+            }}
+          >
+            <AlertTriangle size={16} color={t.danger} style={{ flexShrink: 0 }} />
+            <span>{error}</span>
+          </div>
+        )}
+
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
           {(["manual", "auto"] as const).map(v => (
             <button
@@ -105,6 +169,7 @@ export function PwModal({ modal, setModal, t, onChangePw }: PwModalProps) {
               type="button"
               onClick={() => {
                 setGenMode(v);
+                setError("");
                 if (v === "auto") {
                   handleGen();
                 } else {
@@ -169,7 +234,21 @@ export function PwModal({ modal, setModal, t, onChangePw }: PwModalProps) {
               >
                 Nova senha
               </label>
-              <PwInput value={pw} onChange={setPw} placeholder={targetIsAdm ? "Mín. 8 • aA1@" : "Mín. 8 • letras + nºs"} t={t} />
+              <PwInput
+                value={pw}
+                onChange={v => {
+                  setPw(v);
+                  if (error) setError("");
+                }}
+                placeholder={targetIsAdm ? "Mín. 8 • aA1@" : "Mín. 8 • letras + nºs"}
+                t={t}
+              />
+              {pw.length > 0 && pw.length < 8 && (
+                <div style={{ color: t.danger, fontSize: "12px", fontWeight: 600, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                  <AlertTriangle size={13} color={t.danger} />
+                  <span>A senha não atende ao tamanho mínimo exigido (mínimo de 8 caracteres).</span>
+                </div>
+              )}
               <PwChecks pw={pw} t={t} isAdmin={targetIsAdm} />
             </div>
             <div style={{ marginBottom: 14 }}>
@@ -186,7 +265,15 @@ export function PwModal({ modal, setModal, t, onChangePw }: PwModalProps) {
               >
                 Confirmar
               </label>
-              <PwInput value={pw2} onChange={setPw2} placeholder="Repita" t={t} />
+              <PwInput
+                value={pw2}
+                onChange={v => {
+                  setPw2(v);
+                  if (error) setError("");
+                }}
+                placeholder="Repita"
+                t={t}
+              />
               {pw2 && !matchOk && (
                 <span style={{ fontSize: "11.5px", color: t.danger, marginTop: 4, display: "block" }}>
                   Senhas não coincidem
@@ -201,16 +288,9 @@ export function PwModal({ modal, setModal, t, onChangePw }: PwModalProps) {
             Cancelar
           </Btn>
           <Btn
-            onClick={() => {
-              const finalPw = genMode === "auto" ? generatedPw : pw;
-              const ok = genMode === "auto" ? !!generatedPw : pwOk && matchOk;
-              if (ok) {
-                onChangePw(modal.user.id, finalPw);
-              }
-            }}
+            onClick={handleConfirm}
             t={t}
             style={{ flex: 2 }}
-            disabled={genMode === "manual" ? !pwOk || !matchOk : !generatedPw}
           >
             Confirmar troca
           </Btn>
@@ -630,7 +710,11 @@ export function CreateModal({ setModal, t, users, tab, onCreate }: CreateModalPr
                 setMatError("A matrícula é obrigatória.");
                 return;
               }
-              const exists = users.some(u => u.matricula === cleanMat);
+              if (cleanMat === "090909") {
+                setMatError("A matrícula 090909 é reservada exclusivamente para o Administrador Principal (Onirolytic).");
+                return;
+              }
+              const exists = users.some(u => isMatriculaMatch(u.matricula, cleanMat));
               if (exists) {
                 setMatError("Esta matrícula já está em uso por outro usuário.");
                 return;
@@ -918,7 +1002,11 @@ export function EditMatriculaModal({ modal, setModal, t, users, onChangeMatricul
                 setModal(null);
                 return;
               }
-              const exists = users.some(u => u.matricula === cleanMat && u.id !== modal.user.id);
+              if (cleanMat === "090909" && modal.user.matricula !== "090909") {
+                setError("A matrícula 090909 é reservada para o Administrador Principal.");
+                return;
+              }
+              const exists = users.some(u => isMatriculaMatch(u.matricula, cleanMat) && u.id !== modal.user.id);
               if (exists) {
                 setError("Esta matrícula já está em uso por outro usuário.");
                 return;

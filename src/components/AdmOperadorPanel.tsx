@@ -7,7 +7,7 @@ import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
 import { DenunciasView } from "./DenunciasView";
 import { SolicitacoesCorrecaoView } from "./SolicitacoesCorrecaoView";
 
-import { saveUserPontosToDb, saveAuditLogToDb } from "../lib/firebaseService";
+import { saveUserPontosToDb, saveDiaPonto, saveAuditLogToDb } from "../lib/firebaseService";
 import {
   calcularHorasDia,
   calcularDia,
@@ -563,6 +563,7 @@ interface AdmOperadorPanelProps {
   setAlertas?: React.Dispatch<React.SetStateAction<Alerta[]>>;
   saveAlertaToDb?: (alerta: Alerta) => Promise<void>;
   deleteAlertaFromDb?: (alertaId: string) => Promise<void>;
+  auditLogs?: AuditLogEntry[];
   onSyncData?: () => Promise<void>;
   isSyncingData?: boolean;
   isOfflineData?: boolean;
@@ -596,6 +597,7 @@ export function AdmOperadorPanel({
   setAlertas,
   saveAlertaToDb,
   deleteAlertaFromDb,
+  auditLogs = [],
   onSyncData,
   isSyncingData = false,
   isOfflineData = false
@@ -657,7 +659,7 @@ export function AdmOperadorPanel({
       [userId]: userDays,
     }));
 
-    await saveUserPontosToDb(userId, userDays).catch((err) =>
+    await saveDiaPonto(userId, dayKey, dayPunches).catch((err) =>
       console.warn("Erro ao salvar pontos no Firestore:", err)
     );
 
@@ -727,8 +729,10 @@ export function AdmOperadorPanel({
   const pendenciasCalculadas = useMemo(() => {
     let atestadosPendentes = 0;
     let pontosManuaisPendentes = 0;
-    Object.keys(pontosGlobal).forEach(uId => {
-      const days = pontosGlobal[uId] || pontosGlobal[Number(uId)] || pontosGlobal[String(uId)];
+
+    const colabs = users.filter(u => u.tipo !== "adm-dev" && !u.desativado);
+    colabs.forEach(u => {
+      const days = pontosGlobal[u.id] || pontosGlobal[String(u.id)];
       if (days) {
         Object.keys(days).forEach(dKey => {
           const arr = days[dKey];
@@ -738,7 +742,7 @@ export function AdmOperadorPanel({
                 atestadosPendentes++;
               }
               const statusAprov = b ? (b.statusAprovacao || (b.lancadoPorAdm || b.editadoPor || b.justificativa?.includes("Aprovada") || b.justificativa?.includes("Gestor") ? "aprovado" : "pendente")) : null;
-              if (b && b.tipo === "manual" && statusAprov === "pendente") {
+              if (b && b.tipo === "manual" && b.hora && statusAprov === "pendente") {
                 pontosManuaisPendentes++;
               }
             });
@@ -755,7 +759,6 @@ export function AdmOperadorPanel({
     const ontem = prevDate.toISOString().slice(0, 10);
 
     let batidasIncompletas = 0;
-    const colabs = users.filter(u => u.tipo !== "adm-dev" && !u.desativado);
     colabs.forEach(colab => {
       const userDays = pontosGlobal[colab.id] || pontosGlobal[String(colab.id)];
       if (userDays) {
@@ -1886,7 +1889,7 @@ export function AdmOperadorPanel({
         [userId]: nextUserDays
       }));
 
-      await saveUserPontosToDb(userId, nextUserDays);
+      await saveDiaPonto(userId, pre.dayKey, dayArr);
 
       onAddLog(
         "Resgatou Ponto Offline",
@@ -2460,6 +2463,7 @@ export function AdmOperadorPanel({
       latitude?: number;
       longitude?: number;
       accuracy?: number;
+      fotoComprovante?: string;
       statusAprovacao: "pendente" | "aprovado" | "rejeitado";
       motivoRejeicaoAjuste?: string;
       revisadoPor?: string;
@@ -2488,6 +2492,7 @@ export function AdmOperadorPanel({
               latitude: b.latitude,
               longitude: b.longitude,
               accuracy: b.accuracy,
+              fotoComprovante: b.fotoComprovante,
               statusAprovacao: (b.statusAprovacao as any) || (b.lancadoPorAdm || b.editadoPor || b.justificativa?.includes("Aprovada") || b.justificativa?.includes("Gestor") ? "aprovado" : "pendente"),
               motivoRejeicaoAjuste: b.motivoRejeicaoAjuste,
               revisadoPor: b.revisadoPor,
@@ -2517,9 +2522,13 @@ export function AdmOperadorPanel({
     });
   }, [todosPontosManuais, busca, filtroStatusPontoManual]);
 
-  function handleAprovarPontoManual(item: typeof todosPontosManuais[0]) {
+  async function handleAprovarPontoManual(item: typeof todosPontosManuais[0]) {
+    const uIdNum = Number(item.userId);
+    const uIdStr = String(item.userId);
+    let updatedDayArray: Batida[] = [];
+
     setPontosGlobal(prev => {
-      const userRegs = prev[item.userId] || {};
+      const userRegs = prev[uIdNum] || prev[uIdStr] || {};
       const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
       if (dayArray[item.batidaIdx]) {
         const curPunch = dayArray[item.batidaIdx]!;
@@ -2538,14 +2547,26 @@ export function AdmOperadorPanel({
           revisadoPor: currentUser.nome
         };
       }
-      return {
-        ...prev,
-        [item.userId]: {
-          ...userRegs,
-          [item.dayKey]: dayArray
-        }
+      updatedDayArray = dayArray;
+      const updatedUserRegs = {
+        ...userRegs,
+        [item.dayKey]: dayArray
       };
+      const next = {
+        ...prev,
+        [uIdNum]: updatedUserRegs,
+        [uIdStr]: updatedUserRegs
+      };
+      try { localStorage.setItem("hr_cached_pontos", JSON.stringify(next)); } catch (e) {}
+      return next;
     });
+
+    if (updatedDayArray.length > 0) {
+      await saveDiaPonto(uIdNum, item.dayKey, updatedDayArray).catch(err =>
+        console.error("Erro ao salvar aprovação de ponto manual no Firestore:", err)
+      );
+    }
+
     onAddLog(
       "Aprovou Ponto Manual",
       `${item.userName} (${item.userMatricula})`,
@@ -2553,9 +2574,13 @@ export function AdmOperadorPanel({
     );
   }
 
-  function handleRejeitarPontoManual(item: typeof todosPontosManuais[0], motivo: string) {
+  async function handleRejeitarPontoManual(item: typeof todosPontosManuais[0], motivo: string) {
+    const uIdNum = Number(item.userId);
+    const uIdStr = String(item.userId);
+    let updatedDayArray: Batida[] = [];
+
     setPontosGlobal(prev => {
-      const userRegs = prev[item.userId] || {};
+      const userRegs = prev[uIdNum] || prev[uIdStr] || {};
       const dayArray = [...(userRegs[item.dayKey] || [null, null, null, null])];
       if (dayArray[item.batidaIdx]) {
         dayArray[item.batidaIdx] = {
@@ -2566,14 +2591,26 @@ export function AdmOperadorPanel({
           revisadoPor: currentUser.nome
         };
       }
-      return {
-        ...prev,
-        [item.userId]: {
-          ...userRegs,
-          [item.dayKey]: dayArray
-        }
+      updatedDayArray = dayArray;
+      const updatedUserRegs = {
+        ...userRegs,
+        [item.dayKey]: dayArray
       };
+      const next = {
+        ...prev,
+        [uIdNum]: updatedUserRegs,
+        [uIdStr]: updatedUserRegs
+      };
+      try { localStorage.setItem("hr_cached_pontos", JSON.stringify(next)); } catch (e) {}
+      return next;
     });
+
+    if (updatedDayArray.length > 0) {
+      await saveDiaPonto(uIdNum, item.dayKey, updatedDayArray).catch(err =>
+        console.error("Erro ao salvar rejeição de ponto manual no Firestore:", err)
+      );
+    }
+
     onAddLog(
       "Rejeitou Ponto Manual",
       `${item.userName} (${item.userMatricula})`,
@@ -3766,10 +3803,11 @@ export function AdmOperadorPanel({
             users={users}
             currentUser={currentUser}
             pontosGlobal={pontosGlobal}
-            auditLogs={[]}
+            auditLogs={auditLogs}
             onSalvarPonto={handleSalvarPontoGerenciado}
             onDecisaoAtestado={async (userId, groupId, dias, decisao, justificativa) => {
               const userDays = { ...(pontosGlobal[userId] || {}) };
+              const changedDays: Record<string, any> = {};
               for (const { dayKey, slotIdx } of dias) {
                 const dayArr = [...(userDays[dayKey] || [null, null, null, null])];
                 if (dayArr[slotIdx]) {
@@ -3791,12 +3829,15 @@ export function AdmOperadorPanel({
                     };
                   }
                   userDays[dayKey] = dayArr;
+                  changedDays[dayKey] = dayArr;
                 }
               }
               if (setPontosGlobal) {
                 setPontosGlobal({ ...pontosGlobal, [userId]: userDays });
               }
-              await saveUserPontosToDb(userId, userDays);
+              if (Object.keys(changedDays).length > 0) {
+                await saveUserPontosToDb(userId, changedDays);
+              }
             }}
             feriados={feriados}
             folgasRemuneradas={folgasRemuneradas}
@@ -4444,6 +4485,23 @@ export function AdmOperadorPanel({
                         {item.latitude !== undefined && item.longitude !== undefined && (
                           <div style={{ fontSize: 11, color: "#2563EB", fontWeight: 600 }}>
                             📍 GPS: {item.latitude.toFixed(5)}, {item.longitude.toFixed(5)} {item.accuracy ? `(Precisão: ${item.accuracy.toFixed(1)}m)` : ""}
+                          </div>
+                        )}
+
+                        {item.fotoComprovante && (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: t.textSub, marginBottom: 4 }}>
+                              📸 Selfie de Comprovação do Colaborador:
+                            </div>
+                            <img
+                              src={item.fotoComprovante}
+                              alt="Comprovação Selfie"
+                              style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 8, border: `1px solid ${t.border}`, cursor: "pointer" }}
+                              onClick={() => {
+                                const win = window.open();
+                                if (win) win.document.write(`<img src="${item.fotoComprovante}" style="max-width:100%; height:auto;" />`);
+                              }}
+                            />
                           </div>
                         )}
                       </div>

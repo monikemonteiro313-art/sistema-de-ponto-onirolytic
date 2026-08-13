@@ -16,12 +16,44 @@ export interface LocationPosition {
   timestamp: number;
 }
 
+// Detecta iOS
+export const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+export async function getLocationWithIOSFallback(): Promise<GeolocationPosition | LocationPosition | null> {
+  return new Promise((resolve) => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      resolve(null);
+      return;
+    }
+    // No iOS, getCurrentPosition é mais confiável que watchPosition
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve(pos as GeolocationPosition),
+      (err) => {
+        console.warn("iOS GPS falhou:", err.code, err.message);
+        
+        if (err.code === 1) {
+          alert("🍎 iPhone bloqueou a localização.\n\nComo liberar:\n1. Configurações > Safari > Localização > PERMITIR\n2. Ou: Configurações > Privacidade > Localização > Safari > PERMITIR SEMPRE\n3. Verifique se 'Precisão Exata' está ligada");
+        } else if (err.code === 2) {
+          alert("🍎 GPS indisponível no iPhone.\nDesative o Modo Economia de Bateria (ícone amarelo) e tente novamente.");
+        }
+        
+        resolve(null);
+      },
+      {
+        enableHighAccuracy: !isIOS, // iOS trava com highAccuracy=true em alguns casos
+        timeout: isIOS ? 20000 : 10000, // iOS precisa de mais tempo
+        maximumAge: isIOS ? 60000 : 0   // iOS aceita cache de 1min melhor que GPS frio
+      }
+    );
+  });
+}
+
 /**
  * Captura a posição atual do dispositivo usando Capacitor Geolocation no APK/Native
  * ou fallback transparente para navigator.geolocation na Web.
  */
 export async function getBestCurrentPosition(
-  options: PositionOptions = { enableHighAccuracy: true, timeout: 12000, maximumAge: 3000 }
+  options: PositionOptions = { enableHighAccuracy: !isIOS, timeout: isIOS ? 20000 : 12000, maximumAge: isIOS ? 60000 : 3000 }
 ): Promise<LocationPosition> {
   const isNative = typeof window !== 'undefined' && Capacitor.isNativePlatform();
 
@@ -34,9 +66,9 @@ export async function getBestCurrentPosition(
       }
 
       const capPos = await Geolocation.getCurrentPosition({
-        enableHighAccuracy: options.enableHighAccuracy ?? true,
-        timeout: options.timeout ?? 12000,
-        maximumAge: options.maximumAge ?? 3000,
+        enableHighAccuracy: options.enableHighAccuracy ?? !isIOS,
+        timeout: options.timeout ?? (isIOS ? 20000 : 12000),
+        maximumAge: options.maximumAge ?? (isIOS ? 60000 : 3000),
       });
 
       return {
@@ -56,10 +88,34 @@ export async function getBestCurrentPosition(
     }
   }
 
+  if (isIOS) {
+    const iosPos = await getLocationWithIOSFallback();
+    if (iosPos) {
+      return {
+        coords: {
+          latitude: iosPos.coords.latitude,
+          longitude: iosPos.coords.longitude,
+          accuracy: iosPos.coords.accuracy,
+          altitude: iosPos.coords.altitude,
+          altitudeAccuracy: iosPos.coords.altitudeAccuracy,
+          heading: iosPos.coords.heading,
+          speed: iosPos.coords.speed,
+        },
+        timestamp: iosPos.timestamp,
+      };
+    }
+  }
+
   // Fallback padrão navigator.geolocation
   if (typeof navigator === 'undefined' || !navigator.geolocation) {
     throw new Error('Geolocalização não suportada neste dispositivo/navegador.');
   }
+
+  const defaultOptions: PositionOptions = {
+    enableHighAccuracy: options.enableHighAccuracy ?? !isIOS,
+    timeout: options.timeout ?? (isIOS ? 20000 : 10000),
+    maximumAge: options.maximumAge ?? (isIOS ? 60000 : 0)
+  };
 
   return new Promise((resolve, reject) => {
     navigator.geolocation.getCurrentPosition(
@@ -78,7 +134,7 @@ export async function getBestCurrentPosition(
         });
       },
       (err) => reject(err),
-      options
+      defaultOptions
     );
   });
 }

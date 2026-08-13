@@ -234,7 +234,7 @@ export const INITIAL_USERS: User[] = [
   {
     id: 1,
     matricula: SUPERADMIN_MAT,
-    nome: "Administrador",
+    nome: "Onirolytic",
     tipo: "adm-dev",
     senha: "Admin@090909",
     primeiroAcesso: true,

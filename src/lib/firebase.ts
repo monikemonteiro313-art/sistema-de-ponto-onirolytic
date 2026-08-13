@@ -1,10 +1,21 @@
 /// <reference types="vite/client" />
 import { initializeApp } from "firebase/app";
-import { Firestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, setLogLevel } from "firebase/firestore";
+import { Firestore, initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache, setLogLevel } from "firebase/firestore";
 import firebaseAppletConfig from "../../firebase-applet-config.json";
 
 // Configure Firestore SDK log level to suppress connection warnings during offline/intermittent network mode
 setLogLevel("silent");
+
+// Suppress unhandled INTERNAL ASSERTION FAILED errors in window error handlers to prevent app crash overlays
+if (typeof window !== "undefined") {
+  window.addEventListener("unhandledrejection", (event) => {
+    const msg = event?.reason?.message || String(event?.reason || "");
+    if (msg.includes("INTERNAL ASSERTION FAILED") || msg.includes("Unexpected state") || msg.includes("da08")) {
+      event.preventDefault();
+      console.warn("[Firebase] Internal SDK assertion caught and suppressed:", msg);
+    }
+  });
+}
 
 // Configuração do Firebase carregada dinamicamente das configurações da plataforma
 const firebaseConfig = {
@@ -20,53 +31,33 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
-// Offline-first cache settings for Firestore
-const cacheSettings = {
-  localCache: persistentLocalCache({
-    tabManager: persistentMultipleTabManager()
-  })
-};
-
 const databaseId = firebaseAppletConfig.firestoreDatabaseId || "(default)";
 
-// Initialize Firestore with custom database ID and offline persistent cache
-let currentDb: Firestore;
-try {
-  currentDb = initializeFirestore(
-    app,
-    cacheSettings,
-    databaseId
-  );
-} catch (err) {
-  console.error("[Firebase] Initial firestore creation failed, trying default initialization", err);
-  currentDb = initializeFirestore(app, cacheSettings);
+function initDatabase(): Firestore {
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager()
+      })
+    }, databaseId);
+  } catch (err1) {
+    console.warn("[Firebase] initializeFirestore with persistentLocalCache failed, trying memoryLocalCache:", err1);
+    try {
+      return initializeFirestore(app, {
+        localCache: memoryLocalCache()
+      }, databaseId);
+    } catch (err2) {
+      console.warn("[Firebase] initializeFirestore failed, falling back to getFirestore:", err2);
+      return databaseId && databaseId !== "(default)" 
+        ? getFirestore(app, databaseId) 
+        : getFirestore(app);
+    }
+  }
 }
 
-let fallbackExecuted = false;
+export const db: Firestore = initDatabase();
 
 export function fallbackToDefaultDatabase() {
-  if (fallbackExecuted) {
-    console.log("[Firebase] Fallback already executed. Skipping redundant call.");
-    return;
-  }
-  fallbackExecuted = true;
-  console.log("[Firebase] Falling back to (default) Firestore database...");
-  try {
-    currentDb = initializeFirestore(app, cacheSettings);
-  } catch (err) {
-    console.error("[Firebase] Error during initializeFirestore fallback:", err);
-  }
+  console.log("[Firebase] fallbackToDefaultDatabase called (no-op to preserve single database instance).");
 }
 
-export const db: Firestore = new Proxy(currentDb, {
-  get(target, prop, receiver) {
-    const value = Reflect.get(currentDb, prop);
-    if (typeof value === "function") {
-      return value.bind(currentDb);
-    }
-    return value;
-  },
-  set(target, prop, value, receiver) {
-    return Reflect.set(currentDb, prop, value);
-  }
-});

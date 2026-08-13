@@ -6,12 +6,13 @@ import { LgpdModal } from "./LgpdModal";
 import { ModalDenunciaAnonima } from "./ModalDenunciaAnonima";
 import { wipeAllLocalData } from "../lib/indexedDbService";
 import { setPref } from "../utils/preferencesService";
+import { isMatriculaMatch } from "../utils/hrHelpers";
 
 interface LoginScreenProps {
   mode: string;
   t: ThemeColors;
   users: User[];
-  onLogin: (matricula: string) => void;
+  onLogin: (matricula: string, userId?: number) => void;
   isAdminMode: boolean;
   setIsAdminMode: React.Dispatch<React.SetStateAction<boolean>>;
   onToggleTheme: () => void;
@@ -290,26 +291,77 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
       return;
     }
 
-    // Find user
-    const user = users.find(u => u.matricula === mat.trim() && !u.desativado);
+    const cleanMat = mat.trim();
+    const cleanPw = pw.trim();
+
+    // Check all matching candidates (including disabled ones for informative errors)
+    const allMatching = users.filter(u => isMatriculaMatch(u.matricula, cleanMat));
+
+    if (allMatching.length === 0) {
+      if (cleanMat === "090909") {
+        setError("A matrícula 090909 é da conta Administradora. Alterne para o Modo ADM no botão no topo superior esquerdo.");
+      } else {
+        setError("Matrícula não cadastrada. Verifique se o número foi digitado corretamente ou consulte o Administrador/RH.");
+      }
+      return;
+    }
+
+    const matchingUsers = allMatching.filter(u => !u.desativado);
+    if (matchingUsers.length === 0) {
+      setError("Esta matrícula/conta encontra-se desativada no sistema. Por favor, contate o Administrador/RH.");
+      return;
+    }
+
+    // Helper to check if password matches (handling potential surrounding whitespace & default password fallback)
+    const matchesPw = (uPw: string | null | undefined, userMat: string) => {
+      const targetPw = pw.trim();
+      const cleanMat = userMat ? userMat.trim() : "";
+      const effectivePw = (uPw && uPw.trim()) ? uPw.trim() : `Senha@${cleanMat}`;
+      return (
+        uPw === pw ||
+        effectivePw === targetPw ||
+        effectivePw === pw ||
+        (uPw ? uPw.trim() === targetPw : false) ||
+        `Senha@${cleanMat}` === targetPw ||
+        `Senha@${cleanMat}` === pw ||
+        `Senha@${cleanMat.replace(/^0+/, "")}` === targetPw
+      );
+    };
+
+    // Select the best matching user based on login mode and password match
+    let user: User | undefined = undefined;
+    if (isAdminMode) {
+      user = matchingUsers.find(u => u.tipo === "adm-dev" && matchesPw(u.senha, u.matricula))
+        || matchingUsers.find(u => u.tipo === "adm-dev")
+        || matchingUsers[0];
+    } else {
+      user = matchingUsers.find(u => u.tipo !== "adm-dev" && matchesPw(u.senha, u.matricula))
+        || matchingUsers.find(u => u.tipo !== "adm-dev")
+        || matchingUsers[0];
+    }
+
     if (!user) {
       setError("Matrícula não cadastrada.");
       return;
     }
-    if (user.senha !== pw) {
-      setError("Senha incorreta.");
+
+    if (!isAdminMode && user.tipo === "adm-dev") {
+      setError("A matrícula 090909/ADM deve entrar pelo Painel ADM. Clique no botão de escudo/cadeado no topo superior esquerdo para alternar para o Modo ADM.");
       return;
     }
-    if (user.bloqueado) {
-      setError("Acesso bloqueado. Contate o administrador.");
-      return;
-    }
+
     if (isAdminMode && user.tipo !== "adm-dev") {
       setError("Esta conta não possui credenciais de Administrador.");
       return;
     }
-    if (!isAdminMode && user.tipo === "adm-dev") {
-      setError("Administradores devem entrar pelo painel ADM (tópico superior esquerdo).");
+
+    if (!matchesPw(user.senha, user.matricula)) {
+      setError("Senha incorreta.");
+      return;
+    }
+
+    if (user.bloqueado) {
+      setError("Acesso bloqueado. Contate o administrador.");
       return;
     }
 
@@ -331,7 +383,7 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
     } catch (_) {}
     setTimeout(() => {
       setLoading(false);
-      onLogin(user.matricula);
+      onLogin(user.matricula, user.id);
     }, 900);
   }
 

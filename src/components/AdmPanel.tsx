@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map as MapIcon, FileText, Globe, Database, Server, HardDrive, RefreshCw, WifiOff, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote, Settings, ChevronDown, Wrench, Filter } from "lucide-react";
+import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map as MapIcon, FileText, Globe, Database, Server, HardDrive, RefreshCw, WifiOff, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote, Settings, ChevronDown, Wrench, Filter, Camera } from "lucide-react";
 import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao, FolgaRemunerada } from "../types";
 import { Btn, Tag } from "./SharedUI";
 import { PwModal, CreateModal, DeleteModal, EditMatriculaModal } from "./AdmModals";
@@ -7,11 +7,12 @@ import { FeriasModal } from "./FeriasModal";
 import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
 import { DenunciasView } from "./DenunciasView";
 import { SolicitacoesCorrecaoView } from "./SolicitacoesCorrecaoView";
+import { FotosCameraView } from "./FotosCameraView";
 import { Paginacao } from "./Paginacao";
 
 import { genMatricula, timeAgo, resumoMesCalculado, calcularDia } from "../utils/hrHelpers";
 import { SUPERADMIN_MAT, getJornada } from "../data/mockData";
-import { fetchWizardDone, saveUserPontosToDb, saveAuditLogToDb, fetchBlocoNotas, saveBlocoNotasToDb } from "../lib/firebaseService";
+import { fetchWizardDone, saveUserPontosToDb, saveDiaPonto, batchSaveDiasPonto, fetchPontosMes, fetchAllPontosMes, getMesAtual, saveAuditLogToDb, fetchBlocoNotas, saveBlocoNotasToDb, updateUserSenhaInDb, saveUserToDb, deleteUserFromDb } from "../lib/firebaseService";
 
 // Decides what actions are permitted based on credentials mapping
 export function perms(viewer: User, target: User) {
@@ -75,6 +76,7 @@ interface AdmPanelProps {
   setUsers: React.Dispatch<React.SetStateAction<User[]>>;
   currentUser: User;
   onLogout: () => void;
+  onAddNewUser?: (novoUser: User) => Promise<User>;
   auditLogExterno: AuditLogEntry[];
   onAddLog?: (acao: string, alvo: string, detalhe?: string) => void;
   feriados?: string[];
@@ -108,6 +110,7 @@ export function AdmPanel({
   setUsers,
   currentUser,
   onLogout,
+  onAddNewUser,
   auditLogExterno = [],
   onAddLog,
   feriados = [],
@@ -134,7 +137,7 @@ export function AdmPanel({
   isSyncingData = false,
   isOfflineData = false
 }: AdmPanelProps) {
-  const [tab, setTab] = useState<"colaboradores" | "gerenciar_marcacoes" | "solicitacoes_correcao" | "adm" | "alertas" | "denuncias" | "auditoria" | "feriados" | "folgas" | "arquivo_morto" | "armazenamento" | "guia_manutencao" | "aceites">("colaboradores");
+  const [tab, setTab] = useState<"colaboradores" | "gerenciar_marcacoes" | "solicitacoes_correcao" | "adm" | "alertas" | "denuncias" | "auditoria" | "feriados" | "folgas" | "arquivo_morto" | "armazenamento" | "guia_manutencao" | "aceites" | "camera_fotos">("colaboradores");
 
   const [blocoNotas, setBlocoNotas] = useState(() => localStorage.getItem("bloco_notas_gestor") || "");
   const [blocoNotasSalvoMsg, setBlocoNotasSalvoMsg] = useState(false);
@@ -367,6 +370,7 @@ export function AdmPanel({
       
       const newPontosGlobal = { ...pontosGlobal };
       let hasChanges = false;
+      const changedDaysList: Array<{ userId: number; dayKey: string; dayData: any }> = [];
       
       for (const u of validUsers) {
         if (u.tipo === "adm-dev" && u.matricula === SUPERADMIN_MAT) continue;
@@ -480,6 +484,7 @@ export function AdmPanel({
           if (dayPointsChanged) {
             userDays[dayKey] = dayPoints as any;
             userDaysChanged = true;
+            changedDaysList.push({ userId: u.id, dayKey, dayData: dayPoints });
           }
         }
         
@@ -489,16 +494,12 @@ export function AdmPanel({
         }
       }
       
-      if (hasChanges) {
-        logs.push("💾 Gravando alterações e relatórios de autocura de forma segura no Firebase...");
-        for (const u of users) {
-          if (newPontosGlobal[u.id]) {
-            try {
-              await saveUserPontosToDb(u.id, newPontosGlobal[u.id]);
-            } catch (err) {
-              console.error(`Falha ao salvar autocura para usuário ${u.id}:`, err);
-            }
-          }
+      if (hasChanges && changedDaysList.length > 0) {
+        logs.push(`💾 Gravando ${changedDaysList.length} alteração(ões) pontual(ais) de autocura no Firebase...`);
+        try {
+          await batchSaveDiasPonto(changedDaysList);
+        } catch (err) {
+          console.error(`Falha ao salvar lote de autocura:`, err);
         }
         
         if (setPontosGlobal) {
@@ -777,7 +778,7 @@ export function AdmPanel({
 
   function addLog(acao: string, alvo: string, detalhe: string = "") {
     const entry: AuditLogEntry = {
-      id: Date.now() + Math.random(),
+      id: `audit_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
       quando: new Date().toISOString(),
       quem: currentUser.nome,
       quemMat: currentUser.matricula,
@@ -838,7 +839,7 @@ export function AdmPanel({
     };
 
     setPontosGlobal(nextPontosGlobal);
-    await saveUserPontosToDb(userId, userDays);
+    await saveDiaPonto(userId, dayKey, dayPunches);
 
     const log: AuditLogEntry = {
       id: Date.now(),
@@ -863,13 +864,13 @@ export function AdmPanel({
     addLog(log.acao, log.alvo, log.detalhe || "");
   };
 
-  function createUser(data: any) {
+  async function createUser(data: any) {
     const newUser: User = {
       id: Date.now(),
-      matricula: data.matricula || genMatricula(users),
-      nome: data.nome,
+      matricula: (data.matricula || genMatricula(users)).trim(),
+      nome: data.nome.trim(),
       tipo: data.tipo || "colaborador",
-      senha: data.senha,
+      senha: data.senha.trim(),
       bloqueado: false,
       desativado: false,
       perm_trocar_senha_adm: false,
@@ -884,10 +885,24 @@ export function AdmPanel({
       jornadaCustom: null,
       criadoEm: new Date().toISOString()
     };
-    setUsers(u => [...u, newUser]);
-    addLog("Criou usuário", `${newUser.nome} (${newUser.matricula})`, `Tipo: ${newUser.tipo}`);
-    setModal(null);
-    showToast(`${newUser.nome} criado — matrícula ${newUser.matricula}`);
+    if (onAddNewUser) {
+      try {
+        await onAddNewUser(newUser);
+        addLog("Criou usuário", `${newUser.nome} (${newUser.matricula})`, `Tipo: ${newUser.tipo}`);
+        setModal(null);
+        showToast(`${newUser.nome} criado — matrícula ${newUser.matricula}`);
+      } catch (err: any) {
+        alert("Erro no cadastro: " + (err?.message || err));
+      }
+    } else {
+      setUsers(u => [...u, newUser]);
+      saveUserToDb(newUser).catch(err => {
+        console.warn("[Firebase] Erro ao salvar novo usuário no Firestore:", err);
+      });
+      addLog("Criou usuário", `${newUser.nome} (${newUser.matricula})`, `Tipo: ${newUser.tipo}`);
+      setModal(null);
+      showToast(`${newUser.nome} criado — matrícula ${newUser.matricula}`);
+    }
   }
 
   function changePw(userId: number, newPw: string) {
@@ -898,7 +913,15 @@ export function AdmPanel({
       showToast("Sem permissão para esta ação.", "danger");
       return;
     }
-    setUsers(u => u.map(x => (x.id === userId ? { ...x, senha: newPw } : x)));
+    const cleanPw = newPw.trim();
+    const updatedUser = { ...target, senha: cleanPw };
+    setUsers(u => u.map(x => (x.id === userId ? updatedUser : x)));
+    saveUserToDb(updatedUser).catch(err => {
+      console.warn("[Firebase] Erro ao atualizar senha no Firestore:", err);
+    });
+    updateUserSenhaInDb(userId, cleanPw, target.matricula).catch(err => {
+      console.warn("[Firebase] Erro ao atualizar campo de senha no Firestore:", err);
+    });
     addLog("Alterou senha", `${target.nome} (${target.matricula})`);
     setModal(null);
     showToast("Senha atualizada com sucesso");
@@ -913,10 +936,15 @@ export function AdmPanel({
       return;
     }
     const oldMat = target.matricula;
-    setUsers(u => u.map(x => (x.id === userId ? { ...x, matricula: newMat } : x)));
-    addLog("Alterou matrícula", `${target.nome} (${oldMat})`, `Alterada para: ${newMat}`);
+    const cleanMat = newMat.trim();
+    const updatedUser = { ...target, matricula: cleanMat };
+    setUsers(u => u.map(x => (x.id === userId ? updatedUser : x)));
+    saveUserToDb(updatedUser).catch(err => {
+      console.warn("[Firebase] Erro ao atualizar matrícula no Firestore:", err);
+    });
+    addLog("Alterou matrícula", `${target.nome} (${oldMat})`, `Alterada para: ${cleanMat}`);
     setModal(null);
-    showToast(`Matrícula de ${target.nome} alterada para ${newMat}`);
+    showToast(`Matrícula de ${target.nome} alterada para ${cleanMat}`);
   }
 
   function toggleBlock(userId: number) {
@@ -928,7 +956,11 @@ export function AdmPanel({
       return;
     }
     const novaAcao = target.bloqueado ? "Desbloqueou acesso" : "Bloqueou acesso";
-    setUsers(u => u.map(x => (x.id === userId ? { ...x, bloqueado: !x.bloqueado } : x)));
+    const updatedUser = { ...target, bloqueado: !target.bloqueado };
+    setUsers(u => u.map(x => (x.id === userId ? updatedUser : x)));
+    saveUserToDb(updatedUser).catch(err => {
+      console.warn("[Firebase] Erro ao atualizar status de bloqueio no Firestore:", err);
+    });
     addLog(novaAcao, `${target.nome} (${target.matricula})`);
     showToast(target.bloqueado ? `${target.nome} desbloqueado` : `${target.nome} bloqueado`, target.bloqueado ? "success" : "warning");
   }
@@ -941,19 +973,17 @@ export function AdmPanel({
       showToast("Sem permissão para esta ação.", "danger");
       return;
     }
-    setUsers(u =>
-      u.map(x =>
-        x.id === userId
-          ? {
-              ...x,
-              desativado: true,
-              bloqueado: true,
-              desativadoEm: new Date().toISOString(),
-              desativadoPor: currentUser.nome
-            }
-          : x
-      )
-    );
+    const updatedUser = {
+      ...target,
+      desativado: true,
+      bloqueado: true,
+      desativadoEm: new Date().toISOString(),
+      desativadoPor: currentUser.nome
+    };
+    setUsers(u => u.map(x => (x.id === userId ? updatedUser : x)));
+    saveUserToDb(updatedUser).catch(err => {
+      console.warn("[Firebase] Erro ao desativar usuário no Firestore:", err);
+    });
     addLog("Desativou usuário", `${target.nome} (${target.matricula})`, `Tipo: ${target.tipo} · Dados preservados (LGPD/CLT)`);
     setModal(null);
     showToast(`${target.nome} desativado — dados preservados`, "warning");
@@ -962,11 +992,11 @@ export function AdmPanel({
   function reactivateUser(userId: number) {
     const target = users.find(x => x.id === userId);
     if (!target) return;
-    setUsers(u =>
-      u.map(x =>
-        x.id === userId ? { ...x, desativado: false, bloqueado: false, desativadoEm: null, desativadoPor: null } : x
-      )
-    );
+    const updatedUser = { ...target, desativado: false, bloqueado: false, desativadoEm: null, desativadoPor: null };
+    setUsers(u => u.map(x => (x.id === userId ? updatedUser : x)));
+    saveUserToDb(updatedUser).catch(err => {
+      console.warn("[Firebase] Erro ao reativar usuário no Firestore:", err);
+    });
     addLog("Reativou usuário", `${target.nome} (${target.matricula})`);
     showToast(`${target.nome} reativado com sucesso`, "success");
   }
@@ -976,6 +1006,9 @@ export function AdmPanel({
     if (!target) return;
     if (confirm(`Tem certeza que deseja excluir permanentemente todos os registros de ${target.nome}? Esta ação é irreversível e excluirá permanentemente todos os seus dados de ponto do sistema conforme as diretrizes de descarte seguro da LGPD.`)) {
       setUsers(prev => prev.filter(u => u.id !== userId));
+      deleteUserFromDb(userId).catch(err => {
+        console.warn("[Firebase] Erro ao excluir usuário no Firestore:", err);
+      });
       addLog("Excluiu permanentemente", `${target.nome} (${target.matricula})`, "Prazo de 5 anos de retenção esgotado. Dados removidos permanentemente.");
       showToast(`${target.nome} excluído permanentemente.`, "success");
     }
@@ -1961,6 +1994,29 @@ export function AdmPanel({
                 </span>
               )}
             </button>
+
+            {/* 6. Controle de Câmera (Fotos) */}
+            <button
+              onClick={() => setTab("camera_fotos")}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                fontSize: "13.5px",
+                fontWeight: 600,
+                color: tab === "camera_fotos" ? t.accent : t.textSub,
+                padding: "12px 18px",
+                borderBottom: `2.5px solid ${tab === "camera_fotos" ? t.accent : "transparent"}`,
+                transition: "all 0.2s",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
+              <Camera size={15} />
+              <span>Controle de Câmera</span>
+            </button>
           </div>
 
           {/* Dev Tools Menu for Superadmin / Devs */}
@@ -2414,6 +2470,7 @@ export function AdmPanel({
           onSalvarPonto={handleSalvarPontoGerenciado}
           onDecisaoAtestado={async (userId, groupId, dias, decisao, justificativa) => {
             const userDays = { ...(pontosGlobal[userId] || {}) };
+            const changedDays: Record<string, any> = {};
             for (const { dayKey, slotIdx } of dias) {
               const dayArr = [...(userDays[dayKey] || [null, null, null, null])];
               if (dayArr[slotIdx]) {
@@ -2435,12 +2492,15 @@ export function AdmPanel({
                   };
                 }
                 userDays[dayKey] = dayArr;
+                changedDays[dayKey] = dayArr;
               }
             }
             if (setPontosGlobal) {
               setPontosGlobal({ ...pontosGlobal, [userId]: userDays });
             }
-            await saveUserPontosToDb(userId, userDays);
+            if (Object.keys(changedDays).length > 0) {
+              await saveUserPontosToDb(userId, changedDays);
+            }
           }}
           feriados={feriados}
           folgasRemuneradas={folgasRemuneradas}
@@ -3278,6 +3338,17 @@ export function AdmPanel({
         </div>
       )}
 
+      {/* Controle de Fotos / Câmera tab */}
+      {tab === "camera_fotos" && (
+        <FotosCameraView
+          t={t}
+          users={users}
+          pontosGlobal={pontosGlobal}
+          onRefresh={onSyncData}
+          isSyncing={isSyncingData}
+        />
+      )}
+
       {/* Auditoria Logs tab */}
       {tab === "auditoria" && (
         <div style={{ padding: "24px 28px", maxWidth: 980, margin: "0 auto" }}>
@@ -3563,7 +3634,7 @@ export function AdmPanel({
 
                   return (
                     <div
-                      key={entry.id}
+                      key={`${entry.id}_${idx}`}
                       style={{
                         display: "grid",
                         gridTemplateColumns: "160px 130px 160px 1fr 1fr",

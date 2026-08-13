@@ -328,7 +328,7 @@ export async function removeFromSyncQueue(id: number): Promise<boolean> {
   }
 }
 
-export async function removeUserFromSyncQueue(userId: number): Promise<boolean> {
+export async function removeUserFromSyncQueue(userId: number | string): Promise<boolean> {
   try {
     const db = await initIndexedDB();
     return new Promise((resolve) => {
@@ -338,7 +338,7 @@ export async function removeUserFromSyncQueue(userId: number): Promise<boolean> 
       req.onsuccess = () => {
         const items: QueueItem[] = req.result || [];
         items.forEach(item => {
-          if (item.id && item.type === "saveUserPontos" && item.payload?.userId === userId) {
+          if (item.id && item.type === "saveUserPontos" && String(item.payload?.userId) === String(userId)) {
             store.delete(item.id);
           }
         });

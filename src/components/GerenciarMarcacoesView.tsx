@@ -649,7 +649,7 @@ export function GerenciarMarcacoesView({
                           const hasPunch = punch && (punch.hora || hasValidOccurrence);
 
                           let timeDisplay = "--:--";
-                          let tag: "MA" | "MO" | null = null;
+                          let tag: "MA" | "MO" | "RECUSADA" | null = null;
 
                           if (punch) {
                             if (punch.ocorrencia && !isAtestadoRecusado) {
@@ -668,7 +668,9 @@ export function GerenciarMarcacoesView({
                                 minute: "2-digit",
                               });
 
-                              if (punch.statusAprovacao === "aprovado" || punch.origemMarcacao === "MA" || punch.tipo === "manual_solicitado") {
+                              if (punch.statusAprovacao === "recusado" || punch.statusAprovacao === "rejeitado" || punch.origemMarcacao === "RECUSADA") {
+                                tag = "RECUSADA";
+                              } else if (punch.statusAprovacao === "aprovado" || punch.origemMarcacao === "MA" || punch.tipo === "manual_solicitado") {
                                 tag = "MA";
                               } else if (punch.lancadoPorAdm || punch.modificadoPorGestor || punch.origemMarcacao === "MO") {
                                 tag = "MO";
@@ -730,6 +732,23 @@ export function GerenciarMarcacoesView({
                                     title="Modificada/Inserida diretamente pelo Gestor"
                                   >
                                     MO
+                                  </span>
+                                )}
+
+                                {tag === "RECUSADA" && (
+                                  <span
+                                    style={{
+                                      background: "#dc2626",
+                                      color: "#ffffff",
+                                      fontSize: 9,
+                                      fontWeight: 800,
+                                      padding: "1px 4px",
+                                      borderRadius: 3,
+                                      letterSpacing: 0.5,
+                                    }}
+                                    title="Marcação Recusada pelo Gestor"
+                                  >
+                                    RECUSADA
                                   </span>
                                 )}
 

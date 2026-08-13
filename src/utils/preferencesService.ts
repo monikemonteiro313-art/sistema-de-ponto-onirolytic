@@ -9,6 +9,7 @@ export interface OfflinePunchItem {
   latitude: number | null;
   longitude: number | null;
   accuracy: number | null;
+  fotoComprovante?: string | null;
   registradoEm: string;
   dispositivoLocalHora: string;
   gravadoOffline: boolean;
@@ -150,6 +151,8 @@ export async function clearOfflineQueue(): Promise<void> {
 /**
  * Synchronize clock with server (when online) and store offset in Preferences
  */
+import { getHoraOficial } from "./horaHelper";
+
 export async function syncClockWithServer(): Promise<number> {
   if (!navigator.onLine) {
     const cached = await getPref("hr_clock_offset", "0");
@@ -159,6 +162,17 @@ export async function syncClockWithServer(): Promise<number> {
   }
 
   try {
+    const oficial = await getHoraOficial();
+    if (oficial.fonte === "brasilia-api") {
+      const offset = oficial.timestamp - Date.now();
+      memoryClockOffset = offset;
+      await setPref("hr_clock_offset", String(offset));
+      await setPref("last_clock_sync", String(Date.now()));
+      try { localStorage.setItem("hr_clock_offset", String(offset)); } catch (_) {}
+      console.log(`[ClockSync] Brasília official time offset synced: ${offset}ms`);
+      return offset;
+    }
+
     const startTime = Date.now();
     const response = await fetch("/api/health", { method: "HEAD", cache: "no-store" }).catch(() => null);
 
@@ -173,6 +187,7 @@ export async function syncClockWithServer(): Promise<number> {
         memoryClockOffset = offset;
         await setPref("hr_clock_offset", String(offset));
         await setPref("last_clock_sync", String(Date.now()));
+        try { localStorage.setItem("hr_clock_offset", String(offset)); } catch (_) {}
         console.log(`[ClockSync] Server clock offset synced: ${offset}ms`);
         return offset;
       }

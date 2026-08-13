@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Check, Calendar, Clock, Unlock, Shield, SquarePen, ShieldCheck, Stethoscope, Folder, X, Upload, FileText, AlertTriangle, Eye, ArrowLeft, RefreshCw, WifiOff, File, Bell } from "lucide-react";
 import { ThemeColors, User, Batida, DiaPontos, PontosGlobal, FolhaAceite, Alerta, SolicitacaoCorrecao, FolgaRemunerada } from "../types";
-import { saveUserPontosToDb } from "../lib/firebaseService";
+import { saveUserPontosToDb, getDiaPontoReferencia } from "../lib/firebaseService";
 import { getOverlapWithNightShift, calcularDia, resumoMesCalculado, baixarArquivoAtestado, compressImageBase64 } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
 import { LgpdModal } from "./LgpdModal";
 import { PontinhoTourModal } from "./PontinhoTourModal";
 import { ModalSolicitarCorrecao } from "./ModalSolicitarCorrecao";
 import { getCidInfo } from "../utils/cidHelper";
-import { getBestCurrentPosition, watchBestPosition } from "../utils/geolocationHelper";
+import { tirarSelfie } from "../utils/selfieHelper";
+import { getBestCurrentPosition, watchBestPosition, isIOS, getLocationWithIOSFallback } from "../utils/geolocationHelper";
 import {
   getPref,
   setPref,
@@ -568,22 +569,7 @@ export function EmployeePanel({
   };
 
   const todayKey = () => {
-    const syncDate = getSyncDate();
-    try {
-      const formatter = new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/Sao_Paulo",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit"
-      });
-      const parts = formatter.formatToParts(syncDate);
-      const year = parts.find(p => p.type === "year")?.value;
-      const month = parts.find(p => p.type === "month")?.value;
-      const day = parts.find(p => p.type === "day")?.value;
-      return `${year}-${month}-${day}`;
-    } catch (e) {
-      return syncDate.toISOString().slice(0, 10);
-    }
+    return getDiaPontoReferencia(getSyncDate());
   };
 
   // Safe Brasilia clock sync routine using same-origin to avoid instable/blocked external domains
@@ -730,10 +716,113 @@ export function EmployeePanel({
     manualJust?: string;
   } | null>(null);
 
-  const [geoConsentAccepted, setGeoConsentAccepted] = useState(false);
+  const [geoConsentAccepted, setGeoConsentAccepted] = useState(() => {
+    try {
+      return localStorage.getItem("hr_geo_consent_accepted") === "true";
+    } catch {
+      return true;
+    }
+  });
   const [geoCoords, setGeoCoords] = useState<{ latitude: number; longitude: number; accuracy?: number } | null>(null);
   const [geoLoading, setGeoLoading] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
+  const [selfieFoto, setSelfieFoto] = useState<string | null>(null);
+  const [punchSuccessMsg, setPunchSuccessMsg] = useState<string | null>(null);
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraCountdown, setCameraCountdown] = useState<number>(30);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const cameraTimeoutRef = useRef<any>(null);
+  const cameraIntervalRef = useRef<any>(null);
+
+  async function handleSelfieUniversal() {
+    const foto = await tirarSelfie();
+    if (!foto) return;
+    setSelfieFoto(foto.base64);
+    finalizarComGeo(null, foto.base64);
+  }
+
+  function clearCameraTimers() {
+    if (cameraTimeoutRef.current) {
+      clearTimeout(cameraTimeoutRef.current);
+      cameraTimeoutRef.current = null;
+    }
+    if (cameraIntervalRef.current) {
+      clearInterval(cameraIntervalRef.current);
+      cameraIntervalRef.current = null;
+    }
+  }
+
+  async function startWebcam() {
+    clearCameraTimers();
+    setIsCameraActive(true);
+    setCameraCountdown(30);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      mediaStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+
+      // Intervalo de contagem regressiva de 30s
+      cameraIntervalRef.current = setInterval(() => {
+        setCameraCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(cameraIntervalRef.current);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      // Disparo automático após 30 segundos
+      cameraTimeoutRef.current = setTimeout(() => {
+        console.log("[EmployeePanel] 30s esgotados na câmera - capturando e enviando foto automaticamente");
+        captureSelfieFromVideo();
+      }, 30000);
+    } catch (err) {
+      console.error("Erro ao acessar câmera frontal:", err);
+      alert("Não foi possível acessar a câmera frontal. Verifique as permissões do seu navegador.");
+      stopWebcam();
+    }
+  }
+
+  function stopWebcam() {
+    clearCameraTimers();
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+    setIsCameraActive(false);
+  }
+
+  async function captureSelfieFromVideo() {
+    clearCameraTimers();
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 640;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      // Espelhar a imagem horizontalmente para visualização de selfie natural
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      let raw = canvas.toDataURL("image/jpeg", 0.75);
+      try {
+        raw = await compressImageBase64(raw, 480, 480, 0.55);
+      } catch (_) {}
+      stopWebcam();
+      setSelfieFoto(raw);
+      finalizarComGeo(geoCoords, raw);
+    }
+  }
 
   // Progressive accuracy filter states
   const [geoWatchId, setGeoWatchId] = useState<number | null>(null);
@@ -742,16 +831,33 @@ export function EmployeePanel({
   const [geoSamplesCount, setGeoSamplesCount] = useState<number>(0);
   const [bestGeoCoords, setBestGeoCoords] = useState<{ latitude: number; longitude: number; accuracy?: number } | null>(null);
 
+  const [autoSendCountdown, setAutoSendCountdown] = useState<number | null>(null);
+  const autoSendTimerRef = useRef<any>(null);
+  const autoSendIntervalRef = useRef<any>(null);
+
+  function clearAutoSendTimers() {
+    if (autoSendTimerRef.current) {
+      clearTimeout(autoSendTimerRef.current);
+      autoSendTimerRef.current = null;
+    }
+    if (autoSendIntervalRef.current) {
+      clearInterval(autoSendIntervalRef.current);
+      autoSendIntervalRef.current = null;
+    }
+    setAutoSendCountdown(null);
+  }
+
   function clearGeo() {
-    setGeoConsentAccepted(false);
+    clearAutoSendTimers();
     setGeoCoords(null);
     setBestGeoCoords(null);
     setGeoLoading(false);
     setGeoError(null);
     setGeoSamplesCount(0);
     setGeoCountdown(0);
+    setSelfieFoto(null);
     if (geoWatchId !== null) {
-      navigator.geolocation.clearWatch(geoWatchId);
+      try { navigator.geolocation.clearWatch(geoWatchId); } catch (_) {}
       setGeoWatchId(null);
     }
     if (geoIntervalId !== null) {
@@ -759,6 +865,35 @@ export function EmployeePanel({
       setGeoIntervalId(null);
     }
   }
+
+  // Auto-envio em 5 segundos assim que a localização for obtida
+  useEffect(() => {
+    if (geoCoords && !isRegistering && !punchSuccessMsg) {
+      clearAutoSendTimers();
+      setAutoSendCountdown(5);
+
+      autoSendIntervalRef.current = setInterval(() => {
+        setAutoSendCountdown((prev) => {
+          if (prev === null || prev <= 1) {
+            if (autoSendIntervalRef.current) clearInterval(autoSendIntervalRef.current);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      autoSendTimerRef.current = setTimeout(() => {
+        console.log("[GeoAutoSend] 5s esgotados com localização - enviando automaticamente");
+        finalizarComGeo();
+      }, 5000);
+    } else {
+      clearAutoSendTimers();
+    }
+
+    return () => {
+      clearAutoSendTimers();
+    };
+  }, [geoCoords, isRegistering, punchSuccessMsg]);
 
   // Native Preferences initialization & Offline Queue preload
   useEffect(() => {
@@ -1234,16 +1369,42 @@ export function EmployeePanel({
     setGeoLoading(true);
     setGeoError(null);
     setGeoConsentAccepted(true);
+    try { localStorage.setItem("hr_geo_consent_accepted", "true"); } catch (_) {}
     setGeoSamplesCount(0);
     setBestGeoCoords(null);
     setGeoCoords(null);
+
+    // Tratamento especial para iOS / iPhone
+    if (isIOS) {
+      const iosPos = await getLocationWithIOSFallback();
+      if (iosPos) {
+        const coords = {
+          latitude: iosPos.coords.latitude,
+          longitude: iosPos.coords.longitude,
+          accuracy: iosPos.coords.accuracy
+        };
+        setGeoCoords(coords);
+        setBestGeoCoords(coords);
+        setGeoSamplesCount(1);
+        setGeoLoading(false);
+        setGeoCountdown(0);
+        // Auto-envio imediato com 1 clique
+        finalizarComGeo(coords, null);
+        return;
+      } else {
+        setGeoError("Não foi possível obter a localização no iPhone. Por favor, tire uma selfie de comprovação para registrar seu ponto.");
+        setGeoLoading(false);
+        setGeoCountdown(0);
+        return;
+      }
+    }
 
     let bestCoords: { latitude: number; longitude: number; accuracy?: number } | null = null;
     let samples = 0;
     let stopWatchFn: (() => void) | null = null;
     let intervalId: any = null;
 
-    const totalDuration = 10;
+    const totalDuration = 5;
     setGeoCountdown(totalDuration);
 
     async function stopAndSelectBest(coords: typeof bestCoords) {
@@ -1261,12 +1422,14 @@ export function EmployeePanel({
       if (coords) {
         setGeoCoords(coords);
         setBestGeoCoords(coords);
+        // Auto-envio imediato com 1 clique ou em 5s
+        finalizarComGeo(coords, null);
       } else {
         // Fallback to rapid single query if watch did not return anything
         try {
           const pos = await getBestCurrentPosition({
             enableHighAccuracy: true,
-            timeout: 10000,
+            timeout: 5000,
             maximumAge: 0
           });
           const finalCoords = {
@@ -1276,9 +1439,11 @@ export function EmployeePanel({
           };
           setGeoCoords(finalCoords);
           setBestGeoCoords(finalCoords);
+          // Auto-envio imediato com 1 clique ou em 5s
+          finalizarComGeo(finalCoords, null);
         } catch (err) {
           console.warn("Erro ao obter localização no fallback:", err);
-          setGeoError("Tempo limite atingido e nenhum sinal de geolocalização válido foi recebido.");
+          setGeoError("Sinal de GPS indisponível. Por favor, tire uma selfie de comprovação para registrar seu ponto.");
         }
       }
     }
@@ -1312,23 +1477,14 @@ export function EmployeePanel({
             return;
           }
 
-          let msg = "Não foi possível obter a sua localização.";
-          const errStr = String(error?.message || error?.code || "").toLowerCase();
-          if (error?.code === 1 || errStr.includes("denied") || errStr.includes("recusado") || errStr.includes("permission")) {
-            msg = "Acesso à geolocalização recusado pelo dispositivo ou aplicativo. O registro de ponto eletrônico exige a comprovação de presença física do colaborador (Portaria 671/MTE).";
-          } else if (error?.code === 2 || errStr.includes("unavailable")) {
-            msg = "Sinal de localização indisponível. Certifique-se de que o GPS do celular está ativado e tente novamente.";
-          } else if (error?.code === 3 || errStr.includes("timeout")) {
-            msg = "Tempo limite excedido ao obter sinal de GPS. Fique próximo a uma área aberta e tente novamente.";
-          }
-          setGeoError(msg);
+          setGeoError("Sinal de GPS indisponível. Por favor, tire uma selfie de comprovação para registrar seu ponto.");
           setGeoLoading(false);
           if (stopWatchFn) { try { stopWatchFn(); } catch (_) {} }
           if (intervalId !== null) clearInterval(intervalId);
         },
         {
           enableHighAccuracy: true,
-          timeout: 10000,
+          timeout: 5000,
           maximumAge: 0
         }
       );
@@ -1345,15 +1501,26 @@ export function EmployeePanel({
       setGeoIntervalId(intervalId);
     } catch (e) {
       console.error(e);
-      setGeoError("Erro ao iniciar captura de geolocalização.");
+      setGeoError("Erro ao iniciar captura de geolocalização. Por favor, tire uma selfie para comprovação de local.");
       setGeoLoading(false);
     }
   }
 
-  async function finalizarComGeo() {
+  async function finalizarComGeo(
+    overrideCoords?: { latitude: number; longitude: number; accuracy?: number } | null,
+    overrideSelfie?: string | null
+  ) {
+    clearAutoSendTimers();
     if (!geoActiveFor || isRegistering) return;
-    if (!geoCoords) {
-      setGeoError("Localização por GPS é obrigatória para registrar o ponto. Por favor, permita o acesso à localização e tente novamente.");
+    const coordsToUse = overrideCoords !== undefined ? overrideCoords : geoCoords;
+    const selfieToUse = overrideSelfie !== undefined ? overrideSelfie : selfieFoto;
+
+    const hasCoords = !!coordsToUse && typeof coordsToUse.latitude === "number" && typeof coordsToUse.longitude === "number" && (coordsToUse.latitude !== 0 || coordsToUse.longitude !== 0);
+    const hasPhoto = !!selfieToUse && selfieToUse.trim().length > 20;
+
+    if (!hasCoords && !hasPhoto) {
+      setGeoError("Localização por GPS ou Selfie de comprovação é obrigatória para registrar o ponto.");
+      setIsRegistering(false);
       return;
     }
 
@@ -1378,14 +1545,29 @@ export function EmployeePanel({
 
     try {
       const { idx, dayKey, tipo, manualHora, manualJust } = geoActiveFor;
-      const lat = geoCoords?.latitude || undefined;
-      const lng = geoCoords?.longitude || undefined;
-      const acc = geoCoords?.accuracy !== undefined ? geoCoords.accuracy : undefined;
+      const lat = hasCoords ? coordsToUse.latitude : undefined;
+      const lng = hasCoords ? coordsToUse.longitude : undefined;
+      const acc = hasCoords && coordsToUse.accuracy !== undefined ? coordsToUse.accuracy : undefined;
       const timestamp = getSyncDate().toISOString();
 
       const isOffline = !navigator.onLine;
 
       let punchHora = timestamp;
+      let obsFinal = manualJust?.trim();
+      if (!hasCoords && hasPhoto) {
+        obsFinal = (obsFinal ? obsFinal + " | " : "") + "validado com foto";
+      } else if (hasPhoto) {
+        obsFinal = (obsFinal ? obsFinal + " | " : "") + "validado com foto e GPS";
+      }
+
+      let valDesc = "";
+      if (hasCoords && hasPhoto) {
+        valDesc = `com Geolocalização (Lat: ${lat?.toFixed(5)}, Lng: ${lng?.toFixed(5)}) e validado com foto`;
+      } else if (hasCoords) {
+        valDesc = `com Geolocalização (Lat: ${lat?.toFixed(5)}, Lng: ${lng?.toFixed(5)})`;
+      } else {
+        valDesc = `validado com foto`;
+      }
 
       if (tipo === "auto") {
         const reg: Batida = {
@@ -1396,6 +1578,8 @@ export function EmployeePanel({
           latitude: lat,
           longitude: lng,
           accuracy: acc,
+          fotoComprovante: selfieToUse || undefined,
+          obs: obsFinal,
           consentimentoGeoloc: true,
           dispositivoLocalHora: new Date().toISOString(),
           gravadoOffline: isOffline ? true : undefined
@@ -1416,7 +1600,7 @@ export function EmployeePanel({
         onAddLog(
           isOffline ? "Registrou Ponto Offline" : "Registrou Ponto",
           `${currentUser.nome} (${currentUser.matricula})`,
-          `Batida #${idx + 1} (${steps[idx].done}) registrada às ${new Date(timestamp).toLocaleTimeString()} com Geolocalização${isOffline ? " [MODO OFFLINE]" : ""}. Coordenadas: Lat: ${lat || "N/D"}, Long: ${lng || "N/D"}${acc !== undefined ? ` (Precisão: ${acc.toFixed(1)}m)` : ""}. Termo de consentimento aceito.`
+          `Batida #${idx + 1} (${steps[idx].done}) registrada às ${new Date(timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} - ${valDesc}${isOffline ? " [MODO OFFLINE]" : ""}.`
         );
       } else {
         const d = new Date(dayKey + "T00:00:00");
@@ -1428,12 +1612,13 @@ export function EmployeePanel({
         const reg: Batida = {
           hora: punchHora,
           tipo: "manual",
-          obs: manualJust?.trim(),
+          obs: obsFinal,
           registradoEm: timestamp,
           serverTime: isOffline ? "pending" : timestamp,
           latitude: lat,
           longitude: lng,
           accuracy: acc,
+          fotoComprovante: selfieToUse || undefined,
           consentimentoGeoloc: true,
           dispositivoLocalHora: new Date().toISOString(),
           gravadoOffline: isOffline ? true : undefined,
@@ -1455,7 +1640,7 @@ export function EmployeePanel({
         onAddLog(
           isOffline ? "Inseriu Ponto Manual Offline" : "Inseriu Ponto Manual",
           `${currentUser.nome} (${currentUser.matricula})`,
-          `Dia ${dayKey} às ${manualHora} (Batida #${idx + 1}): "${manualJust?.trim()}" inserido com Geolocalização${isOffline ? " [MODO OFFLINE]" : ""}. Coordenadas: Lat: ${lat || "N/D"}, Long: ${lng || "N/D"}${acc !== undefined ? ` (Precisão: ${acc.toFixed(1)}m)` : ""}. Termo de consentimento aceito.`
+          `Dia ${dayKey} às ${manualHora} (Batida #${idx + 1}): "${manualJust?.trim()}" - ${valDesc}${isOffline ? " [MODO OFFLINE]" : ""}.`
         );
       }
 
@@ -1474,11 +1659,12 @@ export function EmployeePanel({
           latitude: lat ?? null,
           longitude: lng ?? null,
           accuracy: acc ?? null,
+          fotoComprovante: selfieToUse ?? null,
           registradoEm: timestamp,
           dispositivoLocalHora: new Date().toISOString(),
           gravadoOffline: true,
           consentimentoGeoloc: true,
-          obs: manualJust?.trim(),
+          obs: obsFinal,
           statusAprovacao: tipo === "manual" ? "pendente" : undefined
         });
       }
@@ -1487,14 +1673,19 @@ export function EmployeePanel({
         markPrePontoSuccess(currentPrePontoId);
         setCurrentPrePontoId(null);
       }
+
+      // Feedback de Sucesso e Encerramento Automático
+      setPunchSuccessMsg(`Batida #${idx + 1} (${steps[idx].done}) registrada com sucesso!`);
+      setTimeout(() => {
+        setPunchSuccessMsg(null);
+        setGeoActiveFor(null);
+        clearGeo();
+        setIsRegistering(false);
+      }, 1500);
+
     } catch (err) {
       console.error("[Punch Error]", err);
-    } finally {
-      setGeoActiveFor(null);
-      clearGeo();
-      setTimeout(() => {
-        setIsRegistering(false);
-      }, 500);
+      setIsRegistering(false);
     }
   }
 
@@ -1603,7 +1794,7 @@ export function EmployeePanel({
 
   function abrirConfirm(idx: number, dayKey: string) {
     if (idx < 0 || idx > 3 || isNaN(idx)) return;
-    setConfirmModal({ idx, dayKey });
+    registrarAgora(idx, dayKey);
   }
 
   function abrirManual(idx: number, dayKey: string) {
@@ -1633,8 +1824,14 @@ export function EmployeePanel({
   function fmt(batida: Batida | null) {
     if (!batida || !batida.hora) return "—";
     const horaStr = new Date(batida.hora).toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+    if (batida.statusAprovacao === "recusado" || batida.statusAprovacao === "rejeitado" || batida.origemMarcacao === "RECUSADA") {
+      return `${horaStr} (recusada)`;
+    }
+    if (batida.origemMarcacao === "MA" || (batida.tipo === "manual" && batida.statusAprovacao === "aprovado")) {
+      return `${horaStr} (m.a)`;
+    }
     if (batida.tipo === "manual") {
-      return `${horaStr}(m)`;
+      return `${horaStr} (m)`;
     }
     return horaStr;
   }
@@ -2356,21 +2553,21 @@ export function EmployeePanel({
                         <div style={{ fontSize: 13.5, fontWeight: batida ? 600 : 400, color: batida ? t.text : t.textMuted }}>{s.done}</div>
                         {batida?.tipo === "manual" && (
                           <div style={{ fontSize: 10, color: "#F59E0B", marginTop: 1, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
-                            <span>MANUAL (M) · reg. {fmtFull(batida.registradoEm)}</span>
+                            <span>MANUAL ({batida.statusAprovacao === "aprovado" || batida.origemMarcacao === "MA" ? "M.A" : batida.statusAprovacao === "recusado" || batida.statusAprovacao === "rejeitado" ? "RECUSADA" : "M"}) · reg. {fmtFull(batida.registradoEm)}</span>
                             {batida.obs ? <span> · "{batida.obs}"</span> : ""}
                             {(!batida.statusAprovacao || batida.statusAprovacao === "pendente") && (
                               <span style={{ background: "rgba(245,158,11,0.15)", color: "#D97706", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(245,158,11,0.3)" }}>
                                 ⏳ Aguardando Aprovação do Gestor
                               </span>
                             )}
-                            {batida.statusAprovacao === "aprovado" && (
+                            {(batida.statusAprovacao === "aprovado" || batida.origemMarcacao === "MA") && (
                               <span style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(34,197,94,0.3)" }}>
-                                ✅ Aprovado pelo Gestor
+                                ✅ M.A - Aprovado pelo Gestor
                               </span>
                             )}
-                            {batida.statusAprovacao === "rejeitado" && (
+                            {(batida.statusAprovacao === "rejeitado" || batida.statusAprovacao === "recusado" || batida.origemMarcacao === "RECUSADA") && (
                               <span style={{ background: "rgba(239,68,68,0.15)", color: "#DC2626", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(239,68,68,0.3)" }}>
-                                ❌ Rejeitado pelo Gestor {batida.motivoRejeicaoAjuste ? `("${batida.motivoRejeicaoAjuste}")` : ""}
+                                ❌ Marcação Recusada {batida.motivoRejeicaoAjuste ? `("${batida.motivoRejeicaoAjuste}")` : ""}
                               </span>
                             )}
                             {batida.suspeitoHoraModificada && <span style={{ color: t.danger, fontWeight: 700 }}>[⚠️ Suspeito - Hora Modificada]</span>}
@@ -4409,8 +4606,30 @@ export function EmployeePanel({
               "Para fins de autenticidade jurídica, declaração de presença física e auditoria de registro de ponto (conforme Portaria 671/MTE e regulamentos da LGPD), autorizo o sistema a capturar a geolocalização aproximada do meu dispositivo exclusivamente neste instante da batida de ponto."
             </div>
 
+            {/* State: Success Feedback */}
+            {punchSuccessMsg && (
+              <div
+                style={{
+                  padding: "24px 16px",
+                  textAlign: "center",
+                  background: "rgba(34,197,94,0.08)",
+                  border: "2px solid #22c55e",
+                  borderRadius: 16,
+                  marginBottom: 16
+                }}
+              >
+                <div style={{ fontSize: 40, marginBottom: 8 }}>✅</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: "#16a34a" }}>
+                  {punchSuccessMsg}
+                </div>
+                <p style={{ margin: "6px 0 0", fontSize: 13, color: t.textSub }}>
+                  Marcação gravada com sucesso!
+                </p>
+              </div>
+            )}
+
             {/* State: Waiting Consent and Capture */}
-            {!geoConsentAccepted && !geoCoords && !geoError && (
+            {!punchSuccessMsg && !geoConsentAccepted && !geoCoords && !geoError && (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <button
                   onClick={capturarLocalizacao}
@@ -4435,7 +4654,7 @@ export function EmployeePanel({
             )}
 
             {/* State: Loading with Progressive Filter Radar */}
-            {geoLoading && (
+            {!punchSuccessMsg && geoLoading && (
               <div style={{ textAlign: "center", padding: "16px 0", color: t.textSub, fontSize: 13, display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
                 {/* Radar effect with bouncing rings */}
                 <div style={{ position: "relative", width: 64, height: 64, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -4447,9 +4666,9 @@ export function EmployeePanel({
                 </div>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <strong style={{ color: t.text, fontSize: 14 }}>Refinando Sinal GPS...</strong>
+                  <strong style={{ color: t.text, fontSize: 14 }}>Capturando Geolocalização...</strong>
                   <span style={{ fontSize: 12, color: t.textMuted }}>
-                    Filtro progressivo ativo ({geoCountdown}s restantes)
+                    Aguarde, gravando marcação automaticamente ({geoCountdown}s)
                   </span>
                 </div>
 
@@ -4477,97 +4696,168 @@ export function EmployeePanel({
                     )}
                   </div>
                 </div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
-                  {bestGeoCoords && (
-                    <button
-                      onClick={() => {
-                        if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
-                        if (geoIntervalId !== null) clearInterval(geoIntervalId);
-                        setGeoWatchId(null);
-                        setGeoIntervalId(null);
-                        setGeoLoading(false);
-                        setGeoCountdown(0);
-                        setGeoCoords(bestGeoCoords);
-                      }}
-                      style={{
-                        width: "100%",
-                        marginTop: 4,
-                        background: t.surfaceAlt,
-                        border: `1.5px solid ${t.border}`,
-                        borderRadius: 10,
-                        padding: "8px 12px",
-                        cursor: "pointer",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: t.accent,
-                        fontFamily: "inherit",
-                        transition: "all 0.15s"
-                      }}
-                    >
-                      ⏹️ Interromper e Usar Precisão Atual
-                    </button>
-                  )}
-                </div>
               </div>
             )}
 
-            {/* State: Error */}
-            {geoError && (
+            {/* State: Error / Selfie Fallback */}
+            {!punchSuccessMsg && geoError && (
               <div style={{ marginBottom: 16 }}>
                 <div
                   style={{
-                    background: t.dangerBg || "rgba(239,68,68,0.06)",
-                    border: `1.5px solid ${t.dangerBorder || "rgba(239,68,68,0.2)"}`,
-                    borderRadius: 12,
-                    padding: "16px",
-                    color: t.danger,
+                    background: t.surfaceAlt,
+                    border: `1.5px solid ${t.border}`,
+                    borderRadius: 14,
+                    padding: "18px 16px",
+                    color: t.text,
                     fontSize: 13,
                     lineHeight: 1.5,
-                    textAlign: "left"
+                    textAlign: "center"
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, marginBottom: 8, fontSize: 14 }}>
-                    <span>⚠️</span>
-                    <span>Localização Requerida para Auditoria</span>
-                  </div>
-                  
-                  {geoError.includes("Portaria 671") ? (
-                    <div>
-                      <p style={{ margin: "0 0 12px 0", color: t.textSub }}>
-                        O registro de ponto eletrônico exige a comprovação de presença física do colaborador, em conformidade com as diretrizes da <strong>Portaria 671/MTE</strong> e da <strong>LGPD</strong>. Sem este dado, o ponto não pode ser validado juridicamente.
-                      </p>
-                      <strong style={{ display: "block", marginBottom: 6, color: t.text }}>Como liberar o acesso:</strong>
-                      <div style={{ fontSize: 12, color: t.textSub, background: t.surface, padding: "10px 12px", borderRadius: 8, border: `1px solid ${t.border}`, display: "flex", flexDirection: "column", gap: 6, boxShadow: "inset 0 1px 3px rgba(0,0,0,0.05)" }}>
-                        <div>📍 <strong>1. Configurações de Site:</strong> No topo da tela (ao lado do link do site), clique no ícone de cadeado 🔒 ou opções de permissão.</div>
-                        <div>👉 <strong>2. Localização:</strong> Mude o interruptor de "Localização" ou "Acesso" para <strong>Permitir / Ativado</strong>.</div>
-                        <div>📱 <strong>3. GPS do Celular:</strong> Confirme se o GPS global do seu celular está ativado nas configurações rápidas do aparelho.</div>
+                  <div style={{ fontSize: 32, marginBottom: 4 }}>📍❌</div>
+                  <h4 style={{ margin: "0 0 6px", color: t.danger, fontSize: 16, fontWeight: 700 }}>
+                    Localização por GPS Indisponível
+                  </h4>
+                  <p style={{ margin: "0 0 14px", color: t.textSub, fontSize: 12.5, lineHeight: 1.45 }}>
+                    Não foi possível capturar o GPS do dispositivo. Para comprovação de presença física, <strong>tirar uma Selfie do local de trabalho</strong>:
+                  </p>
+
+                  {!isCameraActive ? (
+                    <button
+                      onClick={startWebcam}
+                      style={{
+                        width: "100%",
+                        background: "linear-gradient(135deg, #10B981, #059669)",
+                        border: "none",
+                        borderRadius: 12,
+                        padding: "14px 18px",
+                        cursor: "pointer",
+                        fontSize: 14,
+                        fontWeight: 700,
+                        color: "#fff",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 8,
+                        boxShadow: "0 4px 14px rgba(16,185,129,0.35)",
+                        transition: "all 0.15s"
+                      }}
+                    >
+                      <span>📸</span>
+                      <span>Abrir Câmera Frontal (Tirar Selfie)</span>
+                    </button>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, width: "100%" }}>
+                      {/* Timer Badge */}
+                      <div
+                        style={{
+                          padding: "6px 14px",
+                          borderRadius: 20,
+                          background: "rgba(239, 68, 68, 0.15)",
+                          border: "1px solid rgba(239, 68, 68, 0.4)",
+                          color: "#f87171",
+                          fontSize: "12.5px",
+                          fontWeight: 700,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6
+                        }}
+                      >
+                        <span>⏱</span>
+                        <span>
+                          {cameraCountdown > 0
+                            ? `Envio automático em ${cameraCountdown}s`
+                            : "Foto capturada e enviando..."}
+                        </span>
+                      </div>
+
+                      <div
+                        style={{
+                          position: "relative",
+                          width: "100%",
+                          maxWidth: 320,
+                          aspectRatio: "1/1",
+                          borderRadius: 16,
+                          overflow: "hidden",
+                          border: "3px solid #10B981",
+                          background: "#000",
+                          boxShadow: "0 8px 24px rgba(0,0,0,0.3)"
+                        }}
+                      >
+                        <video
+                          ref={videoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                            transform: "scaleX(-1)" // Visualização espelhada para selfie
+                          }}
+                        />
+                      </div>
+
+                      <div style={{ display: "flex", gap: 10, width: "100%", maxWidth: 320 }}>
+                        <button
+                          onClick={stopWebcam}
+                          style={{
+                            flex: 1,
+                            background: t.surfaceAlt,
+                            border: `1.5px solid ${t.border}`,
+                            borderRadius: 10,
+                            padding: "12px",
+                            cursor: "pointer",
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: t.textSub
+                          }}
+                        >
+                          Cancelar
+                        </button>
+
+                        <button
+                          onClick={captureSelfieFromVideo}
+                          style={{
+                            flex: 2,
+                            background: "linear-gradient(135deg, #10B981, #059669)",
+                            border: "none",
+                            borderRadius: 10,
+                            padding: "12px",
+                            cursor: "pointer",
+                            fontSize: 13.5,
+                            fontWeight: 700,
+                            color: "#fff",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 6,
+                            boxShadow: "0 4px 12px rgba(16,185,129,0.3)"
+                          }}
+                        >
+                          <span>📸</span>
+                          <span>Capturar e Enviar Agora</span>
+                        </button>
                       </div>
                     </div>
-                  ) : (
-                    <div>{geoError}</div>
                   )}
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
-                  <button
-                    onClick={capturarLocalizacao}
-                    style={{
-                      width: "100%",
-                      background: "linear-gradient(135deg, #3B82F6, #2563EB)",
-                      border: "none",
-                      borderRadius: 12,
-                      padding: "12px",
-                      cursor: "pointer",
-                      fontSize: 13.5,
-                      fontWeight: 700,
-                      color: "#fff",
-                      fontFamily: "inherit",
-                      boxShadow: "0 4px 12px rgba(37,99,235,0.25)",
-                      transition: "all 0.2s"
-                    }}
-                  >
-                    🔄 Tentar capturar novamente
-                  </button>
+
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      onClick={capturarLocalizacao}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: t.accent,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        textDecoration: "underline"
+                      }}
+                    >
+                      🔄 Tentar capturar GPS novamente
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -4656,8 +4946,39 @@ export function EmployeePanel({
                   </div>
                 )}
 
+                {autoSendCountdown !== null && (
+                  <div
+                    style={{
+                      marginTop: 12,
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      background: "rgba(34, 197, 94, 0.12)",
+                      border: "1.5px solid rgba(34, 197, 94, 0.35)",
+                      color: "#15803d",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      textAlign: "center",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 8,
+                      boxShadow: "0 2px 8px rgba(34, 197, 94, 0.15)"
+                    }}
+                  >
+                    <span style={{ fontSize: 16 }}>⏱</span>
+                    <span>
+                      {autoSendCountdown > 0
+                        ? `Envio automático em ${autoSendCountdown}s...`
+                        : "Enviando marcação..."}
+                    </span>
+                  </div>
+                )}
+
                 <button
-                  onClick={finalizarComGeo}
+                  onClick={() => {
+                    clearAutoSendTimers();
+                    finalizarComGeo();
+                  }}
                   disabled={isRegistering}
                   style={{
                     width: "100%",
@@ -5280,26 +5601,34 @@ export function EmployeePanel({
                   const targetCid = atestadoRecusadoPendente.targetCid;
                   const targetMotivo = atestadoRecusadoPendente.targetMotivo;
 
+                  const changedDays: Record<string, any> = {};
                   Object.keys(userDays).forEach(dk => {
                     const arr = userDays[dk];
                     if (!arr) return;
+                    let modified = false;
                     const newArr = arr.map(item => {
                       if (item && item.ocorrencia === "atestado" && item.statusAtestado === "recusado" && !item.vistoPeloColaborador) {
                         const isSameGroup = targetGroup && item.atestadoGroupId === targetGroup;
                         const isSameDetails = !targetGroup && item.cid === targetCid && item.motivoRecusaAtestado === targetMotivo;
                         if (isSameGroup || isSameDetails) {
+                          modified = true;
                           return { ...item, vistoPeloColaborador: true };
                         }
                       }
                       return item;
                     });
                     userDays[dk] = newArr;
+                    if (modified) {
+                      changedDays[dk] = newArr;
+                    }
                   });
 
                   const next = { ...pontosGlobal, [currentUser.id]: userDays };
                   setPontosGlobal(next);
                   try {
-                    await saveUserPontosToDb(currentUser.id, userDays);
+                    if (Object.keys(changedDays).length > 0) {
+                      await saveUserPontosToDb(currentUser.id, changedDays);
+                    }
                   } catch (err) {
                     console.warn("[EmployeePanel] Error saving vistoPeloColaborador:", err);
                   }

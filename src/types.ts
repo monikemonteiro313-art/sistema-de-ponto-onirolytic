@@ -66,7 +66,8 @@ export interface Batida {
   serverTime?: any;
   lancadoPorAdm?: boolean;
   modificadoPorGestor?: boolean;
-  origemMarcacao?: "MA" | "MO" | "NORMAL";
+  origemMarcacao?: "MA" | "MO" | "NORMAL" | "RECUSADA";
+  solicitacaoId?: string;
   modificadoPor?: string;
   modificadoPorMatricula?: string;
   alteradoEm?: string;
@@ -87,6 +88,7 @@ export interface Batida {
   offlineAudited?: boolean;
   cid?: string;
   fotoAtestado?: string;
+  fotoComprovante?: string;
   cidAtestado?: string;
   atestadoGroupId?: string;
   totalDiasAtestado?: number;
@@ -112,7 +114,7 @@ export interface PontosGlobal {
 }
 
 export interface AuditLogEntry {
-  id: number;
+  id: number | string;
   quando: string;
   quem: string;
   quemMat: string;
