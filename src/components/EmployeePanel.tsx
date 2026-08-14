@@ -76,7 +76,7 @@ interface EmployeePanelProps {
   onToggleTheme?: () => void;
   pontosGlobal: PontosGlobal;
   setPontosGlobal: React.Dispatch<React.SetStateAction<PontosGlobal>>;
-  onAddLog: (acao: string, alvo: string, detalhe?: string) => void;
+  onAddLog: (acao: string, alvo: string, detalhe?: string, meta?: any) => void;
   feriados?: string[];
   syncNow?: () => Promise<void>;
   isSyncing?: boolean;
@@ -1194,6 +1194,7 @@ export function EmployeePanel({
       const fmtB = (b: any) => {
         if (!b) return "—";
         if (b.ocorrencia) {
+          if (b.ocorrencia === "dia_vazio" || b.ocorrencia === "vazio" || b.ocorrencia === "sem_vinculo" || b.ocorrencia === "isento") return "";
           if (b.ocorrencia === "atestado") {
             if (b.statusAtestado === "recusado") {
               return b.hora ? `${new Date(b.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}${b.latitude && b.longitude ? " 📍" : ""}` : "—";
@@ -1212,8 +1213,8 @@ export function EmployeePanel({
       dias.push({ d, diaSem, key, batidas, calc, fmtB });
     }
 
-    const corStatus: Record<string, string> = { completo: "#16a34a", parcial: "#d97706", falta: "#dc2626", atestado: "#2563eb", afastamento: "#7c3aed", folga: "#9ca3af", futuro: "#9ca3af", ferias: "#7c3aed", feriado: "#df2222" };
-    const nomesStatus: Record<string, string> = { completo: "Completo", parcial: "Parcial", falta: "Falta", atestado: "Atestado", afastamento: "Afastamento", folga: "Folga", futuro: "A planejar", ferias: "Férias", feriado: "Feriado" };
+    const corStatus: Record<string, string> = { completo: "#16a34a", parcial: "#d97706", falta: "#dc2626", atestado: "#2563eb", afastamento: "#7c3aed", folga: "#9ca3af", futuro: "#9ca3af", ferias: "#7c3aed", feriado: "#df2222", dia_vazio: "#9ca3af" };
+    const nomesStatus: Record<string, string> = { completo: "Completo", parcial: "Parcial", falta: "Falta", atestado: "Atestado", afastamento: "Afastamento", folga: "Folga", futuro: "A planejar", ferias: "Férias", feriado: "Feriado", dia_vazio: "—" };
 
     const fmtHPdf = (h: number) => {
       const hh = Math.floor(h);
@@ -1600,7 +1601,18 @@ export function EmployeePanel({
         onAddLog(
           isOffline ? "Registrou Ponto Offline" : "Registrou Ponto",
           `${currentUser.nome} (${currentUser.matricula})`,
-          `Batida #${idx + 1} (${steps[idx].done}) registrada às ${new Date(timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} - ${valDesc}${isOffline ? " [MODO OFFLINE]" : ""}.`
+          `Batida #${idx + 1} (${steps[idx].done}) registrada às ${new Date(timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} - ${valDesc}${isOffline ? " [MODO OFFLINE]" : ""}.`,
+          {
+            hasLocation: hasCoords,
+            hasPhoto: hasPhoto,
+            latitude: lat,
+            longitude: lng,
+            accuracy: acc,
+            fotoComprovante: selfieToUse || undefined,
+            userId: currentUser.id,
+            dayKey,
+            slotIdx: idx
+          }
         );
       } else {
         const d = new Date(dayKey + "T00:00:00");
@@ -1640,7 +1652,18 @@ export function EmployeePanel({
         onAddLog(
           isOffline ? "Inseriu Ponto Manual Offline" : "Inseriu Ponto Manual",
           `${currentUser.nome} (${currentUser.matricula})`,
-          `Dia ${dayKey} às ${manualHora} (Batida #${idx + 1}): "${manualJust?.trim()}" - ${valDesc}${isOffline ? " [MODO OFFLINE]" : ""}.`
+          `Dia ${dayKey} às ${manualHora} (Batida #${idx + 1}): "${manualJust?.trim()}" - ${valDesc}${isOffline ? " [MODO OFFLINE]" : ""}.`,
+          {
+            hasLocation: hasCoords,
+            hasPhoto: hasPhoto,
+            latitude: lat,
+            longitude: lng,
+            accuracy: acc,
+            fotoComprovante: selfieToUse || undefined,
+            userId: currentUser.id,
+            dayKey,
+            slotIdx: idx
+          }
         );
       }
 

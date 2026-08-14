@@ -10,9 +10,10 @@ import { SolicitacoesCorrecaoView } from "./SolicitacoesCorrecaoView";
 import { FotosCameraView } from "./FotosCameraView";
 import { Paginacao } from "./Paginacao";
 
-import { genMatricula, timeAgo, resumoMesCalculado, calcularDia } from "../utils/hrHelpers";
+import { genMatricula, isMatriculaMatch, timeAgo, resumoMesCalculado, calcularDia } from "../utils/hrHelpers";
 import { SUPERADMIN_MAT, getJornada } from "../data/mockData";
 import { fetchWizardDone, saveUserPontosToDb, saveDiaPonto, batchSaveDiasPonto, fetchPontosMes, fetchAllPontosMes, getMesAtual, saveAuditLogToDb, fetchBlocoNotas, saveBlocoNotasToDb, updateUserSenhaInDb, saveUserToDb, deleteUserFromDb } from "../lib/firebaseService";
+import { getFotoForLogEntry } from "../utils/photoHelper";
 
 // Decides what actions are permitted based on credentials mapping
 export function perms(viewer: User, target: User) {
@@ -548,9 +549,94 @@ export function AdmPanel({
     { time: new Date().toLocaleTimeString("pt-BR"), type: "INFO", text: "Sincronizando coleções: 'users', 'pontos', 'config' e 'auditLogs'..." }
   ]);
 
+  const [selectedPhotoLog, setSelectedPhotoLog] = useState<AuditLogEntry | null>(null);
+
   const combinedAuditLogs = useMemo(() => {
     return [...auditLogExterno, ...auditLog];
   }, [auditLogExterno, auditLog]);
+
+  const getFotoForLog = (entry: AuditLogEntry): string | undefined => {
+    return getFotoForLogEntry(entry, users, pontosGlobal, combinedAuditLogs);
+  };
+
+  const getGeoForLog = (entry: AuditLogEntry): { latitude?: number; longitude?: number; accuracy?: number } | undefined => {
+    if (!entry) return undefined;
+    if (entry.latitude && entry.longitude) {
+      return { latitude: entry.latitude, longitude: entry.longitude, accuracy: entry.accuracy };
+    }
+    if (!pontosGlobal || (!entry.userId && !entry.quemMat) || !entry.quando) return undefined;
+
+    const targetUserObj = users.find(u => (entry.userId && u.id === entry.userId) || (entry.quemMat && isMatriculaMatch(u.matricula, entry.quemMat)));
+    if (!targetUserObj) return undefined;
+
+    const dayKey = entry.dayKey || entry.quando.substring(0, 10);
+    const userDays = pontosGlobal[targetUserObj.id];
+    if (!userDays) return undefined;
+
+    const dayArray = userDays[dayKey];
+    if (!dayArray) return undefined;
+
+    if (entry.slotIdx != null && dayArray[entry.slotIdx]?.latitude && dayArray[entry.slotIdx]?.longitude) {
+      const b = dayArray[entry.slotIdx]!;
+      return { latitude: b.latitude, longitude: b.longitude, accuracy: b.accuracy };
+    }
+
+    for (const b of dayArray) {
+      if (b && b.latitude && b.longitude) {
+        return { latitude: b.latitude, longitude: b.longitude, accuracy: b.accuracy };
+      }
+    }
+
+    return undefined;
+  };
+
+  const hasLocationData = (entry: AuditLogEntry): boolean => {
+    if (!entry) return false;
+    if (entry.hasLocation === true) return true;
+    const geo = getGeoForLog(entry);
+    if (geo && geo.latitude && geo.longitude && (geo.latitude !== 0 || geo.longitude !== 0)) return true;
+    const d = (entry.detalhe || "").toLowerCase();
+    const a = (entry.acao || "").toLowerCase();
+    return d.includes("geolocalização") || d.includes("lat:") || d.includes("📍") || d.includes("gps") || a.includes("gps");
+  };
+
+  const hasPhotoData = (entry: AuditLogEntry): boolean => {
+    if (!entry) return false;
+    if (entry.hasPhoto === true) return true;
+    if (!!getFotoForLog(entry)) return true;
+    const d = (entry.detalhe || "").toLowerCase();
+    const a = (entry.acao || "").toLowerCase();
+    return d.includes("foto") || d.includes("selfie") || d.includes("comprovante") || a.includes("foto") || a.includes("selfie");
+  };
+
+  const traceStats = useMemo(() => {
+    let totalBatidas = 0;
+    let comGpsCount = 0;
+    let comFotoCount = 0;
+    let comAmbosCount = 0;
+    let semMetaCount = 0;
+
+    combinedAuditLogs.forEach(entry => {
+      const isBatida = (entry.acao || "").toLowerCase().includes("ponto") || 
+                       (entry.acao || "").toLowerCase().includes("batida") || 
+                       (entry.detalhe || "").toLowerCase().includes("batida");
+      
+      const loc = hasLocationData(entry);
+      const img = hasPhotoData(entry);
+
+      if (isBatida || loc || img) {
+        totalBatidas++;
+        if (loc) comGpsCount++;
+        if (img) comFotoCount++;
+        if (loc && img) comAmbosCount++;
+        if (!loc && !img) semMetaCount++;
+      }
+    });
+
+    const taxaConformidade = totalBatidas > 0 ? Math.round(((comGpsCount + comFotoCount) / (totalBatidas * 2)) * 100) : 100;
+
+    return { totalBatidas, comGpsCount, comFotoCount, comAmbosCount, semMetaCount, taxaConformidade };
+  }, [combinedAuditLogs, users, pontosGlobal]);
 
   // Função para identificar fraudes de adulteração de relógio no log de auditoria
   const isFraudAuditLog = (entry: AuditLogEntry): boolean => {
@@ -640,6 +726,14 @@ export function AdmPanel({
       if (filterAuditAcao && filterAuditAcao !== "todas") {
         if (filterAuditAcao === "apenas_fraudes") {
           if (!isFraudAuditLog(entry)) return false;
+        } else if (filterAuditAcao === "com_loc") {
+          if (!hasLocationData(entry)) return false;
+        } else if (filterAuditAcao === "com_foto") {
+          if (!hasPhotoData(entry)) return false;
+        } else if (filterAuditAcao === "com_ambos") {
+          if (!hasLocationData(entry) || !hasPhotoData(entry)) return false;
+        } else if (filterAuditAcao === "sem_metadados") {
+          if (hasLocationData(entry) || hasPhotoData(entry)) return false;
         } else {
           const term = filterAuditAcao.toLowerCase();
           const ac = (entry.acao || "").toLowerCase();
@@ -937,6 +1031,11 @@ export function AdmPanel({
     }
     const oldMat = target.matricula;
     const cleanMat = newMat.trim();
+    const exists = users.some(x => x.id !== userId && isMatriculaMatch(x.matricula, cleanMat));
+    if (exists) {
+      showToast("Esta matrícula já está em uso por outro usuário.", "danger");
+      return;
+    }
     const updatedUser = { ...target, matricula: cleanMat };
     setUsers(u => u.map(x => (x.id === userId ? updatedUser : x)));
     saveUserToDb(updatedUser).catch(err => {
@@ -1234,6 +1333,7 @@ export function AdmPanel({
         const fmtB = (b: any) => {
           if (!b) return "—";
           if (b.ocorrencia) {
+            if (b.ocorrencia === "dia_vazio" || b.ocorrencia === "vazio" || b.ocorrencia === "sem_vinculo" || b.ocorrencia === "isento") return "";
             return b.ocorrencia === "atestado" ? (b.parcial ? "Atestado Parcial" : "Atestado") : b.ocorrencia === "afastamento" ? "Afastamento" : b.ocorrencia === "falta" ? "Falta" : b.ocorrencia;
           }
           let timeStr = new Date(b.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
@@ -1421,6 +1521,7 @@ export function AdmPanel({
       const fmtB = (b: any) => {
         if (!b) return "—";
         if (b.ocorrencia) {
+          if (b.ocorrencia === "dia_vazio" || b.ocorrencia === "vazio" || b.ocorrencia === "sem_vinculo" || b.ocorrencia === "isento") return "";
           return b.ocorrencia === "atestado" ? (b.parcial ? "Atestado Parcial" : "Atestado") : b.ocorrencia === "afastamento" ? "Afastamento" : b.ocorrencia === "falta" ? "Falta" : b.ocorrencia;
         }
         let timeStr = new Date(b.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
@@ -1433,8 +1534,8 @@ export function AdmPanel({
       dias.push({ d, diaSem, key, batidas, calc, fmtB });
     }
 
-    const corStatus: Record<string, string> = { completo: "#16a34a", parcial: "#d97706", falta: "#dc2626", atestado: "#2563eb", afastamento: "#7c3aed", folga: "#9ca3af", futuro: "#9ca3af", ferias: "#7c3aed", feriado: "#df2222" };
-    const nomesStatus: Record<string, string> = { completo: "Completo", parcial: "Parcial", falta: "Falta", atestado: "Atestado", afastamento: "Afastamento", folga: "Folga", futuro: "A planejar", ferias: "Férias", feriado: "Feriado" };
+    const corStatus: Record<string, string> = { completo: "#16a34a", parcial: "#d97706", falta: "#dc2626", atestado: "#2563eb", afastamento: "#7c3aed", folga: "#9ca3af", futuro: "#9ca3af", ferias: "#7c3aed", feriado: "#df2222", dia_vazio: "#9ca3af" };
+    const nomesStatus: Record<string, string> = { completo: "Completo", parcial: "Parcial", falta: "Falta", atestado: "Atestado", afastamento: "Afastamento", folga: "Folga", futuro: "A planejar", ferias: "Férias", feriado: "Feriado", dia_vazio: "—" };
 
     const rowsHtml = dias.map(item => {
       const c = item.calc;
@@ -2466,8 +2567,10 @@ export function AdmPanel({
           users={validUsers}
           currentUser={currentUser}
           pontosGlobal={pontosGlobal}
+          setPontosGlobal={setPontosGlobal}
           auditLogs={combinedAuditLogs}
           onSalvarPonto={handleSalvarPontoGerenciado}
+          onAddLog={onAddLog}
           onDecisaoAtestado={async (userId, groupId, dias, decisao, justificativa) => {
             const userDays = { ...(pontosGlobal[userId] || {}) };
             const changedDays: Record<string, any> = {};
@@ -3416,6 +3519,46 @@ export function AdmPanel({
             </div>
           </div>
 
+          {/* Painel de Indicadores de Rastreabilidade (Auditoria / Portaria 671) */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+              gap: 12,
+              marginBottom: 16
+            }}
+          >
+            <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "12px 16px" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: t.textMuted, textTransform: "uppercase" }}>Batidas Auditadas</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: t.text, marginTop: 2 }}>{traceStats.totalBatidas}</div>
+              <div style={{ fontSize: 11, color: t.textSub, marginTop: 2 }}>Registros de ponto</div>
+            </div>
+
+            <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "12px 16px" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: t.accent, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 4 }}>
+                <span>📍</span> Com Geolocalização
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: t.accent, marginTop: 2 }}>{traceStats.comGpsCount}</div>
+              <div style={{ fontSize: 11, color: t.textSub, marginTop: 2 }}>Coordenadas GPS atreladas</div>
+            </div>
+
+            <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "12px 16px" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#8B5CF6", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 4 }}>
+                <span>📸</span> Com Foto / Selfie
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#8B5CF6", marginTop: 2 }}>{traceStats.comFotoCount}</div>
+              <div style={{ fontSize: 11, color: t.textSub, marginTop: 2 }}>Selfies/Comprovantes anexados</div>
+            </div>
+
+            <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 12, padding: "12px 16px" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#10B981", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 4 }}>
+                <span>🛡️</span> Rastreabilidade Total
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#10B981", marginTop: 2 }}>{traceStats.comAmbosCount}</div>
+              <div style={{ fontSize: 11, color: t.textSub, marginTop: 2 }}>Foto e GPS combinados</div>
+            </div>
+          </div>
+
           {/* Painel de Filtros da Auditoria */}
           <div
             style={{
@@ -3571,7 +3714,7 @@ export function AdmPanel({
               {/* 5. Ação */}
               <div>
                 <label style={{ display: "block", fontSize: 11, fontWeight: 650, color: t.textMuted, marginBottom: 4 }}>
-                  Ação
+                  Ação / Metadados
                 </label>
                 <select
                   value={filterAuditAcao}
@@ -3591,6 +3734,10 @@ export function AdmPanel({
                 >
                   <option value="todas">Todas as Ações</option>
                   <option value="apenas_fraudes">🚨 Apenas Fraudes / Suspeitas ({fraudAuditLogsCount})</option>
+                  <option value="com_loc">📍 Apenas com Localização (GPS)</option>
+                  <option value="com_foto">📸 Apenas com Foto / Selfie</option>
+                  <option value="com_ambos">🛡️ Com Foto & GPS (Rastreabilidade Total)</option>
+                  <option value="sem_metadados">⚠️ Sem Foto / Sem GPS</option>
                   <option value="excluiu">Exclusões / Remoções</option>
                   <option value="desativou">Desativações de Usuário</option>
                   <option value="criou">Criações / Cadastros</option>
@@ -3632,6 +3779,12 @@ export function AdmPanel({
                   const dataFmt = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" });
                   const horaFmt = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
+                  const geoData = getGeoForLog(entry);
+                  const photoData = getFotoForLog(entry);
+                  const hasLoc = hasLocationData(entry);
+                  const hasFoto = hasPhotoData(entry);
+                  const isPunchLog = (entry.acao || "").toLowerCase().includes("ponto") || (entry.detalhe || "").toLowerCase().includes("batida") || (entry.acao || "").toLowerCase().includes("batida");
+
                   return (
                     <div
                       key={`${entry.id}_${idx}`}
@@ -3666,7 +3819,7 @@ export function AdmPanel({
                       </div>
                       <span style={{ fontSize: 13, color: t.text, fontWeight: 500 }}>{entry.quem}</span>
                       <span style={{ fontSize: "12.5px", color: t.textMuted, fontFamily: "monospace" }}>{entry.quemMat}</span>
-                      <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4 }}>
+                      <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: acaoCor, background: acaoBg, border: `1.5px solid ${acaoCor}33`, borderRadius: 6, padding: "3px 9px", whiteSpace: "nowrap" }}>
                           {entry.acao}
                         </span>
@@ -3675,77 +3828,127 @@ export function AdmPanel({
                             🚨 FRAUDE/SUSPEITA
                           </span>
                         )}
+                        {hasLoc && (
+                          <span style={{ fontSize: 10, fontWeight: 750, color: t.accent, background: t.accentGlow, border: `1px solid ${t.accent}44`, borderRadius: 6, padding: "2px 6px", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                            📍 GPS
+                          </span>
+                        )}
+                        {hasFoto && (
+                          <span style={{ fontSize: 10, fontWeight: 750, color: "#8B5CF6", background: "rgba(139, 92, 246, 0.12)", border: "1px solid rgba(139, 92, 246, 0.3)", borderRadius: 6, padding: "2px 6px", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                            📸 FOTO
+                          </span>
+                        )}
                       </span>
                       <div>
                         <div style={{ fontSize: 13, color: t.text, fontWeight: isFraud ? 650 : 400 }}>{entry.alvo}</div>
                         {entry.detalhe && <div style={{ fontSize: "11.5px", color: isFraud ? "#EF4444" : t.textMuted, marginTop: 2 }}>{entry.detalhe}</div>}
-                        {entry.latitude && entry.longitude ? (
-                          <div style={{ fontSize: "11px", color: t.accent, marginTop: 4, display: "flex", alignItems: "center", gap: 3, flexWrap: "wrap" }}>
-                            <span>📍</span>
-                            <span style={{ fontWeight: 650 }}>Localização:</span>
-                            <span style={{ fontFamily: "monospace" }}>{entry.latitude.toFixed(5)}, {entry.longitude.toFixed(5)}</span>
-                            {entry.accuracy !== undefined && (
-                              <span style={{ 
-                                background: entry.accuracy <= 10 ? "rgba(34,197,94,0.12)" : "rgba(245,158,11,0.12)", 
-                                color: entry.accuracy <= 10 ? "#16a34a" : "#d97706",
-                                border: `1px solid ${entry.accuracy <= 10 ? "rgba(34,197,94,0.25)" : "rgba(245,158,11,0.25)"}`,
-                                padding: "1px 5px",
-                                borderRadius: 5,
-                                fontSize: "9.5px",
-                                fontWeight: 700,
-                                marginLeft: 4
-                              }}>
-                                ±{entry.accuracy.toFixed(1)}m
+                        
+                        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                          {/* Metadados de GPS */}
+                          {geoData && geoData.latitude && geoData.longitude ? (
+                            <div style={{ fontSize: "11px", color: t.accent, display: "flex", alignItems: "center", gap: 3, flexWrap: "wrap" }}>
+                              <span>📍</span>
+                              <span style={{ fontWeight: 650 }}>GPS:</span>
+                              <span style={{ fontFamily: "monospace" }}>{geoData.latitude.toFixed(5)}, {geoData.longitude.toFixed(5)}</span>
+                              {geoData.accuracy !== undefined && (
+                                <span style={{ 
+                                  background: geoData.accuracy <= 10 ? "rgba(34,197,94,0.12)" : "rgba(245,158,11,0.12)", 
+                                  color: geoData.accuracy <= 10 ? "#16a34a" : "#d97706",
+                                  border: `1px solid ${geoData.accuracy <= 10 ? "rgba(34,197,94,0.25)" : "rgba(245,158,11,0.25)"}`,
+                                  padding: "1px 5px",
+                                  borderRadius: 5,
+                                  fontSize: "9.5px",
+                                  fontWeight: 700,
+                                  marginLeft: 4
+                                }}>
+                                  ±{geoData.accuracy.toFixed(1)}m
+                                </span>
+                              )}
+                              <a
+                                href={`https://maps.google.com/?q=${geoData.latitude},${geoData.longitude}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{
+                                  color: t.accent,
+                                  textDecoration: "underline",
+                                  marginLeft: 4,
+                                  fontSize: "10.5px",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 3
+                                }}
+                              >
+                                Ver mapa
+                              </a>
+                              <span style={{ color: t.border, margin: "0 2px" }}>|</span>
+                              <button
+                                onClick={() => setSelectedGeoLog(entry)}
+                                title="Ver ficha jurídica e metadados detalhados de GPS, precisão e privacidade (LGPD)"
+                                style={{
+                                  background: "rgba(16, 185, 129, 0.08)",
+                                  border: "1px solid rgba(16, 185, 129, 0.25)",
+                                  color: "#059669",
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 3,
+                                  padding: "2px 6px",
+                                  borderRadius: 5,
+                                  fontSize: "10px",
+                                  fontWeight: 700,
+                                  fontFamily: "inherit"
+                                }}
+                              >
+                                <FileText size={11} style={{ color: "#059669" }} />
+                                <span>Ficha Legal GPS</span>
+                              </button>
+                            </div>
+                          ) : hasLoc ? (
+                            <div style={{ fontSize: "11px", color: t.accent, display: "flex", alignItems: "center", gap: 3 }}>
+                              <span>📍</span>
+                              <span style={{ fontWeight: 600 }}>Com validação de localização/GPS atrelada</span>
+                            </div>
+                          ) : null}
+
+                          {/* Metadados de Foto */}
+                          {hasFoto && (
+                            <div style={{ fontSize: "11px", color: "#8B5CF6", display: "flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontWeight: 650 }}>
+                                <span>📸</span> Foto / Selfie capturada
                               </span>
-                            )}
-                            <a
-                              href={`https://maps.google.com/?q=${entry.latitude},${entry.longitude}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              style={{
-                                color: t.accent,
-                                textDecoration: "underline",
-                                marginLeft: 4,
-                                fontSize: "10.5px",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 3
-                              }}
-                            >
-                              Ver no mapa
-                            </a>
-                            <span style={{ color: t.border, margin: "0 4px" }}>|</span>
-                            <button
-                              onClick={() => setSelectedGeoLog(entry)}
-                              title="Ver ficha jurídica e metadados detalhados de GPS, precisão e privacidade (LGPD)"
-                              style={{
-                                background: "rgba(16, 185, 129, 0.08)",
-                                border: "1px solid rgba(16, 185, 129, 0.25)",
-                                color: "#059669",
-                                cursor: "pointer",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 4,
-                                padding: "3px 8px",
-                                borderRadius: 6,
-                                fontSize: "10.5px",
-                                fontWeight: 700,
-                                fontFamily: "inherit",
-                                transition: "all 0.15s",
-                                boxShadow: "0 1px 2px rgba(0,0,0,0.05)"
-                              }}
-                            >
-                              <FileText size={12} style={{ color: "#059669" }} />
-                              <MapIcon size={12} style={{ color: "#059669" }} />
-                              <span>Ficha Legal GPS</span>
-                            </button>
-                          </div>
-                        ) : (
-                          <div style={{ fontSize: "11px", color: t.textMuted, marginTop: 4, display: "flex", alignItems: "center", gap: 3 }}>
-                            <span>📍</span>
-                            <span>Sem coordenadas</span>
-                          </div>
-                        )}
+                              <button
+                                onClick={() => setSelectedPhotoLog(entry)}
+                                title="Visualizar a foto / selfie de comprovante atrelada a esta batida de ponto"
+                                style={{
+                                  background: "rgba(139, 92, 246, 0.12)",
+                                  border: "1px solid rgba(139, 92, 246, 0.3)",
+                                  color: "#8B5CF6",
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  padding: "2px 8px",
+                                  borderRadius: 5,
+                                  fontSize: "10px",
+                                  fontWeight: 700,
+                                  fontFamily: "inherit",
+                                  transition: "all 0.15s"
+                                }}
+                              >
+                                <Camera size={11} />
+                                <span>Ver Foto</span>
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Caso seja batida de ponto e não possua nem GPS nem Foto */}
+                          {isPunchLog && !hasLoc && !hasFoto && (
+                            <div style={{ fontSize: "10.5px", color: t.textMuted, display: "flex", alignItems: "center", gap: 4 }}>
+                              <span>⚠️</span>
+                              <span>Ponto registrado sem foto ou localização</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -6140,6 +6343,133 @@ export function AdmPanel({
                   Ver no Google Maps
                 </a>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Detalhes da Selfie / Foto Comprovante */}
+      {selectedPhotoLog && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.55)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: 20
+          }}
+          onClick={() => setSelectedPhotoLog(null)}
+        >
+          <div
+            style={{
+              background: t.surface,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 20,
+              width: "100%",
+              maxWidth: 480,
+              overflow: "hidden",
+              boxShadow: t.shadow,
+              display: "flex",
+              flexDirection: "column"
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ padding: "18px 24px", background: t.surfaceAlt, borderBottom: `1px solid ${t.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(139, 92, 246, 0.15)", border: "1px solid rgba(139, 92, 246, 0.3)", display: "flex", alignItems: "center", justifyContent: "center", color: "#8B5CF6" }}>
+                  <Camera size={20} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text }}>Selfie de Comprovante de Ponto</h3>
+                  <p style={{ margin: "2px 0 0", fontSize: 12, color: t.textSub }}>Rastreabilidade Visual · Portaria 671 MTE</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSelectedPhotoLog(null)}
+                style={{ background: "transparent", border: "none", color: t.textMuted, fontSize: 18, cursor: "pointer", fontWeight: "bold" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16, maxHeight: "75vh", overflowY: "auto" }}>
+              {/* Info do Colaborador */}
+              <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 12, padding: "12px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 650, color: t.textMuted }}>COLABORADOR</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginTop: 2 }}>{selectedPhotoLog.quem}</div>
+                  <div style={{ fontSize: 11, color: t.textSub, fontFamily: "monospace" }}>Mat: {selectedPhotoLog.quemMat}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 650, color: t.textMuted }}>DATA & HORA</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginTop: 2 }}>
+                    {new Date(selectedPhotoLog.quando).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                  </div>
+                  <div style={{ fontSize: 11, color: t.textSub }}>
+                    {new Date(selectedPhotoLog.quando).toLocaleDateString("pt-BR")}
+                  </div>
+                </div>
+              </div>
+
+              {/* Foto Container */}
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                {getFotoForLog(selectedPhotoLog) ? (
+                  <div style={{ position: "relative", width: "100%", borderRadius: 14, overflow: "hidden", border: `2px solid ${t.border}`, background: "#000", textAlign: "center" }}>
+                    <img
+                      src={getFotoForLog(selectedPhotoLog)}
+                      alt="Selfie de Comprovante de Ponto"
+                      style={{ width: "100%", maxHeight: 320, objectFit: "contain", display: "block" }}
+                    />
+                    <div style={{ position: "absolute", bottom: 8, right: 8, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)", padding: "4px 10px", borderRadius: 8, color: "#22c55e", fontSize: 10.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                      <Check size={12} /> Comprovante Visual Registrado
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ padding: "36px 20px", textAlign: "center", background: t.surfaceAlt, border: `1px dashed ${t.border}`, borderRadius: 14, width: "100%" }}>
+                    <Camera size={36} style={{ color: t.textMuted, opacity: 0.5, marginBottom: 8 }} />
+                    <div style={{ fontSize: 13, fontWeight: 700, color: t.text }}>Nenhuma foto (selfie) gravada nesta batida</div>
+                    <div style={{ fontSize: 11.5, color: t.textSub, marginTop: 4 }}>O registro foi autenticado via Geolocalização GPS / Sistema sem captura de imagem pela câmera.</div>
+                  </div>
+                )}
+              </div>
+
+              {/* Detalhes da Ação */}
+              <div style={{ fontSize: 12, color: t.textSub, background: "rgba(139, 92, 246, 0.08)", border: "1px solid rgba(139, 92, 246, 0.2)", borderRadius: 10, padding: 12 }}>
+                <div style={{ fontWeight: 700, color: "#8B5CF6", marginBottom: 2 }}>{selectedPhotoLog.acao}</div>
+                <div>{selectedPhotoLog.detalhe}</div>
+                {getGeoForLog(selectedPhotoLog) && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(139, 92, 246, 0.2)", fontSize: 11, display: "flex", alignItems: "center", gap: 6, color: t.text }}>
+                    <span>📍</span>
+                    <span>GPS: {getGeoForLog(selectedPhotoLog)?.latitude?.toFixed(5)}, {getGeoForLog(selectedPhotoLog)?.longitude?.toFixed(5)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding: "16px 24px", background: t.surfaceAlt, borderTop: `1px solid ${t.border}`, display: "flex", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setSelectedPhotoLog(null)}
+                style={{
+                  background: t.accent,
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: 10,
+                  padding: "9px 20px",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontFamily: "inherit"
+                }}
+              >
+                Fechar Visualizador
+              </button>
             </div>
           </div>
         </div>

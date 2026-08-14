@@ -1,4 +1,4 @@
-import { db, fallbackToDefaultDatabase } from "./firebase";
+import { db, fallbackToDefaultDatabase, triggerAutoHeal, isAssertionError } from "./firebase";
 import { compressImageBase64 } from "../utils/hrHelpers";
 import { 
   collection, 
@@ -29,7 +29,7 @@ export let isUsingOfflineCache = false;
 
 export async function testConnection(): Promise<void> {
   try {
-    await getDocFromServer(doc(db, "test", "connection"));
+    await firestoreGetDoc(doc(db, "test", "connection"));
   } catch (error) {
     if (error instanceof Error && error.message.includes("the client is offline")) {
       console.error("[Firebase] Please check your Firebase configuration.");
@@ -130,8 +130,12 @@ function getDocs(colRefOrQuery: any): Promise<any> {
         isUsingOfflineCache = false;
       }
       return snap;
-    } catch (serverErr) {
+    } catch (serverErr: any) {
       console.warn("[Firebase] firestoreGetDocs failed, checking cache:", serverErr);
+      const errMsg = serverErr?.message || String(serverErr);
+      if (isAssertionError(errMsg)) {
+        triggerAutoHeal(errMsg);
+      }
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         isUsingOfflineCache = true;
       }
@@ -153,8 +157,12 @@ function getDoc(docRef: any): Promise<any> {
         isUsingOfflineCache = false;
       }
       return snap;
-    } catch (serverErr) {
+    } catch (serverErr: any) {
       console.warn("[Firebase] firestoreGetDoc failed, checking cache:", serverErr);
+      const errMsg = serverErr?.message || String(serverErr);
+      if (isAssertionError(errMsg)) {
+        triggerAutoHeal(errMsg);
+      }
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         isUsingOfflineCache = true;
       }
@@ -170,8 +178,10 @@ function getDoc(docRef: any): Promise<any> {
 export async function forceServerFetch<T = any>(collectionName: string): Promise<T[]> {
   try {
     const colRef = collection(db, collectionName);
-    const snap = await getDocsFromServer(colRef);
-    isUsingOfflineCache = false;
+    const snap = await firestoreGetDocs(colRef);
+    if (typeof navigator !== "undefined" && navigator.onLine) {
+      isUsingOfflineCache = false;
+    }
     const items: T[] = [];
     snap.forEach((docSnap: any) => {
       items.push({ id: docSnap.id, ...docSnap.data() } as T);
@@ -179,14 +189,7 @@ export async function forceServerFetch<T = any>(collectionName: string): Promise
     return items;
   } catch (err) {
     console.warn(`[Firebase] forceServerFetch failed for ${collectionName}:`, err);
-    isUsingOfflineCache = true;
-    const colRef = collection(db, collectionName);
-    const snap = await firestoreGetDocs(colRef);
-    const items: T[] = [];
-    snap.forEach((docSnap: any) => {
-      items.push({ id: docSnap.id, ...docSnap.data() } as T);
-    });
-    return items;
+    return [];
   }
 }
 
@@ -1143,7 +1146,12 @@ export async function fetchAllPrePontos(): Promise<PrePonto[]> {
 export async function savePrePontoToDb(prePonto: PrePonto): Promise<void> {
   try {
     await setDoc(doc(db, "prePontos", prePonto.id), cleanObject(prePonto), { merge: true });
-  } catch (error) {
+  } catch (error: any) {
+    const msg = error?.message || String(error);
+    if (msg.includes("Timeout de conexão") || msg.includes("offline") || msg.includes("unavailable")) {
+      console.warn(`[Firebase] Timeout de conexão/offline ao salvar prePonto ${prePonto.id}, mantido em cache local.`);
+      return;
+    }
     handleFirestoreError(error, OperationType.WRITE, `prePontos/${prePonto.id}`);
   }
 }
@@ -1401,7 +1409,12 @@ export async function saveSolicitacaoCorrecaoToDb(solicitationInput: Partial<Sol
 
   try {
     await setDoc(doc(db, "solicitacoesCorrecao", id), cleanObject(newSolicitation));
-  } catch (error) {
+  } catch (error: any) {
+    const msg = error?.message || String(error);
+    if (msg.includes("Timeout de conexão") || msg.includes("offline") || msg.includes("unavailable")) {
+      console.warn(`[Firebase] Timeout de conexão/offline ao salvar solicitação de correção ${id}, mantido em cache local.`);
+      return newSolicitation;
+    }
     handleFirestoreError(error, OperationType.WRITE, `solicitacoesCorrecao/${id}`);
   }
 

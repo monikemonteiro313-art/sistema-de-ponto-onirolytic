@@ -112,9 +112,9 @@ export async function getBestCurrentPosition(
   }
 
   const defaultOptions: PositionOptions = {
-    enableHighAccuracy: options.enableHighAccuracy ?? !isIOS,
-    timeout: options.timeout ?? (isIOS ? 20000 : 10000),
-    maximumAge: options.maximumAge ?? (isIOS ? 60000 : 0)
+    enableHighAccuracy: options.enableHighAccuracy ?? false,
+    timeout: options.timeout ?? (isIOS ? 20000 : 20000),
+    maximumAge: options.maximumAge ?? (isIOS ? 60000 : 30000)
   };
 
   return new Promise((resolve, reject) => {
@@ -133,7 +133,17 @@ export async function getBestCurrentPosition(
           timestamp: pos.timestamp,
         });
       },
-      (err) => reject(err),
+      (err) => {
+        console.warn("Web GPS falhou:", err.code, err.message);
+        if (err.code === 1) {
+          alert("📍 Localização bloqueada.\n\nToque no cadeado 🔒 ao lado do endereço > Permissões do site > Localização > Permitir");
+        } else if (err.code === 2) {
+          alert("📍 Não foi possível obter localização. Verifique se o GPS/localização está ligado no celular.");
+        } else if (err.code === 3) {
+          alert("📍 Localização demorou demais para responder. Aproxime-se de uma janela e tente bater o ponto novamente.");
+        }
+        reject(err);
+      },
       defaultOptions
     );
   });

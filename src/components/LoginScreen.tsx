@@ -252,14 +252,23 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
     setDiagnosticLogs([...logs]);
     await new Promise(r => setTimeout(r, 600));
 
-    logs.push("🗑️ Expurgando caches temporários, localStorage e IndexedDB para evitar tela branca...");
+    logs.push("🗑️ Expurgando caches temporários conflitantes...");
+    setDiagnosticLogs([...logs]);
     try {
       await wipeAllLocalData();
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.message?.includes("PENDENCIAS_NAO_SINCRONIZADAS")) {
+        logs.push("⚠️ Existem pontos/dados aguardando sincronização com o servidor.");
+        logs.push("🛑 Operação cancelada por segurança para não perder suas marcações.");
+        logs.push("💡 Aguarde a conexão normalizar e tente novamente em alguns minutos.");
+        setDiagnosticLogs([...logs]);
+        setHealingRunning(false);
+        return;
+      }
       console.warn("Could not clean up local data:", e);
+      logs.push("⚠️ Erro ao limpar cache, mas prosseguindo com segurança...");
+      setDiagnosticLogs([...logs]);
     }
-    setDiagnosticLogs([...logs]);
-    await new Promise(r => setTimeout(r, 800));
 
     logs.push("✅ Diagnóstico e Autocura concluídos com sucesso! Reiniciando o aplicativo de forma limpa...");
     setDiagnosticLogs([...logs]);

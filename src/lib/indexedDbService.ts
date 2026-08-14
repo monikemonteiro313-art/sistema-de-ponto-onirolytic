@@ -352,10 +352,56 @@ export async function removeUserFromSyncQueue(userId: number | string): Promise<
   }
 }
 
+async function verificarPendenciasAntesDeLimpar(): Promise<boolean> {
+  try {
+    const db = await initIndexedDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction("offlineQueue", "readonly");
+      const store = tx.objectStore("offlineQueue");
+      const req = store.count();
+      req.onsuccess = () => resolve(req.result > 0);
+      req.onerror = () => resolve(false);
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
 export async function wipeAllLocalData(): Promise<void> {
+  // 1. Proteção: nunca limpar se existirem pontos/dados pendentes de sincronização
+  const temPendencias = await verificarPendenciasAntesDeLimpar();
+  if (temPendencias) {
+    throw new Error(
+      "PENDENCIAS_NAO_SINCRONIZADAS: Existem pontos ou dados aguardando envio ao servidor. " +
+      "Não é seguro limpar o cache agora. Aguarde a conexão normalizar e tente novamente, " +
+      "ou contate o administrador."
+    );
+  }
+
+  // 2. Preserva chaves essenciais do localStorage antes de limpar
+  const preservar = ["hr_cached_wizard_done", "hr_current_user"];
+  const backup: Record<string, string | null> = {};
+  for (const key of preservar) {
+    try {
+      backup[key] = localStorage.getItem(key);
+    } catch (_) {
+      backup[key] = null;
+    }
+  }
+
   try {
     localStorage.clear();
   } catch (_) {}
+
+  // Restaura as chaves preservadas
+  for (const key of preservar) {
+    if (backup[key] !== null) {
+      try {
+        localStorage.setItem(key, backup[key]!);
+      } catch (_) {}
+    }
+  }
+
   try {
     sessionStorage.clear();
   } catch (_) {}
@@ -368,31 +414,16 @@ export async function wipeAllLocalData(): Promise<void> {
       dbInstance = null;
     }
     if (typeof indexedDB !== "undefined") {
-      // Directly delete known databases for cross-browser reliability (Safari iOS safe)
-      const knownDbs = [DB_NAME, "pontos_offline_db", "hr_registro_ponto_db"];
-      for (const name of knownDbs) {
+      // Apaga APENAS o cache interno do Firestore SDK — NUNCA o PontoDigitalDB
+      // (que contém a fila offline de pontos) nem o PontinhoDB da Cura Oculta.
+      const knownFirestoreCacheDbs = ["firestore/[DEFAULT]/main"];
+      for (const name of knownFirestoreCacheDbs) {
         try {
           indexedDB.deleteDatabase(name);
         } catch (_) {}
       }
-      
-      // Secondary optional check if indexedDB.databases is available without throwing
-      if (typeof indexedDB.databases === "function") {
-        try {
-          const dbs = await indexedDB.databases();
-          if (Array.isArray(dbs)) {
-            for (const dbInfo of dbs) {
-              if (dbInfo && dbInfo.name) {
-                try {
-                  indexedDB.deleteDatabase(dbInfo.name);
-                } catch (_) {}
-              }
-            }
-          }
-        } catch (_) {
-          // Ignore unsupported browser API failures silently
-        }
-      }
+      // Removido: loop que apagava indiscriminadamente TODOS os bancos IndexedDB
+      // via indexedDB.databases() — isso apagava a fila de pontos offline junto.
     }
   } catch (err) {
     console.warn("[IndexedDB] wipeAllLocalData error:", err);

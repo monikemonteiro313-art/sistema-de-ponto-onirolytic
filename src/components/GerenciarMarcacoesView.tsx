@@ -1,35 +1,40 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Search, Calendar, Clock, ShieldCheck, MapPin, Edit3, Info, Eye, History, AlertTriangle, ChevronLeft, ChevronRight, CheckCircle2 } from "lucide-react";
+import { Search, Calendar, Clock, ShieldCheck, MapPin, Edit3, Info, Eye, History, AlertTriangle, ChevronLeft, ChevronRight, CheckCircle2, Camera, CalendarRange } from "lucide-react";
 import { ThemeColors, User, PontosGlobal, Batida, DiaPontos, AuditLogEntry, FolgaRemunerada } from "../types";
 import { calcularDia, resumoMesCalculado } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
+import { getFotoForPunchSlot } from "../utils/photoHelper";
 
 interface GerenciarMarcacoesViewProps {
   t: ThemeColors;
   users: User[];
   currentUser: User;
   pontosGlobal: PontosGlobal;
+  setPontosGlobal?: React.Dispatch<React.SetStateAction<PontosGlobal>>;
   auditLogs: AuditLogEntry[];
   onSalvarPonto: (userId: number, dayKey: string, batidaIdx: number, novaHora: string, justificativa: string) => Promise<void>;
   onDecisaoAtestado?: (userId: number, groupId: string, dias: {dayKey: string, slotIdx: number}[], decisao: "aceito" | "recusado" | "excluir", justificativa: string) => Promise<void>;
   feriados?: string[];
   folgasRemuneradas?: FolgaRemunerada[];
   minimoHorasDia?: number;
+  onAddLog?: (acao: string, alvo: string, detalhe?: string) => void;
 }
 
 const SLOT_NAMES = ["Entrada 1", "Saída 1 (Almoço)", "Entrada 2 (Retorno)", "Saída 2"];
 
 export function GerenciarMarcacoesView({
   t,
-  users,
+  users = [],
   currentUser,
-  pontosGlobal,
-  auditLogs,
+  pontosGlobal = {},
+  setPontosGlobal,
+  auditLogs = [],
   onSalvarPonto,
   onDecisaoAtestado,
   feriados = [],
   folgasRemuneradas = [],
   minimoHorasDia = 7,
+  onAddLog,
 }: GerenciarMarcacoesViewProps) {
   const validUsers = useMemo(() => {
     const map = new Map<number, User>();
@@ -72,11 +77,108 @@ export function GerenciarMarcacoesView({
   const [atestadoProcessando, setAtestadoProcessando] = useState<string | null>(null);
 
   // Audit history drawer/modal
+  const [photoModalData, setPhotoModalData] = useState<{ fotoUrl: string; userName: string; userMatricula: string; dayKey: string; slotName: string; timeStr: string } | null>(null);
   const [auditDetailPunch, setAuditDetailPunch] = useState<{
     dayKey: string;
     slotIdx: number;
     punch: Batida;
   } | null>(null);
+
+  // Modal State for "Marcar Período Vazio / Sem Vínculo"
+  const [showModalPeriodoVazio, setShowModalPeriodoVazio] = useState(false);
+  const [vazioDataInicio, setVazioDataInicio] = useState("");
+  const [vazioDataFim, setVazioDataFim] = useState("");
+  const [vazioMotivo, setVazioMotivo] = useState("Admissão no meio do mês / Período sem vínculo");
+  const [savingPeriodoVazio, setSavingPeriodoVazio] = useState(false);
+  const [vazioError, setVazioError] = useState("");
+  const [vazioSuccessMsg, setVazioSuccessMsg] = useState("");
+
+  const handleAplicarPeriodoVazio = async (opcao: "marcar" | "desfazer") => {
+    if (!selectedUserId || !selectedUser) {
+      setVazioError("Selecione um colaborador primeiro.");
+      return;
+    }
+    if (!vazioDataInicio || !vazioDataFim) {
+      setVazioError("Por favor, selecione a Data Inicial e a Data Final.");
+      return;
+    }
+    if (vazioDataInicio > vazioDataFim) {
+      setVazioError("A Data Inicial não pode ser posterior à Data Final.");
+      return;
+    }
+
+    setSavingPeriodoVazio(true);
+    setVazioError("");
+
+    try {
+      const start = new Date(`${vazioDataInicio}T12:00:00`);
+      const end = new Date(`${vazioDataFim}T12:00:00`);
+
+      const userDays = { ...(pontosGlobal[selectedUserId] || {}) };
+      let curr = new Date(start);
+      let count = 0;
+
+      while (curr <= end) {
+        const dayKey = curr.toISOString().slice(0, 10);
+        if (opcao === "marcar") {
+          userDays[dayKey] = [
+            {
+              ocorrencia: "dia_vazio",
+              obs: vazioMotivo.trim() || "Período Vazio / Sem Vínculo",
+              modificadoPorGestor: true,
+              modificadoPor: currentUser.nome,
+              registradoEm: new Date().toISOString(),
+              origemMarcacao: "MO",
+            },
+            null,
+            null,
+            null,
+          ];
+        } else {
+          // Desfazer: se era dia_vazio, limpa para voltar ao estado normal de calculo/falta
+          if (userDays[dayKey] && userDays[dayKey][0]?.ocorrencia === "dia_vazio") {
+            userDays[dayKey] = [null, null, null, null];
+          }
+        }
+        count++;
+        curr.setDate(curr.getDate() + 1);
+      }
+
+      if (setPontosGlobal) {
+        setPontosGlobal((prev) => ({
+          ...prev,
+          [selectedUserId]: userDays,
+        }));
+      }
+
+      const fmtIni = vazioDataInicio.split("-").reverse().join("/");
+      const fmtFim = vazioDataFim.split("-").reverse().join("/");
+
+      if (onAddLog) {
+        onAddLog(
+          opcao === "marcar" ? "Definiu período vazio" : "Limpou período vazio",
+          `${selectedUser.nome} (${selectedUser.matricula})`,
+          `Período: ${fmtIni} a ${fmtFim} (${count} dias) · Motivo: ${vazioMotivo}`
+        );
+      }
+
+      setVazioSuccessMsg(
+        opcao === "marcar"
+          ? `Período de ${fmtIni} a ${fmtFim} (${count} dias) marcado como Vazio com sucesso! Os dias foram isentos do cálculo de faltas.`
+          : `Período Vazio removido com sucesso (${count} dias)! Os dias voltaram ao cálculo normal.`
+      );
+
+      setTimeout(() => {
+        setShowModalPeriodoVazio(false);
+        setSavingPeriodoVazio(false);
+        setVazioSuccessMsg("");
+      }, 1200);
+    } catch (err) {
+      console.error("Erro ao processar período vazio:", err);
+      setVazioError("Falha ao salvar as informações. Tente novamente.");
+      setSavingPeriodoVazio(false);
+    }
+  };
 
   // Filter users based on search string
   const filteredUsers = useMemo(() => {
@@ -400,7 +502,7 @@ export function GerenciarMarcacoesView({
             />
           </div>
 
-          <div style={{ flex: "1 1 300px" }}>
+          <div style={{ flex: "1 1 240px" }}>
             <select
               value={selectedUserId || ""}
               onChange={(e) => setSelectedUserId(Number(e.target.value))}
@@ -423,6 +525,45 @@ export function GerenciarMarcacoesView({
               ))}
             </select>
           </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (!selectedUserId) {
+                alert("Selecione um colaborador primeiro.");
+                return;
+              }
+              const startDay = `${mesAno.ano}-${String(mesAno.mes + 1).padStart(2, "0")}-01`;
+              const lastDayNum = new Date(mesAno.ano, mesAno.mes + 1, 0).getDate();
+              const endDay = `${mesAno.ano}-${String(mesAno.mes + 1).padStart(2, "0")}-${String(lastDayNum).padStart(2, "0")}`;
+
+              setVazioDataInicio(startDay);
+              setVazioDataFim(endDay);
+              setVazioMotivo("Admissão no meio do mês / Período sem vínculo");
+              setVazioError("");
+              setVazioSuccessMsg("");
+              setShowModalPeriodoVazio(true);
+            }}
+            style={{
+              background: t.surfaceAlt,
+              border: `1.5px solid ${t.border}`,
+              color: t.text,
+              padding: "8px 14px",
+              borderRadius: 8,
+              fontSize: 12.5,
+              fontWeight: 700,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              transition: "all 0.15s",
+              whiteSpace: "nowrap"
+            }}
+            title="Marcar intervalo de dias vazios (isento de faltas)"
+          >
+            <CalendarRange size={16} color={t.accent} />
+            Marcar Período Vazio
+          </button>
         </div>
       </div>
 
@@ -653,7 +794,9 @@ export function GerenciarMarcacoesView({
 
                           if (punch) {
                             if (punch.ocorrencia && !isAtestadoRecusado) {
-                              if (punch.ocorrencia === "atestado") {
+                              if (punch.ocorrencia === "dia_vazio" || punch.ocorrencia === "vazio" || punch.ocorrencia === "sem_vinculo" || punch.ocorrencia === "isento") {
+                                timeDisplay = slotIdx === 0 ? "—" : "--:--";
+                              } else if (punch.ocorrencia === "atestado") {
                                 if (punch.statusAtestado === "aceito") {
                                   timeDisplay = "ATESTADO (ACEITO)";
                                 } else {
@@ -680,9 +823,16 @@ export function GerenciarMarcacoesView({
 
                           return (
                             <td key={slotIdx} style={{ padding: "8px 10px" }}>
-                              <button
-                                type="button"
+                              <div
+                                role="button"
+                                tabIndex={0}
                                 onClick={() => handleOpenSlot(day.dayKey, slotIdx, punch)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    handleOpenSlot(day.dayKey, slotIdx, punch);
+                                  }
+                                }}
                                 style={{
                                   background: hasPunch ? (tag === "MA" ? "rgba(37,99,235,0.08)" : tag === "MO" ? "rgba(147,51,234,0.08)" : t.surfaceAlt) : "transparent",
                                   border: `1px dashed ${hasPunch ? (tag === "MA" ? "rgba(37,99,235,0.3)" : tag === "MO" ? "rgba(147,51,234,0.3)" : t.border) : t.border}`,
@@ -752,19 +902,58 @@ export function GerenciarMarcacoesView({
                                   </span>
                                 )}
 
+                                {(() => {
+                                  const cellFoto = getFotoForPunchSlot(punch, day.dayKey, selectedUserId, selectedUser?.nome, selectedUser?.matricula, slotIdx, auditLogs);
+                                  if (!cellFoto) return null;
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setPhotoModalData({
+                                          fotoUrl: cellFoto,
+                                          userName: selectedUser?.nome || "Colaborador",
+                                          userMatricula: selectedUser?.matricula || "—",
+                                          dayKey: day.dayKey,
+                                          slotName: SLOT_NAMES[slotIdx] || `Batida #${slotIdx + 1}`,
+                                          timeStr: punch?.hora ? new Date(punch.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—"
+                                        });
+                                      }}
+                                      style={{
+                                        background: "rgba(139, 92, 246, 0.15)",
+                                        border: "1px solid rgba(139, 92, 246, 0.35)",
+                                        color: "#8b5cf6",
+                                        borderRadius: 4,
+                                        padding: "1px 5px",
+                                        fontSize: 10,
+                                        fontWeight: 750,
+                                        cursor: "pointer",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 3,
+                                        marginLeft: 2
+                                      }}
+                                      title="Clique para visualizar a foto / selfie de comprovação"
+                                    >
+                                      <Camera size={10} color="#8b5cf6" />
+                                      <span>Foto</span>
+                                    </button>
+                                  );
+                                })()}
+
                                 {punch?.latitude && punch?.longitude && (
                                   <span title="Possui localização GPS gravada" style={{ display: "inline-flex", alignItems: "center" }}>
                                     <MapPin size={11} color={t.accent} />
                                   </span>
                                 )}
-                              </button>
+                              </div>
                             </td>
                           );
                         })}
 
                         <td style={{ padding: "10px 12px", color: t.textSub, fontSize: 11.5 }}>
                           {day.calc?.totalTrabalhado ? `${day.calc.totalTrabalhado}h` : "—"}
-                          {day.calc?.status && (
+                          {day.calc?.status && day.calc.status !== "dia_vazio" && (
                             <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 600, color: day.calc.status === "falta" ? t.danger : t.textSub }}>
                               ({day.calc.status})
                             </span>
@@ -978,6 +1167,53 @@ export function GerenciarMarcacoesView({
                       </a>
                     </div>
                   )}
+
+                  {(() => {
+                    const modalFoto = getFotoForPunchSlot(modalData.punch, modalData.dayKey, modalData.userId, selectedUser?.nome, selectedUser?.matricula, modalData.slotIdx, auditLogs);
+                    if (!modalFoto) return null;
+                    return (
+                      <div style={{ marginTop: 10, padding: 12, background: t.surfaceAlt, borderRadius: 10, border: `1px solid ${t.border}` }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: "#8b5cf6", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                            <Camera size={14} color="#8b5cf6" /> Selfie / Comprovante Visual Registrado:
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPhotoModalData({
+                                fotoUrl: modalFoto,
+                                userName: selectedUser?.nome || "Colaborador",
+                                userMatricula: selectedUser?.matricula || "—",
+                                dayKey: modalData.dayKey,
+                                slotName: SLOT_NAMES[modalData.slotIdx] || `Batida #${modalData.slotIdx + 1}`,
+                                timeStr: modalData.punch?.hora ? new Date(modalData.punch.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—"
+                              });
+                            }}
+                            style={{ background: "#8b5cf6", color: "#ffffff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+                          >
+                            🔍 Ampliar Selfie
+                          </button>
+                        </div>
+                        <div style={{ textAlign: "center", background: "#000", borderRadius: 8, padding: 4, overflow: "hidden" }}>
+                          <img
+                            src={modalFoto}
+                            alt="Foto Comprovante Selfie"
+                            style={{ maxWidth: "100%", maxHeight: 200, borderRadius: 6, objectFit: "contain", cursor: "pointer" }}
+                            onClick={() => {
+                              setPhotoModalData({
+                                fotoUrl: modalFoto,
+                                userName: selectedUser?.nome || "Colaborador",
+                                userMatricula: selectedUser?.matricula || "—",
+                                dayKey: modalData.dayKey,
+                                slotName: SLOT_NAMES[modalData.slotIdx] || `Batida #${modalData.slotIdx + 1}`,
+                                timeStr: modalData.punch?.hora ? new Date(modalData.punch.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—"
+                              });
+                            }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -1084,6 +1320,325 @@ export function GerenciarMarcacoesView({
                   {saving ? "Salvando..." : "Salvar Alteração (MO)"}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal - Marcar Período Vazio / Sem Vínculo */}
+      {showModalPeriodoVazio && selectedUser && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              background: t.surface,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 16,
+              maxWidth: 520,
+              width: "100%",
+              boxShadow: "0 20px 40px rgba(0,0,0,0.25)",
+              overflow: "hidden",
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                padding: "16px 20px",
+                borderBottom: `1px solid ${t.border}`,
+                background: t.surfaceAlt,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: t.text, display: "flex", alignItems: "center", gap: 8 }}>
+                  <CalendarRange size={18} color={t.accent} /> Deixar Período Vazio (Sem Faltas)
+                </h3>
+                <p style={{ margin: "2px 0 0", fontSize: 12, color: t.textSub }}>
+                  {selectedUser.nome} — Matrícula: {selectedUser.matricula}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowModalPeriodoVazio(false)}
+                style={{ background: "none", border: "none", color: t.textSub, cursor: "pointer", padding: 4 }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Content */}
+            <div style={{ padding: 20 }}>
+              {vazioError && (
+                <div
+                  style={{
+                    background: t.dangerBg,
+                    border: `1px solid ${t.dangerBorder}`,
+                    color: t.danger,
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    fontSize: 12.5,
+                    marginBottom: 14,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <AlertTriangle size={16} />
+                  <span>{vazioError}</span>
+                </div>
+              )}
+
+              {vazioSuccessMsg && (
+                <div
+                  style={{
+                    background: t.successBg,
+                    border: `1px solid ${t.successBorder}`,
+                    color: t.success,
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    fontSize: 12.5,
+                    marginBottom: 14,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <CheckCircle2 size={16} />
+                  <span>{vazioSuccessMsg}</span>
+                </div>
+              )}
+
+              <div style={{ background: t.bg, border: `1px solid ${t.border}`, padding: 12, borderRadius: 10, marginBottom: 16, fontSize: 12, color: t.textSub, lineHeight: 1.5 }}>
+                💡 <strong>Como funciona:</strong> Ao selecionar um intervalo de datas (ex: do dia 1 ao dia em que a pessoa começou no meio do mês), esses dias serão gravados como <strong>"Vazio"</strong>. Eles não serão calculados como faltas nem descontarão do saldo do mês.
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+                <div>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: t.textSub, marginBottom: 5 }}>
+                    Data Inicial (Dia X) *
+                  </label>
+                  <input
+                    type="date"
+                    value={vazioDataInicio}
+                    onChange={(e) => setVazioDataInicio(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "9px 12px",
+                      background: t.bg,
+                      border: `1.5px solid ${t.border}`,
+                      borderRadius: 8,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: t.text,
+                      outline: "none",
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: t.textSub, marginBottom: 5 }}>
+                    Data Final (Dia Y) *
+                  </label>
+                  <input
+                    type="date"
+                    value={vazioDataFim}
+                    onChange={(e) => setVazioDataFim(e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "9px 12px",
+                      background: t.bg,
+                      border: `1.5px solid ${t.border}`,
+                      borderRadius: 8,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: t.text,
+                      outline: "none",
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 18 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: t.textSub, marginBottom: 5 }}>
+                  Motivo / Observação *
+                </label>
+                <input
+                  type="text"
+                  value={vazioMotivo}
+                  onChange={(e) => setVazioMotivo(e.target.value)}
+                  placeholder="ex: Admissão no meio do mês / Período sem vínculo"
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    background: t.bg,
+                    border: `1.5px solid ${t.border}`,
+                    borderRadius: 8,
+                    fontSize: 13,
+                    color: t.text,
+                    outline: "none",
+                  }}
+                />
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", borderTop: `1px solid ${t.border}`, paddingTop: 16 }}>
+                <button
+                  type="button"
+                  onClick={() => handleAplicarPeriodoVazio("desfazer")}
+                  disabled={savingPeriodoVazio}
+                  style={{
+                    background: t.bg,
+                    border: `1px solid ${t.border}`,
+                    color: t.danger,
+                    padding: "8px 12px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: savingPeriodoVazio ? "not-allowed" : "pointer",
+                  }}
+                  title="Remove a marcação de dia vazio dos dias no período selecionado, voltando ao cálculo normal"
+                >
+                  🔄 Desfazer / Limpar Período Vazio
+                </button>
+
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowModalPeriodoVazio(false)}
+                    style={{
+                      background: t.surfaceAlt,
+                      border: `1px solid ${t.border}`,
+                      color: t.text,
+                      padding: "8px 14px",
+                      borderRadius: 8,
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancelar
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleAplicarPeriodoVazio("marcar")}
+                    disabled={savingPeriodoVazio}
+                    style={{
+                      background: savingPeriodoVazio ? t.surfaceAlt : t.accent,
+                      color: "#ffffff",
+                      border: "none",
+                      padding: "8px 16px",
+                      borderRadius: 8,
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      cursor: savingPeriodoVazio ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {savingPeriodoVazio ? "Processando..." : "✅ Marcar como Período Vazio"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Modal de Foto / Selfie do Ponto em Gerenciar Marcações */}
+      {photoModalData && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.6)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 99999,
+            padding: 20
+          }}
+          onClick={() => setPhotoModalData(null)}
+        >
+          <div
+            style={{
+              background: t.surface,
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 20,
+              width: "100%",
+              maxWidth: 480,
+              overflow: "hidden",
+              boxShadow: t.shadow,
+              display: "flex",
+              flexDirection: "column"
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ padding: "18px 24px", background: t.surfaceAlt, borderBottom: `1px solid ${t.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(139, 92, 246, 0.15)", border: "1px solid rgba(139, 92, 246, 0.3)", display: "flex", alignItems: "center", justifyContent: "center", color: "#8B5CF6" }}>
+                  <Camera size={20} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text }}>Selfie de Comprovante de Ponto</h3>
+                  <p style={{ margin: "2px 0 0", fontSize: 12, color: t.textSub }}>Controle de Marcações · Portaria 671 MTE</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setPhotoModalData(null)}
+                style={{ background: "transparent", border: "none", color: t.textMuted, fontSize: 18, cursor: "pointer", fontWeight: "bold" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16, maxHeight: "75vh", overflowY: "auto" }}>
+              <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 12, padding: "12px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 650, color: t.textMuted }}>COLABORADOR</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginTop: 2 }}>{photoModalData.userName}</div>
+                  <div style={{ fontSize: 11, color: t.textSub, fontFamily: "monospace" }}>Mat: {photoModalData.userMatricula}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 650, color: t.textMuted }}>SLA / BATIDA</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: t.text, marginTop: 2 }}>{photoModalData.slotName} ({photoModalData.timeStr})</div>
+                  <div style={{ fontSize: 11, color: t.textSub }}>{photoModalData.dayKey.split("-").reverse().join("/")}</div>
+                </div>
+              </div>
+
+              <div style={{ position: "relative", width: "100%", borderRadius: 14, overflow: "hidden", border: `2px solid ${t.border}`, background: "#000", textAlign: "center" }}>
+                <img
+                  src={photoModalData.fotoUrl}
+                  alt="Selfie de Comprovante"
+                  style={{ width: "100%", maxHeight: 340, objectFit: "contain", display: "block" }}
+                />
+                <div style={{ position: "absolute", bottom: 8, right: 8, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)", padding: "4px 10px", borderRadius: 8, color: "#22c55e", fontSize: 10.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                  <CheckCircle2 size={12} /> Comprovante Biométrico Auditado
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding: "16px 24px", background: t.surfaceAlt, borderTop: `1px solid ${t.border}`, display: "flex", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setPhotoModalData(null)}
+                style={{ background: t.accent, color: "#ffffff", border: "none", borderRadius: 10, padding: "9px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+              >
+                Fechar Visualizador
+              </button>
             </div>
           </div>
         </div>

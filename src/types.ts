@@ -124,6 +124,9 @@ export interface AuditLogEntry {
   latitude?: number;
   longitude?: number;
   accuracy?: number;
+  hasLocation?: boolean;
+  hasPhoto?: boolean;
+  fotoComprovante?: string;
   userId?: number;
   dayKey?: string;
   slotIdx?: number;

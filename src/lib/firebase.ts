@@ -6,13 +6,93 @@ import firebaseAppletConfig from "../../firebase-applet-config.json";
 // Configure Firestore SDK log level to suppress connection warnings during offline/intermittent network mode
 setLogLevel("silent");
 
-// Suppress unhandled INTERNAL ASSERTION FAILED errors in window error handlers to prevent app crash overlays
+let isHealing = false;
+
+/**
+ * Autocura (Self-Healing) System:
+ * Detects internal Firestore SDK state corruption or IndexedDB lock conflicts,
+ * automatically purges corrupted local storage/IndexedDB databases,
+ * and cleanly reloads the application state without requiring manual user action.
+ */
+export async function triggerAutoHeal(reason?: string): Promise<void> {
+  if (typeof window === "undefined" || isHealing) return;
+
+  const lastHeal = Number(sessionStorage.getItem("firestore_auto_heal_time") || "0");
+  const now = Date.now();
+  if (now - lastHeal < 12000) {
+    console.warn("[Autocura] Executada recentemente há menos de 12s. Evitando loops de recarga.");
+    return;
+  }
+
+  isHealing = true;
+  sessionStorage.setItem("firestore_auto_heal_time", String(now));
+  console.warn(`[Autocura Firestore] 🚨 Iniciar autocura automática. Motivo: ${reason || "Erro de estado/Cache"}`);
+
+  try {
+    const toast = document.createElement("div");
+    toast.id = "autocura-toast";
+    toast.style.cssText = "position:fixed;bottom:24px;right:24px;z-index:99999;background:#0f172a;color:#f8fafc;padding:14px 22px;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.4);font-family:sans-serif;font-size:13px;display:flex;align-items:center;gap:10px;border:1px solid #3b82f6;";
+    toast.innerHTML = "<span style='font-size:16px;'>🔄</span><span><b>Autocura ativada:</b> Restaurando banco de dados e corrigindo estado...</span>";
+    document.body.appendChild(toast);
+  } catch {}
+
+  try {
+    if ("indexedDB" in window && window.indexedDB.databases) {
+      const dbs = await window.indexedDB.databases();
+      for (const d of dbs) {
+        if (d.name && (d.name.toLowerCase().includes("firestore") || d.name.toLowerCase().includes("firebase"))) {
+          console.log(`[Autocura] Excluindo banco de dados local corrompido: ${d.name}`);
+          window.indexedDB.deleteDatabase(d.name);
+        }
+      }
+    } else if ("indexedDB" in window) {
+      window.indexedDB.deleteDatabase("firestore/[DEFAULT]/[instance]/main");
+      if (firebaseAppletConfig.projectId) {
+        window.indexedDB.deleteDatabase(`firestore/${firebaseAppletConfig.projectId}/main`);
+      }
+    }
+  } catch (err) {
+    console.warn("[Autocura] Falha ao limpar IndexedDB:", err);
+  }
+
+  setTimeout(() => {
+    window.location.reload();
+  }, 800);
+}
+
+export function isAssertionError(msg: string): boolean {
+  if (!msg) return false;
+  const str = String(msg).toLowerCase();
+  return (
+    str.includes("internal assertion failed") ||
+    str.includes("unexpected state") ||
+    str.includes("e5da") ||
+    str.includes("b815") ||
+    str.includes("da08") ||
+    str.includes("firestore (12.") ||
+    str.includes("firestore (11.") ||
+    str.includes("firestore (10.") ||
+    (str.includes("firestore") && str.includes("assertion"))
+  );
+}
+
+// Intercept unhandled assertion errors in global handlers to run autocura automatically
 if (typeof window !== "undefined") {
   window.addEventListener("unhandledrejection", (event) => {
     const msg = event?.reason?.message || String(event?.reason || "");
-    if (msg.includes("INTERNAL ASSERTION FAILED") || msg.includes("Unexpected state") || msg.includes("da08")) {
+    if (isAssertionError(msg)) {
       event.preventDefault();
-      console.warn("[Firebase] Internal SDK assertion caught and suppressed:", msg);
+      console.warn("[Firebase] Inconsistência do SDK capturada em rejection. Ativando autocura:", msg);
+      triggerAutoHeal(msg);
+    }
+  });
+
+  window.addEventListener("error", (event) => {
+    const msg = event?.message || String(event?.error || "");
+    if (isAssertionError(msg)) {
+      event.preventDefault();
+      console.warn("[Firebase] Inconsistência do SDK capturada em error event. Ativando autocura:", msg);
+      triggerAutoHeal(msg);
     }
   });
 }

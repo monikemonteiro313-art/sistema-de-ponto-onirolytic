@@ -30,9 +30,18 @@ export function genSenha(): string {
 export function genMatricula(users: User[]): string {
   const nums = users
     .filter(u => u && u.matricula && !isMatriculaMatch(u.matricula, SUPERADMIN_MAT) && /^\d+$/.test(String(u.matricula).trim()))
-    .map(u => parseInt(String(u.matricula).trim(), 10))
-    .filter(n => n < 90000); // Filter out superadmin or abnormally large numbers
-  const nextNum = nums.length ? Math.max(...nums) + 1 : 1;
+    .map(u => parseInt(String(u.matricula).trim(), 10));
+
+  // A última matrícula informada é 200203. Garantimos que a base mínima seja 200203
+  // para que a próxima gerada sequencialmente seja 200204 (ou superior se já houver maiores).
+  const BASE_MATRICULA = 200203;
+  let nextNum = Math.max(BASE_MATRICULA, ...nums) + 1;
+
+  // Garantia rigorosa de unicidade: avança até encontrar um número de matrícula não utilizado
+  while (users.some(u => isMatriculaMatch(u?.matricula, String(nextNum).padStart(6, "0")))) {
+    nextNum++;
+  }
+
   return String(nextNum).padStart(6, "0");
 }
 
@@ -86,14 +95,14 @@ export function sanitizeAndDeduplicateUsers(rawUsers: User[]): { cleanUsers: Use
       }
     }
 
-    // General duplicate matricula rule: exact lowercase string comparison
-    const normalizedKey = u.matricula.toLowerCase();
+    // General duplicate matricula rule: normalized string comparison (ignoring leading zeros)
+    const normalizedKey = u.matricula ? u.matricula.replace(/^0+/, "").toLowerCase() : "";
     if (normalizedKey && seenMatriculas.has(normalizedKey) && !isMatriculaMatch(u.matricula, SUPERADMIN_MAT)) {
       duplicatesFound = true;
       const oldMat = u.matricula;
       u.matricula = genMatricula([...list, ...rawUsers]);
       remappedMatriculas[String(u.id)] = `${oldMat} -> ${u.matricula}`;
-      seenMatriculas.add(u.matricula.toLowerCase());
+      seenMatriculas.add(u.matricula.replace(/^0+/, "").toLowerCase());
     } else if (normalizedKey) {
       seenMatriculas.add(normalizedKey);
     }
@@ -464,6 +473,11 @@ export function calcularDia(
   const horasJornada = jornadaIdParaODia ? calcularHorasDia(jornadaIdParaODia, jornadaCustomParaODia, diaSem) : 8;
   const ocorrencia = batidas.find((b): b is Batida => b !== null && !!b.ocorrencia && (b.ocorrencia !== "atestado" || b.statusAtestado !== "recusado"));
 
+  // Dia Vazio / Sem Vínculo (ex: admissão no meio do mês, isento de cálculo)
+  if (ocorrencia?.ocorrencia === "dia_vazio" || ocorrencia?.ocorrencia === "vazio" || ocorrencia?.ocorrencia === "sem_vinculo" || ocorrencia?.ocorrencia === "isento") {
+    return { status: "dia_vazio" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada: 0, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "", motivoDiaVazio: ocorrencia.obs || "Dia Vazio / Sem Vínculo" };
+  }
+
   // Afastamento
   if (ocorrencia?.ocorrencia === "afastamento") {
     return { status: "afastamento" as const, horasTrabalhadas: 0, horasEfetivas: 0, horasJornada, atrasoMin: 0, saidaAntMin: 0, horasExtra: 0, contaParaCartao: false, adicNoturnoHoras: 0, adicNoturnoTexto: "" };
@@ -664,7 +678,7 @@ export function resumoMesCalculado(
       totalHorasAdicionalNoturno += r.adicNoturnoHoras;
     }
 
-    if (r.status === "folga" || r.status === "futuro") continue;
+    if (r.status === "folga" || r.status === "futuro" || r.status === "dia_vazio") continue;
     if (r.status === "ferias") {
       diasFerias++;
       continue;

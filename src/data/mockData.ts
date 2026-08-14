@@ -2,6 +2,21 @@ import { Jornada, User, PontosGlobal, PeriodoFerias, DiaPontos } from "../types"
 
 export const JORNADAS_PREDEFINIDAS: Jornada[] = [
   {
+    id: "flex_8h_sab_4h",
+    nome: "Sem Horário Fixo (Seg–Sex 8h / Sáb 4h - 44h/sem)",
+    entrada: null,
+    saidaAlmoco: null,
+    retornoAlmoco: null,
+    saida: null,
+    diasSemana: [1, 2, 3, 4, 5, 6],
+    horasDia: 8,
+    descricao: "Seg–Sex: 8h/dia · Sáb: 4h · Total: 44h/sem · Sem horário pré-definido",
+    sabadoEspecial: true,
+    sabadoEntrada: null,
+    sabadoSaida: null,
+    sabadoHoras: 4
+  },
+  {
     id: "posto_07_17_sab",
     nome: "Posto 07h–17h (2h Almoço + Sáb 4h)",
     entrada: "07:00",
@@ -58,15 +73,45 @@ export const JORNADAS_PREDEFINIDAS: Jornada[] = [
     descricao: "Seg–Sex: 8h48min/dia (1h almoço) · Sáb: Folga · Total: 44h/sem"
   },
   {
+    id: "clt_8h_sab_4h",
+    nome: "CLT 44h - 8h/dia (Seg–Sex) + Sáb 4h (08h–17h / Sáb 08h–12h)",
+    entrada: "08:00",
+    saidaAlmoco: "12:00",
+    retornoAlmoco: "13:00",
+    saida: "17:00",
+    diasSemana: [1, 2, 3, 4, 5, 6],
+    horasDia: 8,
+    descricao: "Seg–Sex: 08h–12h / 13h–17h (8h) · Sáb: 08h–12h (4h) · Total: 44h/sem (1h Almoço)",
+    sabadoEspecial: true,
+    sabadoEntrada: "08:00",
+    sabadoSaida: "12:00",
+    sabadoHoras: 4
+  },
+  {
+    id: "clt_07_16_sab",
+    nome: "CLT 44h - 8h/dia (Seg–Sex) + Sáb 4h (07h–16h / Sáb 07h–11h)",
+    entrada: "07:00",
+    saidaAlmoco: "11:00",
+    retornoAlmoco: "12:00",
+    saida: "16:00",
+    diasSemana: [1, 2, 3, 4, 5, 6],
+    horasDia: 8,
+    descricao: "Seg–Sex: 07h–11h / 12h–16h (8h) · Sáb: 07h–11h (4h) · Total: 44h/sem (1h Almoço)",
+    sabadoEspecial: true,
+    sabadoEntrada: "07:00",
+    sabadoSaida: "11:00",
+    sabadoHoras: 4
+  },
+  {
     id: "clt_8h",
-    nome: "CLT Padrão 8h",
+    nome: "CLT Padrão 8h (Apenas Seg–Sex)",
     entrada: "08:00",
     saidaAlmoco: "12:00",
     retornoAlmoco: "13:00",
     saida: "17:00",
     diasSemana: [1, 2, 3, 4, 5],
     horasDia: 8,
-    descricao: "Seg–Sex · 8h/dia · 44h/semana"
+    descricao: "Seg–Sex · 8h/dia · 40h/semana (Sábados de Folga)"
   },
   {
     id: "clt_6h",

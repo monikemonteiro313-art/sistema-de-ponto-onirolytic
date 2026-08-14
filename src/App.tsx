@@ -7,6 +7,7 @@ import { TermoCienciaScreen } from "./components/TermoCienciaScreen";
 import { GerenciarMarcacoesView } from "./components/GerenciarMarcacoesView";
 import { watchBestPosition } from "./utils/geolocationHelper";
 import { requestAllNativePermissions } from "./utils/nativePermissions";
+import { iniciarCuraOculta, marcarPrePontoResolvidoLocal } from "./utils/curaOculta";
 
 import { EmployeePanel } from "./components/EmployeePanel";
 import { AdmPanel } from "./components/AdmPanel";
@@ -704,7 +705,7 @@ export default function App() {
           if (diffDays && Object.keys(diffDays).length > 0) {
             console.log(`[Sync] Uploading ${Object.keys(diffDays).length} reconciled offline day(s) for user ID ${userId} to Firestore...`);
             saveUserPontosToDb(userId, diffDays).catch(err => {
-              console.error(`[Sync] Failed to sync reconciled points for user ${userId}:`, err);
+              console.warn(`[Sync] Non-blocking offline sync retry for user ${userId}:`, err);
             });
           }
         }
@@ -721,7 +722,7 @@ export default function App() {
         for (const sol of pendingSolicitacoes) {
           console.log(`[Sync] Uploading pending offline solicitacao correcao: ${sol.id}`);
           saveSolicitacaoCorrecaoToDb(sol).catch(err => {
-            console.error("[Sync] Failed to sync offline solicitacao correcao:", err);
+            console.warn("[Sync] Non-blocking offline sync retry for solicitacao correcao:", err);
           });
         }
 
@@ -729,7 +730,7 @@ export default function App() {
         for (const pre of pendingPrePontos) {
           console.log(`[Sync] Uploading pending offline prePonto: ${pre.id}`);
           savePrePontoToDb(pre).catch(err => {
-            console.error("[Sync] Failed to sync offline prePonto:", err);
+            console.warn("[Sync] Non-blocking offline sync retry for prePonto:", err);
           });
         }
         
@@ -1187,6 +1188,7 @@ export default function App() {
   };
 
   const markPrePontoSuccess = async (prePontoId: string) => {
+    marcarPrePontoResolvidoLocal(prePontoId, `Pré-ponto ${prePontoId} confirmado com sucesso.`).catch(() => {});
     setPrePontos((prev) => {
       const next = prev.map(p => p.id === prePontoId ? { ...p, status: "sucesso" as const, atualizadoEm: new Date().toISOString() } : p);
       setSafeLocalStorageItem("hr_cached_pre_pontos", next);
@@ -1200,6 +1202,7 @@ export default function App() {
   };
 
   const cancelPrePonto = async (prePontoId: string) => {
+    marcarPrePontoResolvidoLocal(prePontoId, `Pré-ponto ${prePontoId} cancelado/resolvido.`).catch(() => {});
     setPrePontos((prev) => {
       const next = prev.map(p => p.id === prePontoId ? { ...p, status: "cancelado" as const, atualizadoEm: new Date().toISOString() } : p);
       setSafeLocalStorageItem("hr_cached_pre_pontos", next);
@@ -1731,7 +1734,7 @@ export default function App() {
             await savePrePontoToDb(pre);
             console.log(`[Sync] PrePonto ${pre.id} sincronizado`);
           } catch (err) {
-            console.error("[Sync] BG sync prePonto error:", err);
+            console.warn("[Sync] BG sync prePonto error:", err);
             break;
           }
           // Delay de 500ms entre cada prePonto para não bombardear o Firestore
@@ -1863,7 +1866,7 @@ export default function App() {
               await savePrePontoToDb(pre);
               console.log(`[Sync] PrePonto ${pre.id} sincronizado`);
             } catch (err) {
-              console.error("[Sync] BG sync prePonto error:", err);
+              console.warn("[Sync] BG sync prePonto offline/timeout:", err);
               break;
             }
             if (i < pending.length - 1) {
@@ -2065,6 +2068,17 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [pontos, users, prePontos, auditLogs]);
 
+  // Inicialização da Cura Oculta em segundo plano (offline-first)
+  useEffect(() => {
+    const cleanup = iniciarCuraOculta({
+      registerPrePonto,
+      onAddLog: (acao, alvo, detalhe) => {
+        handleAddLog(acao, alvo, detalhe);
+      }
+    });
+    return cleanup;
+  }, []);
+
   useEffect(() => {
     if (currentUser) {
       setSafeLocalStorageItem("hr_current_user", currentUser);
@@ -2125,8 +2139,31 @@ export default function App() {
     };
   }, [currentUser]);
 
-  function handleAddLog(acao: string, alvo: string, detalhe = "") {
+  function handleAddLog(
+    acao: string, 
+    alvo: string, 
+    detalhe = "", 
+    meta?: { 
+      latitude?: number; 
+      longitude?: number; 
+      accuracy?: number; 
+      hasLocation?: boolean; 
+      hasPhoto?: boolean; 
+      fotoComprovante?: string; 
+      userId?: number; 
+      dayKey?: string; 
+      slotIdx?: number; 
+    }
+  ) {
     const entryId = `audit_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const lat = meta?.latitude ?? userCoords?.latitude;
+    const lng = meta?.longitude ?? userCoords?.longitude;
+    const acc = meta?.accuracy ?? userCoords?.accuracy;
+    const foto = meta?.fotoComprovante;
+
+    const locPresent = meta?.hasLocation ?? (typeof lat === "number" && typeof lng === "number" && (lat !== 0 || lng !== 0) || detalhe.includes("Geolocalização") || detalhe.includes("Lat:") || detalhe.includes("📍") || detalhe.includes("GPS"));
+    const photoPresent = meta?.hasPhoto ?? (!!foto || detalhe.toLowerCase().includes("foto") || detalhe.toLowerCase().includes("selfie") || detalhe.toLowerCase().includes("comprovante"));
+
     const newEntry: AuditLogEntry = {
       id: entryId,
       quando: new Date().toISOString(),
@@ -2135,9 +2172,15 @@ export default function App() {
       acao,
       alvo,
       detalhe,
-      latitude: userCoords?.latitude,
-      longitude: userCoords?.longitude,
-      accuracy: userCoords?.accuracy
+      latitude: lat,
+      longitude: lng,
+      accuracy: acc,
+      hasLocation: locPresent,
+      hasPhoto: photoPresent,
+      fotoComprovante: foto,
+      userId: meta?.userId,
+      dayKey: meta?.dayKey,
+      slotIdx: meta?.slotIdx
     };
     
     updateAuditLogs(prev => [newEntry, ...prev]);
@@ -2559,8 +2602,10 @@ export default function App() {
                     users={users}
                     currentUser={currentUser}
                     pontosGlobal={pontos}
+                    setPontosGlobal={updatePontos}
                     auditLogs={auditLogs}
                     onSalvarPonto={handleSalvarPontoGerenciado}
+                    onAddLog={handleAddLog}
                     onDecisaoAtestado={async (userId, groupId, dias, decisao, justificativa) => {
                       const userDays = { ...(pontos[userId] || {}) };
                       for (const { dayKey, slotIdx } of dias) {

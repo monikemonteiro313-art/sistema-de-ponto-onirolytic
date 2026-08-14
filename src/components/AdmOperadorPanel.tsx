@@ -571,15 +571,15 @@ interface AdmOperadorPanelProps {
 
 export function AdmOperadorPanel({
   t,
-  users,
+  users = [],
   setUsers,
   currentUser,
   onLogout,
   onGoAdm,
-  pontosGlobal,
+  pontosGlobal = {},
   setPontosGlobal,
   onAddLog,
-  minimoHorasDia,
+  minimoHorasDia = 8,
   setMinimoHorasDia,
   empresaConfig,
   setEmpresaConfig,
@@ -983,6 +983,7 @@ export function AdmOperadorPanel({
       const fmtB = (b: any) => {
         if (!b) return "—";
         if (b.ocorrencia) {
+          if (b.ocorrencia === "dia_vazio" || b.ocorrencia === "vazio" || b.ocorrencia === "sem_vinculo" || b.ocorrencia === "isento") return "";
           return b.ocorrencia === "atestado" ? (b.parcial ? "Atestado Parcial" : "Atestado") : b.ocorrencia === "afastamento" ? "Afastamento" : b.ocorrencia === "falta" ? "Falta" : b.ocorrencia;
         }
         let timeStr = new Date(b.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
@@ -995,8 +996,8 @@ export function AdmOperadorPanel({
       dias.push({ d, diaSem, key, batidas, calc, fmtB });
     }
 
-    const corStatus: Record<string, string> = { completo: "#16a34a", parcial: "#d97706", falta: "#dc2626", atestado: "#2563eb", afastamento: "#7c3aed", folga: "#9ca3af", futuro: "#9ca3af", ferias: "#7c3aed", feriado: "#df2222" };
-    const nomesStatus: Record<string, string> = { completo: "Completo", parcial: "Parcial", falta: "Falta", atestado: "Atestado", afastamento: "Afastamento", folga: "Folga", futuro: "A planejar", ferias: "Férias", feriado: "Feriado" };
+    const corStatus: Record<string, string> = { completo: "#16a34a", parcial: "#d97706", falta: "#dc2626", atestado: "#2563eb", afastamento: "#7c3aed", folga: "#9ca3af", futuro: "#9ca3af", ferias: "#7c3aed", feriado: "#df2222", dia_vazio: "#9ca3af" };
+    const nomesStatus: Record<string, string> = { completo: "Completo", parcial: "Parcial", falta: "Falta", atestado: "Atestado", afastamento: "Afastamento", folga: "Folga", futuro: "A planejar", ferias: "Férias", feriado: "Feriado", dia_vazio: "—" };
 
     const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
 <title>Espelho de Ponto — ${u.nome}</title>
@@ -2010,7 +2011,7 @@ export function AdmOperadorPanel({
     const lastNames = ["Silva", "Santos", "Oliveira", "Souza", "Rodrigues", "Ferreira", "Alves", "Pereira", "Lima", "Gomes", "Costa", "Ribeiro", "Martins", "Carvalho", "Rocha", "Almeida", "Lopes", "Soares", "Moreira", "Barbosa", "Vieira", "Teixeira", "Machado", "Nunes", "Cardoso", "Mendes", "Araújo", "Freitas", "Pinto", "Batista", "Pires", "Cabral", "Duarte", "Mesquita"];
 
     const categoriasJornadas = [
-      "clt_8h", "clt_6h", "clt_12x36", "clt_noturno", "clt_tarde",
+      "flex_8h_sab_4h", "clt_8h_sab_4h", "clt_07_16_sab", "clt_8h", "clt_6h", "clt_12x36", "clt_noturno", "clt_tarde",
       "clt_meio", "clt_meio_t", "comercial", "sabado", "escala_5x1",
       "escala_5x2", "escala_6x1", "home_flex"
     ];
@@ -3803,8 +3804,10 @@ export function AdmOperadorPanel({
             users={users}
             currentUser={currentUser}
             pontosGlobal={pontosGlobal}
+            setPontosGlobal={setPontosGlobal}
             auditLogs={auditLogs}
             onSalvarPonto={handleSalvarPontoGerenciado}
+            onAddLog={onAddLog}
             onDecisaoAtestado={async (userId, groupId, dias, decisao, justificativa) => {
               const userDays = { ...(pontosGlobal[userId] || {}) };
               const changedDays: Record<string, any> = {};
