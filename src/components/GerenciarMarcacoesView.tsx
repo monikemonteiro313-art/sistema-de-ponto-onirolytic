@@ -4,6 +4,7 @@ import { ThemeColors, User, PontosGlobal, Batida, DiaPontos, AuditLogEntry, Folg
 import { calcularDia, resumoMesCalculado } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
 import { getFotoForPunchSlot } from "../utils/photoHelper";
+import { saveDiaPonto } from "../lib/firebaseService";
 
 interface GerenciarMarcacoesViewProps {
   t: ThemeColors;
@@ -117,29 +118,38 @@ export function GerenciarMarcacoesView({
       const userDays = { ...(pontosGlobal[selectedUserId] || {}) };
       let curr = new Date(start);
       let count = 0;
+      const updatedDaysList: { dayKey: string; punches: any[] }[] = [];
 
       while (curr <= end) {
         const dayKey = curr.toISOString().slice(0, 10);
+        let dayPunches: any[] = [null, null, null, null];
         if (opcao === "marcar") {
-          userDays[dayKey] = [
+          const nowIso = new Date().toISOString();
+          dayPunches = [
             {
               ocorrencia: "dia_vazio",
               obs: vazioMotivo.trim() || "Período Vazio / Sem Vínculo",
               modificadoPorGestor: true,
               modificadoPor: currentUser.nome,
-              registradoEm: new Date().toISOString(),
+              registradoEm: nowIso,
+              editadoEm: nowIso,
+              revisadoEm: nowIso,
+              alteradoEm: nowIso,
               origemMarcacao: "MO",
             },
             null,
             null,
             null,
           ];
+          userDays[dayKey] = dayPunches;
         } else {
           // Desfazer: se era dia_vazio, limpa para voltar ao estado normal de calculo/falta
           if (userDays[dayKey] && userDays[dayKey][0]?.ocorrencia === "dia_vazio") {
             userDays[dayKey] = [null, null, null, null];
+            dayPunches = [null, null, null, null];
           }
         }
+        updatedDaysList.push({ dayKey, punches: userDays[dayKey] });
         count++;
         curr.setDate(curr.getDate() + 1);
       }
@@ -149,6 +159,12 @@ export function GerenciarMarcacoesView({
           ...prev,
           [selectedUserId]: userDays,
         }));
+      }
+
+      for (const item of updatedDaysList) {
+        await saveDiaPonto(selectedUserId, item.dayKey, item.punches).catch((e) =>
+          console.warn(`Erro ao salvar dia vazio ${item.dayKey}:`, e)
+        );
       }
 
       const fmtIni = vazioDataInicio.split("-").reverse().join("/");

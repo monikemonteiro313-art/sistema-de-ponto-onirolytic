@@ -32,9 +32,9 @@ export async function getLocationWithIOSFallback(): Promise<GeolocationPosition 
         console.warn("iOS GPS falhou:", err.code, err.message);
         
         if (err.code === 1) {
-          alert("🍎 iPhone bloqueou a localização.\n\nComo liberar:\n1. Configurações > Safari > Localização > PERMITIR\n2. Ou: Configurações > Privacidade > Localização > Safari > PERMITIR SEMPRE\n3. Verifique se 'Precisão Exata' está ligada");
+          console.warn("[GPS] iPhone bloqueou localização. Instruções: Config > Safari > Localização > PERMITIR");
         } else if (err.code === 2) {
-          alert("🍎 GPS indisponível no iPhone.\nDesative o Modo Economia de Bateria (ícone amarelo) e tente novamente.");
+          console.warn("[GPS] iPhone GPS indisponível. Verificar Modo Economia de Bateria.");
         }
         
         resolve(null);
@@ -42,7 +42,7 @@ export async function getLocationWithIOSFallback(): Promise<GeolocationPosition 
       {
         enableHighAccuracy: !isIOS, // iOS trava com highAccuracy=true em alguns casos
         timeout: isIOS ? 20000 : 10000, // iOS precisa de mais tempo
-        maximumAge: isIOS ? 60000 : 0   // iOS aceita cache de 1min melhor que GPS frio
+        maximumAge: isIOS ? 10000 : 0   // iOS aceita cache de 10s (mais preciso)
       }
     );
   });
@@ -136,11 +136,11 @@ export async function getBestCurrentPosition(
       (err) => {
         console.warn("Web GPS falhou:", err.code, err.message);
         if (err.code === 1) {
-          alert("📍 Localização bloqueada.\n\nToque no cadeado 🔒 ao lado do endereço > Permissões do site > Localização > Permitir");
+          console.warn("[GPS] Localização bloqueada. Toque no cadeado ao lado do endereço > Permissões do site > Localização > Permitir");
         } else if (err.code === 2) {
-          alert("📍 Não foi possível obter localização. Verifique se o GPS/localização está ligado no celular.");
+          console.warn("[GPS] Não foi possível obter localização. Verifique se o GPS/localização está ligado no celular.");
         } else if (err.code === 3) {
-          alert("📍 Localização demorou demais para responder. Aproxime-se de uma janela e tente bater o ponto novamente.");
+          console.warn("[GPS] Localização demorou demais para responder. Aproxime-se de uma janela e tente bater o ponto novamente.");
         }
         reject(err);
       },

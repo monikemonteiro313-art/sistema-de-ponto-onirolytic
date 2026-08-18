@@ -62,16 +62,41 @@ export async function getHoraOficial(): Promise<HoraOficial> {
 
     if (res.ok) {
       const data = await res.json();
-      const dtIso = `${data.year}-${String(data.month).padStart(2, "0")}-${String(data.day).padStart(2, "0")}T${String(data.hour).padStart(2, "0")}:${String(data.minute).padStart(2, "0")}:${String(data.second).padStart(2, "0")}-03:00`;
-      const oficial: HoraOficial = {
-        iso: dtIso,
-        timestamp: new Date(dtIso).getTime(),
-        fonte: "brasilia-api",
-        offsetBrasilia: "-03:00",
-      };
-      lastKnownHoraOficial = oficial;
-      lastFetchTime = Date.now();
-      return oficial;
+      let dtIso: string;
+      if (data.dateTime) {
+        dtIso = data.dateTime.includes("-03:00") || data.dateTime.includes("+")
+          ? data.dateTime
+          : `${data.dateTime}-03:00`;
+      } else {
+        const y = data.year;
+        const m = String(data.month).padStart(2, "0");
+        const d = String(data.day).padStart(2, "0");
+        const hh = String(data.hour).padStart(2, "0");
+        const mm = String(data.minute).padStart(2, "0");
+        const ss = String(data.seconds ?? data.second ?? 0).padStart(2, "0");
+        dtIso = `${y}-${m}-${d}T${hh}:${mm}:${ss}-03:00`;
+      }
+
+      const ts = new Date(dtIso).getTime();
+      if (!isNaN(ts)) {
+        const oficial: HoraOficial = {
+          iso: dtIso,
+          timestamp: ts,
+          fonte: "brasilia-api",
+          offsetBrasilia: "-03:00",
+        };
+        lastKnownHoraOficial = oficial;
+        lastFetchTime = Date.now();
+
+        // Salva o offset do relógio em relação ao tempo real de Brasília
+        const offset = ts - Date.now();
+        try {
+          localStorage.setItem("hr_clock_offset", String(offset));
+          localStorage.setItem("last_clock_sync", String(Date.now()));
+        } catch (_) {}
+
+        return oficial;
+      }
     }
   } catch {
     // falhou
@@ -89,11 +114,17 @@ export async function getHoraOficial(): Promise<HoraOficial> {
   }
 
   // 4. Último recurso: horário local do dispositivo (marcado como local-offline)
+  const offsetMin = new Date().getTimezoneOffset();
+  const sign = offsetMin <= 0 ? "+" : "-";
+  const hours = String(Math.abs(Math.floor(offsetMin / 60))).padStart(2, "0");
+  const mins = String(Math.abs(offsetMin % 60)).padStart(2, "0");
+  const deviceOffset = `${sign}${hours}:${mins}`;
+
   return {
     iso: agoraLocal.toISOString(),
     timestamp: agoraLocal.getTime(),
     fonte: "local-offline",
-    offsetBrasilia: "-03:00",
+    offsetBrasilia: deviceOffset,
   };
 }
 

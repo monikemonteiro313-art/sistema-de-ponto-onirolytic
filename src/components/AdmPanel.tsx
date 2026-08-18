@@ -195,7 +195,7 @@ export function AdmPanel({
   const validUsers = useMemo(() => {
     const map = new Map<number, User>();
     for (const u of users) {
-      if (u && typeof u === "object" && typeof u.id === "number" && u.nome && u.matricula) {
+      if (u && typeof u === "object" && typeof u.id === "number" && typeof u.nome === "string" && typeof u.matricula === "string") {
         map.set(u.id, u);
       }
     }
@@ -484,29 +484,12 @@ export function AdmPanel({
           
           if (dayPointsChanged) {
             userDays[dayKey] = dayPoints as any;
-            userDaysChanged = true;
-            changedDaysList.push({ userId: u.id, dayKey, dayData: dayPoints });
           }
-        }
-        
-        if (userDaysChanged) {
-          newPontosGlobal[u.id] = userDays;
-          hasChanges = true;
         }
       }
       
-      if (hasChanges && changedDaysList.length > 0) {
-        logs.push(`💾 Gravando ${changedDaysList.length} alteração(ões) pontual(ais) de autocura no Firebase...`);
-        try {
-          await batchSaveDiasPonto(changedDaysList);
-        } catch (err) {
-          console.error(`Falha ao salvar lote de autocura:`, err);
-        }
-        
-        if (setPontosGlobal) {
-          setPontosGlobal(newPontosGlobal);
-        }
-      }
+      logs.push(`📊 Varredura concluída. Análise de integridade realizada com sucesso (leitura diagnóstica passiva).`);
+
       
       const finalStats = {
         oddPunchesFixed: healingStats.oddPunchesFixed + oddPunchesCount,
@@ -552,7 +535,9 @@ export function AdmPanel({
   const [selectedPhotoLog, setSelectedPhotoLog] = useState<AuditLogEntry | null>(null);
 
   const combinedAuditLogs = useMemo(() => {
-    return [...auditLogExterno, ...auditLog];
+    const sanitizeAudit = (arr: AuditLogEntry[]) =>
+      arr.filter(e => e && typeof e === "object" && typeof e.id !== "undefined");
+    return [...sanitizeAudit(auditLogExterno), ...sanitizeAudit(auditLog)];
   }, [auditLogExterno, auditLog]);
 
   const getFotoForLog = (entry: AuditLogEntry): string | undefined => {
@@ -560,7 +545,7 @@ export function AdmPanel({
   };
 
   const getGeoForLog = (entry: AuditLogEntry): { latitude?: number; longitude?: number; accuracy?: number } | undefined => {
-    if (!entry) return undefined;
+    if (!entry || typeof entry !== "object") return undefined;
     if (entry.latitude && entry.longitude) {
       return { latitude: entry.latitude, longitude: entry.longitude, accuracy: entry.accuracy };
     }
@@ -591,7 +576,7 @@ export function AdmPanel({
   };
 
   const hasLocationData = (entry: AuditLogEntry): boolean => {
-    if (!entry) return false;
+    if (!entry || typeof entry !== "object") return false;
     if (entry.hasLocation === true) return true;
     const geo = getGeoForLog(entry);
     if (geo && geo.latitude && geo.longitude && (geo.latitude !== 0 || geo.longitude !== 0)) return true;
@@ -601,7 +586,7 @@ export function AdmPanel({
   };
 
   const hasPhotoData = (entry: AuditLogEntry): boolean => {
-    if (!entry) return false;
+    if (!entry || typeof entry !== "object") return false;
     if (entry.hasPhoto === true) return true;
     if (!!getFotoForLog(entry)) return true;
     const d = (entry.detalhe || "").toLowerCase();
@@ -617,6 +602,7 @@ export function AdmPanel({
     let semMetaCount = 0;
 
     combinedAuditLogs.forEach(entry => {
+      if (!entry || typeof entry !== "object") return;
       const isBatida = (entry.acao || "").toLowerCase().includes("ponto") || 
                        (entry.acao || "").toLowerCase().includes("batida") || 
                        (entry.detalhe || "").toLowerCase().includes("batida");
@@ -640,7 +626,7 @@ export function AdmPanel({
 
   // Função para identificar fraudes de adulteração de relógio no log de auditoria
   const isFraudAuditLog = (entry: AuditLogEntry): boolean => {
-    if (!entry) return false;
+    if (!entry || typeof entry !== "object") return false;
     const text = `${entry.acao || ""} ${entry.detalhe || ""} ${entry.alvo || ""}`.toLowerCase();
     return (
       text.includes("fraude: alteração de relógio") ||
@@ -657,13 +643,14 @@ export function AdmPanel({
 
   // Contagem de fraudes/suspeitas para exibir a bolinha vermelha no menu do topo
   const fraudAuditLogsCount = useMemo(() => {
-    return combinedAuditLogs.filter(isFraudAuditLog).length;
+    return combinedAuditLogs.filter(e => e && typeof e === "object" && isFraudAuditLog(e)).length;
   }, [combinedAuditLogs]);
 
   // Lista de meses disponíveis nos logs para o filtro
   const availableAuditMonths = useMemo(() => {
     const monthsMap = new Map<string, string>();
     combinedAuditLogs.forEach(entry => {
+      if (!entry || !entry.quando) return;
       const d = new Date(entry.quando);
       if (!isNaN(d.getTime())) {
         const yyyy = d.getFullYear();
@@ -681,8 +668,8 @@ export function AdmPanel({
   // Aplicador de filtros na lista de auditoria
   const filteredAuditLogs = useMemo(() => {
     return combinedAuditLogs.filter(entry => {
-      if (!entry) return false;
-      const entryDate = new Date(entry.quando);
+      if (!entry || typeof entry !== "object") return false;
+      const entryDate = new Date(entry.quando || "");
 
       // 1. Mês filter (YYYY-MM)
       if (filterAuditMes) {
@@ -757,7 +744,7 @@ export function AdmPanel({
     const pontosEstimatedBytes = pontosRawBytes + (pontosDocCount * 130);
 
     const logsDocCount = combinedAuditLogs.length;
-    const logsRawBytes = combinedAuditLogs.reduce((sum, log) => sum + JSON.stringify(log).length, 0);
+    const logsRawBytes = combinedAuditLogs.reduce((sum, log) => sum + (log ? JSON.stringify(log).length : 0), 0);
     const logsEstimatedBytes = logsRawBytes + (logsDocCount * 120);
 
     const configDocCount = 4; // empresa, minimoHoras, feriados, wizard
@@ -894,7 +881,7 @@ export function AdmPanel({
     justificativa: string
   ) => {
     const [hh, mm] = novaHora.split(":").map(Number);
-    const dateObj = new Date(`${dayKey}T00:00:00`);
+    const dateObj = new Date(`${dayKey}T12:00:00-03:00`);
     dateObj.setHours(hh, mm, 0, 0);
 
     const targetUser = users.find((u) => u.id === userId);
@@ -911,15 +898,20 @@ export function AdmPanel({
           })
         : "--:--";
 
+    const nowIso = new Date().toISOString();
     const updatedPunch: Batida = {
       ...(existingPunch || {}),
       hora: dateObj.toISOString(),
+      iso: dateObj.toISOString(),
       tipo: "manual",
       origemMarcacao: "MO",
       modificadoPorGestor: true,
       modificadoPor: currentUser.nome,
       modificadoPorMatricula: currentUser.matricula,
-      alteradoEm: new Date().toISOString(),
+      registradoEm: existingPunch?.registradoEm || nowIso,
+      alteradoEm: nowIso,
+      editadoEm: nowIso,
+      revisadoEm: nowIso,
       justificativaAlteracao: justificativa,
       lancadoPorAdm: true,
     };
@@ -1666,8 +1658,8 @@ export function AdmPanel({
   // Memoized search list of users to keep search typing snappy
   const filteredUsers = useMemo(() => {
     return validUsers.filter(u =>
-      u.nome.toLowerCase().includes(search.toLowerCase()) ||
-      u.matricula.toLowerCase().includes(search.toLowerCase())
+      (u.nome || "").toLowerCase().includes((search || "").toLowerCase()) ||
+      (u.matricula || "").toLowerCase().includes((search || "").toLowerCase())
     );
   }, [validUsers, search]);
 
@@ -1744,9 +1736,9 @@ export function AdmPanel({
     </thead>
     <tbody>
       ${filteredAuditLogs.map(entry => {
-        const isRed = entry.acao.includes("Excluiu") || entry.acao.includes("Desativou");
-        const isYel = entry.acao.includes("Bloqueou") || entry.acao.includes("permissão");
-        const isGrn = entry.acao.includes("Criou") || entry.acao.includes("Desbloqueou") || entry.acao.includes("termo");
+        const isRed = (entry.acao || "").includes("Excluiu") || (entry.acao || "").includes("Desativou");
+        const isYel = (entry.acao || "").includes("Bloqueou") || (entry.acao || "").includes("permissão");
+        const isGrn = (entry.acao || "").includes("Criou") || (entry.acao || "").includes("Desbloqueou") || (entry.acao || "").includes("termo");
         const badgeClass = isRed ? "badge-danger" : isYel ? "badge-warning" : isGrn ? "badge-success" : "badge-info";
 
         const d = new Date(entry.quando);
@@ -3769,9 +3761,9 @@ export function AdmPanel({
                 </div>
                 {filteredAuditLogs.slice((pageAudit - 1) * 10, pageAudit * 10).map((entry, idx) => {
                   const isFraud = isFraudAuditLog(entry);
-                  const isRed = entry.acao.includes("Excluiu") || entry.acao.includes("Desativou") || isFraud;
-                  const isYel = entry.acao.includes("Bloqueou") || entry.acao.includes("permissão");
-                  const isGrn = entry.acao.includes("Criou") || entry.acao.includes("Desbloqueou") || entry.acao.includes("termo");
+                  const isRed = (entry.acao || "").includes("Excluiu") || (entry.acao || "").includes("Desativou") || isFraud;
+                  const isYel = (entry.acao || "").includes("Bloqueou") || (entry.acao || "").includes("permissão");
+                  const isGrn = (entry.acao || "").includes("Criou") || (entry.acao || "").includes("Desbloqueou") || (entry.acao || "").includes("termo");
                   const acaoCor = isRed ? t.danger : isYel ? t.warning : isGrn ? t.success : t.accent;
                   const acaoBg = isRed ? t.dangerBg : isYel ? t.warningBg : isGrn ? t.successBg : t.accentGlow;
 

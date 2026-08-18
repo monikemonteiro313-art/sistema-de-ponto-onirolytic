@@ -79,10 +79,10 @@ export class ErrorBoundary extends Component<Props, State> {
     this.setState({ isCleaning: true });
     try {
       await wipeAllLocalData();
+      window.location.reload();
     } catch (e) {
       console.warn("Wipe error:", e);
-    } finally {
-      window.location.reload();
+      this.setState({ isCleaning: false, healingStep: "Falha ao limpar. Tente recarregar manualmente." });
     }
   };
 
@@ -93,6 +93,7 @@ export class ErrorBoundary extends Component<Props, State> {
       errorInfo: null,
       isLooping: false
     });
+    try { localStorage.removeItem("hr_last_critical_error"); } catch (_) {}
   };
 
   private handleLogoutAndReset = async () => {

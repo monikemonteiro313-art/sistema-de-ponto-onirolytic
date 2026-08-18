@@ -10,6 +10,8 @@ export interface Jornada {
   descricao: string;
   sabadoEspecial?: boolean;
   sabadoEntrada?: string | null;
+  sabadoSaidaAlmoco?: string | null;
+  sabadoRetornoAlmoco?: string | null;
   sabadoSaida?: string | null;
   sabadoHoras?: number;
 }

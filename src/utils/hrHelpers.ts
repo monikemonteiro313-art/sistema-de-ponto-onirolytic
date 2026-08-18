@@ -1,5 +1,6 @@
 import { User, Jornada, PontosGlobal, Batida, FolgaRemunerada } from "../types";
 import { getJornada, SUPERADMIN_MAT } from "../data/mockData";
+import { getDiaPontoReferencia } from "../lib/firebaseService";
 
 export function isMatriculaMatch(uMat: string | null | undefined, searchMat: string | null | undefined): boolean {
   if (!uMat || !searchMat) return false;
@@ -10,7 +11,9 @@ export function isMatriculaMatch(uMat: string | null | undefined, searchMat: str
   // Compare without leading zeros if both are numeric
   const norm1 = clean1.replace(/^0+/, "");
   const norm2 = clean2.replace(/^0+/, "");
-  if (norm1 && norm2 && norm1.toLowerCase() === norm2.toLowerCase()) return true;
+  // Guard: "0" and "00" should not match empty string after normalization
+  if (!norm1 || !norm2) return false;
+  if (norm1.toLowerCase() === norm2.toLowerCase()) return true;
   return false;
 }
 
@@ -57,20 +60,18 @@ export function sanitizeAndDeduplicateUsers(rawUsers: User[]): { cleanUsers: Use
 
   const list: User[] = [];
 
-  // Superadmin primary user (090909) priority: id === 1 or first adm-dev with 090909
-  const superAdmin = rawUsers.find(u => u && isMatriculaMatch(u.matricula, SUPERADMIN_MAT) && u.tipo === "adm-dev")
-    || rawUsers.find(u => u && u.id === 1 && u.tipo === "adm-dev")
-    || rawUsers.find(u => u && u.tipo === "adm-dev");
+  // Superadmin primary user (090909) MUST ONLY be identified by matricula "090909"
+  const superAdmin = rawUsers.find(u => u && isMatriculaMatch(u.matricula, SUPERADMIN_MAT));
 
   for (const user of rawUsers) {
     if (!user) continue;
     let u = { ...user };
     u.matricula = u.matricula ? String(u.matricula).trim() : "";
 
-    // Deduplicate ID if repeated
+    // Deduplicate ID if repeated among different users
     if (seenIds.has(u.id)) {
       duplicatesFound = true;
-      let maxId = 100;
+      let maxId = 0;
       for (const existingId of seenIds) {
         if (existingId > maxId) maxId = existingId;
       }
@@ -80,7 +81,7 @@ export function sanitizeAndDeduplicateUsers(rawUsers: User[]): { cleanUsers: Use
 
     // Reserved matricula 090909 rule
     if (isMatriculaMatch(u.matricula, SUPERADMIN_MAT)) {
-      if (superAdmin && u.id !== superAdmin.id) {
+      if (superAdmin && u.id !== superAdmin.id && !isMatriculaMatch(superAdmin.matricula, SUPERADMIN_MAT)) {
         duplicatesFound = true;
         const oldMat = u.matricula;
         u.matricula = genMatricula([...list, ...rawUsers]);
@@ -95,16 +96,16 @@ export function sanitizeAndDeduplicateUsers(rawUsers: User[]): { cleanUsers: Use
       }
     }
 
-    // General duplicate matricula rule: normalized string comparison (ignoring leading zeros)
-    const normalizedKey = u.matricula ? u.matricula.replace(/^0+/, "").toLowerCase() : "";
-    if (normalizedKey && seenMatriculas.has(normalizedKey) && !isMatriculaMatch(u.matricula, SUPERADMIN_MAT)) {
+    // General duplicate matricula rule: exact trimmed string comparison (lowercase)
+    const cleanKey = u.matricula ? u.matricula.trim().toLowerCase() : "";
+    if (cleanKey && seenMatriculas.has(cleanKey) && !isMatriculaMatch(u.matricula, SUPERADMIN_MAT)) {
       duplicatesFound = true;
       const oldMat = u.matricula;
       u.matricula = genMatricula([...list, ...rawUsers]);
       remappedMatriculas[String(u.id)] = `${oldMat} -> ${u.matricula}`;
-      seenMatriculas.add(u.matricula.replace(/^0+/, "").toLowerCase());
-    } else if (normalizedKey) {
-      seenMatriculas.add(normalizedKey);
+      seenMatriculas.add(u.matricula.trim().toLowerCase());
+    } else if (cleanKey) {
+      seenMatriculas.add(cleanKey);
     }
 
     list.push(u);
@@ -115,6 +116,7 @@ export function sanitizeAndDeduplicateUsers(rawUsers: User[]): { cleanUsers: Use
 
 export function reconcileUsers(localUsers: User[], firestoreUsers: User[]): { merged: User[]; changed: boolean } {
   const userMap = new Map<number, User>();
+  const matToIdMap = new Map<string, number>();
 
   // Helper to check if a password is just the default pattern
   const isDefaultPw = (pw: string, mat: string) => {
@@ -124,16 +126,20 @@ export function reconcileUsers(localUsers: User[], firestoreUsers: User[]): { me
     return cleanP === `Senha@${cleanM}` || cleanP === `Senha@${cleanM.replace(/^0+/, "")}`;
   };
 
-  // 1. Process Firestore users first
+  // 1. Process Firestore users first (Firestore is source of truth)
   for (const fsU of firestoreUsers || []) {
     if (!fsU || !fsU.id) continue;
     const mat = fsU.matricula ? String(fsU.matricula).trim() : "";
     const senha = fsU.senha ? String(fsU.senha).trim() : `Senha@${mat}`;
-    userMap.set(fsU.id, {
+    const cleanU: User = {
       ...fsU,
       matricula: mat,
       senha: senha
-    });
+    };
+    userMap.set(fsU.id, cleanU);
+    if (mat) {
+      matToIdMap.set(mat.toLowerCase(), fsU.id);
+    }
   }
 
   // 2. Merge local cache users
@@ -141,18 +147,28 @@ export function reconcileUsers(localUsers: User[], firestoreUsers: User[]): { me
     if (!locU || !locU.id) continue;
     const locMat = locU.matricula ? String(locU.matricula).trim() : "";
     const locSenha = locU.senha ? String(locU.senha).trim() : `Senha@${locMat}`;
-    const existing = userMap.get(locU.id);
+
+    // Find existing by ID or by Matricula
+    let matchedId = locU.id;
+    if (!userMap.has(matchedId) && locMat && matToIdMap.has(locMat.toLowerCase())) {
+      matchedId = matToIdMap.get(locMat.toLowerCase())!;
+    }
+
+    const existing = userMap.get(matchedId);
 
     if (!existing) {
       // User only exists in local storage
-      userMap.set(locU.id, {
+      const newLoc: User = {
         ...locU,
         matricula: locMat,
         senha: locSenha
-      });
+      };
+      userMap.set(locU.id, newLoc);
+      if (locMat) {
+        matToIdMap.set(locMat.toLowerCase(), locU.id);
+      }
     } else {
       // User exists in BOTH Firestore and Local cache
-      // IMPORTANT: Firestore database is the source of truth!
       const fsMat = existing.matricula ? String(existing.matricula).trim() : "";
       const fsSenha = existing.senha ? String(existing.senha).trim() : "";
 
@@ -169,24 +185,21 @@ export function reconcileUsers(localUsers: User[], firestoreUsers: User[]): { me
         }
       }
 
+      const isSuper = isMatriculaMatch(finalMat, SUPERADMIN_MAT);
+
       const merged: User = {
         ...locU,
-        ...existing, // Firestore attributes override stale local cache!
+        ...existing, // Firestore attributes override stale local cache
         matricula: finalMat,
         senha: finalSenha,
-        nome: (isMatriculaMatch(finalMat, SUPERADMIN_MAT) || existing.id === 1) ? "Onirolytic" : (existing.nome || locU.nome),
-        primeiroAcesso: (isMatriculaMatch(finalMat, SUPERADMIN_MAT) || existing.id === 1) ? false : (existing.primeiroAcesso ?? locU.primeiroAcesso),
+        nome: isSuper ? "Onirolytic" : (existing.nome || locU.nome),
+        primeiroAcesso: isSuper ? false : (existing.primeiroAcesso ?? locU.primeiroAcesso),
       };
-      userMap.set(locU.id, merged);
+      userMap.set(existing.id, merged);
     }
   }
 
-  const rawList = Array.from(userMap.values()).map(u => {
-    if (u && u.nome && u.nome.toLowerCase().includes("sheila")) {
-      return { ...u, matricula: "200201" };
-    }
-    return u;
-  });
+  const rawList = Array.from(userMap.values());
   const { cleanUsers, duplicatesFound } = sanitizeAndDeduplicateUsers(rawList);
 
   return { merged: cleanUsers, changed: duplicatesFound };
@@ -228,7 +241,13 @@ export function calcularHorasDia(jornadaId: string | null, jornadaCustom: Jornad
   if (diaSemana === 6 && j.sabadoEspecial) {
     if (j.sabadoHoras !== undefined) return j.sabadoHoras;
     if (j.sabadoEntrada && j.sabadoSaida) {
-      return calcHoursBetween(j.sabadoEntrada, j.sabadoSaida);
+      const toM = (t: string) => {
+        const [h, m] = t.split(":").map(Number);
+        return h * 60 + m;
+      };
+      let diff = toM(j.sabadoSaida) - toM(j.sabadoEntrada);
+      if (diff <= 0) diff += 1440;
+      return diff / 60;
     }
     return 4;
   }
@@ -239,8 +258,11 @@ export function calcularHorasDia(jornadaId: string | null, jornadaCustom: Jornad
     return h * 60 + m;
   };
   let total = toM(j.saida) - toM(j.entrada);
+  if (total <= 0) total += 1440;
   if (j.saidaAlmoco && j.retornoAlmoco) {
-    total -= (toM(j.retornoAlmoco) - toM(j.saidaAlmoco));
+    let almoco = toM(j.retornoAlmoco) - toM(j.saidaAlmoco);
+    if (almoco < 0) almoco += 1440;
+    total -= almoco;
   }
   return Math.max(0, total / 60);
 }
@@ -252,7 +274,7 @@ export interface NightShiftOverlap {
 
 export function getOverlapWithNightShift(start: Date, end: Date): NightShiftOverlap[] {
   const overlaps: NightShiftOverlap[] = [];
-  
+
   const startDate = new Date(start.getTime() - 2 * 24 * 3600 * 1000);
   const endDate = new Date(end.getTime() + 2 * 24 * 3600 * 1000);
 
@@ -260,8 +282,8 @@ export function getOverlapWithNightShift(start: Date, end: Date): NightShiftOver
   const endDay = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
 
   for (let d = new Date(startDay); d <= endDay; d.setDate(d.getDate() + 1)) {
-    const nightStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 22, 0, 0, 0);
-    const nightEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 5, 0, 0, 0);
+    const nightStart = new Date(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}T22:00:00-03:00`);
+    const nightEnd = new Date(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()+1).padStart(2,"0")}T05:00:00-03:00`);
 
     const overlapStart = new Date(Math.max(start.getTime(), nightStart.getTime()));
     const overlapEnd = new Date(Math.min(end.getTime(), nightEnd.getTime()));
@@ -269,7 +291,7 @@ export function getOverlapWithNightShift(start: Date, end: Date): NightShiftOver
     if (overlapStart < overlapEnd) {
       const ms = overlapEnd.getTime() - overlapStart.getTime();
       const horas = ms / 3600000;
-      
+
       const fmtTime = (date: Date) => {
         const hh = String(date.getHours()).padStart(2, "0");
         const mm = String(date.getMinutes()).padStart(2, "0");
@@ -313,6 +335,11 @@ export function compressImageBase64(
 ): Promise<string> {
   return new Promise((resolve) => {
     if (!base64Str || typeof base64Str !== "string" || !base64Str.startsWith("data:image")) {
+      return resolve(base64Str);
+    }
+    // Safety: skip compression for extremely large base64 strings to prevent browser freeze
+    if (base64Str.length > 15_000_000) {
+      console.warn("[compressImageBase64] Image too large (>15MB base64), skipping compression.");
       return resolve(base64Str);
     }
     const img = new Image();
@@ -373,7 +400,9 @@ export function parsePunchDate(b: Batida | null, dayKey: string): Date | null {
   }
   if (typeof raw === "string" && /^\d{1,2}:\d{2}(:\d{2})?$/.test(raw)) {
     const timeWithSeconds = raw.length === 5 ? `${raw}:00` : raw;
-    const d = new Date(`${dayKey}T${timeWithSeconds}`);
+    // WARNING: This creates a Date in the browser's local timezone.
+    // Near midnight, TZ shifts may cause a 1-day offset. Differences cancel out in calculations.
+    const d = new Date(`${dayKey}T${timeWithSeconds}-03:00`);
     if (!isNaN(d.getTime())) return d;
   }
   const fallback = new Date(raw);
@@ -434,7 +463,7 @@ export function calcularDia(
       atrasoMin: 0,
       saidaAntMin: 0,
       horasExtra: 0,
-      contaParaCartao: false, // Folga remunerada NÃO cobre nem soma direito ao vale alimentação
+      contaParaCartao: false,
       adicNoturnoHoras: 0,
       adicNoturnoTexto: "",
       motivoFolgaRemunerada: folgaRem.motivo || "Folga Remunerada"
@@ -459,7 +488,7 @@ export function calcularDia(
   const batidas = rawBatidas.map(b => (b && b.duplicadoOculto ? null : b));
   const diaSem = date.getDay();
   const diasUteis = jornada?.diasSemana || [1, 2, 3, 4, 5];
-  const hojeStr = new Date().toISOString().slice(0, 10);
+  const hojeStr = getDiaPontoReferencia();
 
   // Dia não útil ou futuro
   if (!diasUteis.includes(diaSem)) {
@@ -622,9 +651,11 @@ export function calcularDia(
 
   // Vale-Alimentação: se sábado especial, exige a própria jornada do sábado (ex: 4h), senão 7h
   const metaHorasCartao = isSabadoEspecial ? (jornada?.sabadoHoras ?? 4) : 7;
-  const contaParaCartao = horasEfetivas >= metaHorasCartao;
+  // FIXED: now considers partial medical leave hours toward the meal-card threshold
+  const horasCreditadas = horasEfetivas + horasAtestadoParcial;
+  const contaParaCartao = horasCreditadas >= metaHorasCartao;
 
-  return { status, horasTrabalhadas, horasEfetivas, horasJornada, atrasoMin, saidaAntMin, horasExtra, contaParaCartao, adicNoturnoHoras, adicNoturnoTexto };
+  return { status, horasTrabalhadas, horasEfetivas, horasJornada, atrasoMin, saidaAntMin, horasExtra, contaParaCartao, adicNoturnoHoras, adicNoturnoTexto, horasAbonadas: horasAtestadoParcial };
 }
 
 export function resumoMesCalculado(
@@ -653,7 +684,8 @@ export function resumoMesCalculado(
       diasFeriado: 0,
       diasFolgaRemunerada: 0,
       diasAdicionalNoturno: 0,
-      horasAdicionalNoturno: 0
+      horasAdicionalNoturno: 0,
+      horasAbonadas: 0
     };
   }
 
@@ -662,14 +694,14 @@ export function resumoMesCalculado(
   const total = new Date(ano, mes + 1, 0).getDate();
   let horasTrabalhadas = 0, horasEsperadas = 0, horasExtra = 0;
   let minutosAtraso = 0, minutosAntecipacao = 0;
-  let diasFalta = 0, diasAtestado = 0, diasAfastamento = 0, horasParaCartao = 0;
+  let diasFalta = 0, diasAtestado = 0, diasAfastamento = 0, diasParaCartao = 0;
   let diasFerias = 0, diasFeriado = 0, diasFolgaRemunerada = 0;
   let totalDiasAdicionalNoturno = 0;
   let totalHorasAdicionalNoturno = 0;
+  let horasAbonadas = 0;
 
   for (let d = 1; d <= total; d++) {
-    const date = new Date(ano, mes, d);
-    const dayKey = date.toISOString().slice(0, 10);
+    const dayKey = `${ano}-${String(mes + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
     const r = calcularDia(userId, dayKey, users, pontosGlobal, feriadosGlobais, 10, folgasRemuneradas);
     if (!r) continue;
 
@@ -698,11 +730,12 @@ export function resumoMesCalculado(
     horasExtra        += r.horasExtra;
     minutosAtraso     += r.atrasoMin;
     minutosAntecipacao+= r.saidaAntMin;
+    if (r.horasAbonadas) horasAbonadas += r.horasAbonadas;
     if (r.status === "falta")       diasFalta++;
     if (r.status === "atestado")    diasAtestado++;
     if (r.status === "afastamento") diasAfastamento++;
     if (r.contaParaCartao && r.horasEfetivas >= minimoHorasDia) {
-      horasParaCartao += 1;
+      diasParaCartao += 1;
     }
   }
 
@@ -715,37 +748,40 @@ export function resumoMesCalculado(
     diasFalta,
     diasAtestado,
     diasAfastamento,
-    diasCartao:         temDireito ? Math.round(horasParaCartao) : 0,
+    diasCartao:         temDireito ? diasParaCartao : 0,
     diasFerias,
     diasFeriado,
     diasFolgaRemunerada,
     diasAdicionalNoturno: totalDiasAdicionalNoturno,
-    horasAdicionalNoturno: Math.round(totalHorasAdicionalNoturno * 10) / 10
+    horasAdicionalNoturno: Math.round(totalHorasAdicionalNoturno * 10) / 10,
+    horasAbonadas: Math.round(horasAbonadas * 10) / 10
   };
 }
 
 export function getRegularNightIntersection(entrada: string | null, saida: string | null): string {
   if (!entrada || !saida) return "das 22:00 às 05:00";
-  
+
   const [h1, m1] = entrada.split(":").map(Number);
   const [h2, m2] = saida.split(":").map(Number);
   const mEnt = h1 * 60 + m1;
   let mSai = h2 * 60 + m2;
-  
+
   if (mSai < mEnt) {
     mSai += 24 * 60;
   }
-  
+
+  // NOTE: This covers up to 3 consecutive night-shift days.
+  // For shifts longer than 72h, additional windows would need to be added.
   const windows = [
     { start: 0, end: 300 },
     { start: 1320, end: 1740 },
     { start: 2760, end: 3180 }
   ];
-  
+
   let bestOStart = -1;
   let bestOEnd = -1;
   let maxOverlap = 0;
-  
+
   for (const w of windows) {
     const oStart = Math.max(mEnt, w.start);
     const oEnd = Math.min(mSai, w.end);
@@ -758,7 +794,7 @@ export function getRegularNightIntersection(entrada: string | null, saida: strin
       }
     }
   }
-  
+
   if (maxOverlap > 0) {
     const formatMin = (totMin: number) => {
       const h = Math.floor(totMin / 60) % 24;
@@ -767,7 +803,6 @@ export function getRegularNightIntersection(entrada: string | null, saida: strin
     };
     return `das ${formatMin(bestOStart)} às ${formatMin(bestOEnd)}`;
   }
-  
+
   return "das 22:00 às 05:00";
 }
-

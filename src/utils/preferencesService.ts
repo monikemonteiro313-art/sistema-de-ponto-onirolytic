@@ -77,75 +77,18 @@ export async function removePref(key: string): Promise<void> {
   } catch (_) {}
 }
 
-/**
- * Save an offline punch to the offline_punches_queue array in Preferences
- */
-export async function saveOfflinePunch(item: OfflinePunchItem): Promise<void> {
-  try {
-    const currentQueue = await loadOfflineQueue();
-    // Filter out duplicate punch for same user, dayKey, slotIdx if already present
-    const filtered = currentQueue.filter(
-      p => !(p.userId === item.userId && p.dayKey === item.dayKey && p.slotIdx === item.slotIdx)
-    );
-    filtered.push(item);
-    await setPref("offline_punches_queue", JSON.stringify(filtered));
-    console.log(`[Preferences] Saved offline punch to native disk for user ${item.userId}, day ${item.dayKey}, slot ${item.slotIdx}`);
-  } catch (err) {
-    console.error("[Preferences] Error saving offline punch:", err);
-  }
+export async function saveOfflinePunch(item: any): Promise<void> {
+  // Passivo: O Firebase SDK (persistentLocalCache) gerencia o envio offline nativamente.
 }
 
-/**
- * Load the offline punches queue from Preferences
- */
-export async function loadOfflineQueue(): Promise<OfflinePunchItem[]> {
-  try {
-    const raw = await getPref("offline_punches_queue", "[]");
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    console.error("[Preferences] Error loading offline queue:", err);
-    return [];
-  }
+export async function loadOfflineQueue(): Promise<any[]> {
+  return [];
 }
 
-/**
- * Remove confirmed/synced punches from offline queue
- */
-export async function clearSyncedPunches(confirmedPunches: OfflinePunchItem[]): Promise<void> {
-  if (!confirmedPunches || confirmedPunches.length === 0) return;
-  try {
-    const currentQueue = await loadOfflineQueue();
-    const remaining = currentQueue.filter(item => {
-      const isConfirmed = confirmedPunches.some(
-        c => c.userId === item.userId && c.dayKey === item.dayKey && c.slotIdx === item.slotIdx
-      );
-      return !isConfirmed;
-    });
-    if (remaining.length === 0) {
-      await clearOfflineQueue();
-    } else {
-      await setPref("offline_punches_queue", JSON.stringify(remaining));
-    }
-    console.log(`[Preferences] Cleared ${confirmedPunches.length} synced punches. Remaining in queue: ${remaining.length}`);
-  } catch (err) {
-    console.error("[Preferences] Error clearing synced punches:", err);
-  }
+export async function clearSyncedPunches(confirmedPunches: any[]): Promise<void> {
 }
 
-/**
- * Remove ENTIRE offline queue from native disk.
- * Call after syncNow() returns success or when all punches are synced.
- */
 export async function clearOfflineQueue(): Promise<void> {
-  try {
-    await Preferences.remove({ key: "offline_punches_queue" });
-    await setPref("offline_punches_queue", "[]");
-    console.log("[Preferences] Fila offline completa removida do disco.");
-  } catch (err) {
-    console.error("[Preferences] Erro ao limpar fila offline:", err);
-  }
 }
 
 /**
@@ -165,6 +108,9 @@ export async function syncClockWithServer(): Promise<number> {
     const oficial = await getHoraOficial();
     if (oficial.fonte === "brasilia-api") {
       const offset = oficial.timestamp - Date.now();
+      if (Math.abs(offset - memoryClockOffset) > 120000) {
+        console.warn(`[ClockSync] Offset mudou muito: ${memoryClockOffset} -> ${offset}. Possível mudança de timezone.`);
+      }
       memoryClockOffset = offset;
       await setPref("hr_clock_offset", String(offset));
       await setPref("last_clock_sync", String(Date.now()));
@@ -183,7 +129,9 @@ export async function syncClockWithServer(): Promise<number> {
         const endTime = Date.now();
         const latency = (endTime - startTime) / 2;
         const offset = Math.round((serverTime + latency) - endTime);
-
+        if (Math.abs(offset - memoryClockOffset) > 120000) {
+          console.warn(`[ClockSync] Offset mudou muito: ${memoryClockOffset} -> ${offset}. Possível mudança de timezone.`);
+        }
         memoryClockOffset = offset;
         await setPref("hr_clock_offset", String(offset));
         await setPref("last_clock_sync", String(Date.now()));
@@ -230,7 +178,18 @@ export async function getSecureTime(): Promise<{ date: Date; timestamp: number; 
  * Synchronous version of secure time using memory/cached offset
  */
 export function getSecureTimeSync(): Date {
-  return new Date(Date.now() + memoryClockOffset);
+  const rawLocal = new Date();
+
+  const lastSyncStr = localStorage.getItem("last_clock_sync");
+  const lastSync = lastSyncStr ? parseInt(lastSyncStr, 10) : 0;
+  const offsetAge = Date.now() - lastSync;
+  const OFFSET_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutos
+
+  if (!lastSync || offsetAge > OFFSET_MAX_AGE_MS) {
+    console.warn("[getSecureTimeSync] Offset desatualizado. Usando horário local até sync.");
+  }
+
+  return new Date(rawLocal.getTime() + memoryClockOffset);
 }
 
 /**
@@ -251,9 +210,8 @@ export async function checkClockTampering(): Promise<{ isTampered: boolean; mess
     const lastPunchTs = Number(rawLastTs) || memoryLastPunchTs || 0;
 
     if (lastPunchTs > 0) {
-      const currentNow = Date.now();
-      // Allow a small 3-second tolerance buffer for minor system clock precision variance
-      if (currentNow < lastPunchTs - 3000) {
+      const currentNow = Date.now() + memoryClockOffset;
+       if (currentNow < lastPunchTs - 10000) {
         console.warn(`[Anti-Tampering] Clock tampering detected! Current Date.now() (${currentNow}) < last_punch_timestamp (${lastPunchTs})`);
         return {
           isTampered: true,
@@ -306,36 +264,7 @@ export async function migrateLocalStorageToPreferences(): Promise<void> {
  */
 export async function applyOfflineQueueToPontos(
   pontosGlobal: Record<number, Record<string, any[]>>,
-  userId: number
+  _userId: number
 ): Promise<Record<number, Record<string, any[]>>> {
-  const queue = await loadOfflineQueue();
-  if (!queue || queue.length === 0) return pontosGlobal;
-
-  const merged = JSON.parse(JSON.stringify(pontosGlobal));
-
-  for (const item of queue) {
-    if (item.userId !== userId) continue;
-
-    if (!merged[userId]) merged[userId] = {};
-    if (!merged[userId][item.dayKey]) merged[userId][item.dayKey] = [null, null, null, null];
-
-    const dayArr = merged[userId][item.dayKey];
-    while (dayArr.length < 4) dayArr.push(null);
-
-    dayArr[item.slotIdx] = {
-      hora: item.hora,
-      tipo: item.tipo,
-      registradoEm: item.registradoEm,
-      serverTime: "pending",
-      latitude: item.latitude,
-      longitude: item.longitude,
-      accuracy: item.accuracy,
-      consentimentoGeoloc: item.consentimentoGeoloc,
-      dispositivoLocalHora: item.dispositivoLocalHora,
-      gravadoOffline: true,
-      obs: item.obs || undefined,
-    };
-  }
-
-  return merged;
+  return pontosGlobal;
 }

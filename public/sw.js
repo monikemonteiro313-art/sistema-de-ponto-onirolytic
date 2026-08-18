@@ -1,5 +1,5 @@
 // Service Worker for Registro de Ponto PWA - Static Interface Caching
-const CACHE_NAME = "ponto-digital-v1";
+const CACHE_NAME = "ponto-digital-v2";
 const STATIC_ASSETS = [
   "/",
   "/index.html",
@@ -39,8 +39,17 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
 
-  // Bypass non-GET requests or external API/Firestore requests
-  if (request.method !== "GET" || url.origin.includes("firestore.googleapis.com") || url.pathname.startsWith("/api")) {
+  // Bypass non-GET requests, API/Firestore requests, or Vite dev server modules
+  if (
+    request.method !== "GET" ||
+    url.origin.includes("firestore.googleapis.com") ||
+    url.pathname.startsWith("/api") ||
+    url.pathname.includes("/node_modules/") ||
+    url.pathname.includes("/.vite/") ||
+    url.search.includes("v=") ||
+    url.pathname.startsWith("/@") ||
+    url.pathname.startsWith("/src/")
+  ) {
     return;
   }
 

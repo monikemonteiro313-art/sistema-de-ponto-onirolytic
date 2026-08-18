@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Check, Calendar, Clock, Unlock, Shield, SquarePen, ShieldCheck, Stethoscope, Folder, X, Upload, FileText, AlertTriangle, Eye, ArrowLeft, RefreshCw, WifiOff, File, Bell } from "lucide-react";
 import { ThemeColors, User, Batida, DiaPontos, PontosGlobal, FolhaAceite, Alerta, SolicitacaoCorrecao, FolgaRemunerada } from "../types";
-import { saveUserPontosToDb, getDiaPontoReferencia } from "../lib/firebaseService";
+import { saveUserPontosToDb, saveSingleDayPonto, getDiaPontoReferencia, saveFolhaAceiteToDb } from "../lib/firebaseService";
 import { getOverlapWithNightShift, calcularDia, resumoMesCalculado, baixarArquivoAtestado, compressImageBase64 } from "../utils/hrHelpers";
 import { getJornada } from "../data/mockData";
 import { LgpdModal } from "./LgpdModal";
@@ -22,6 +22,7 @@ import {
   migrateLocalStorageToPreferences,
   applyOfflineQueueToPontos
 } from "../utils/preferencesService";
+import { useAutoHeal } from "../utils/autoHealService";
 
 function resizeAndCompressImage(base64Str: string, maxWidth = 1800, maxHeight = 1800, quality = 0.88): Promise<string> {
   return new Promise((resolve) => {
@@ -141,7 +142,8 @@ export function EmployeePanel({
 
   // Lista de marcações pendentes salvas localmente (Biblioteca Offline)
   const pendingOfflinePunchesList = useMemo(() => {
-    const list: {
+    const list: Record<string, unknown>[] = [];
+    const rawList: {
       dayKey: string;
       slotIdx: number;
       slotLabel: string;
@@ -170,7 +172,7 @@ export function EmployeePanel({
       }
     }
 
-    return list.sort((a, b) => b.dayKey.localeCompare(a.dayKey) || b.slotIdx - a.slotIdx);
+    return list.sort((a: any, b: any) => b.dayKey.localeCompare(a.dayKey) || b.slotIdx - a.slotIdx);
   }, [pontosGlobal, currentUser?.id]);
 
   const atestadoRecusadoPendente = useMemo(() => {
@@ -298,17 +300,18 @@ export function EmployeePanel({
   // Alerta de Ponto Incompleto do Dia Anterior (só aparece a partir do dia seguinte)
   const alertaOntemPendente = useMemo(() => {
     if (!pontosGlobal || !currentUser?.id) return null;
-    const hoje = new Date();
-    let prevDate = new Date(hoje);
+    const hojePonto = getDiaPontoReferencia();
+    const [anoStr, mesStr, diaStr] = hojePonto.split("-");
+    let prevDate = new Date(`${anoStr}-${mesStr}-${diaStr}T12:00:00-03:00`);
     prevDate.setDate(prevDate.getDate() - 1);
-    let prevKey = prevDate.toISOString().slice(0, 10);
+    let prevKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth()+1).padStart(2,"0")}-${String(prevDate.getDate()).padStart(2,"0")}`;
 
     if (prevDate.getDay() === 0) {
       prevDate.setDate(prevDate.getDate() - 2);
-      prevKey = prevDate.toISOString().slice(0, 10);
+      prevKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth()+1).padStart(2,"0")}-${String(prevDate.getDate()).padStart(2,"0")}`;
     } else if (prevDate.getDay() === 6) {
       prevDate.setDate(prevDate.getDate() - 1);
-      prevKey = prevDate.toISOString().slice(0, 10);
+      prevKey = `${prevDate.getFullYear()}-${String(prevDate.getMonth()+1).padStart(2,"0")}-${String(prevDate.getDate()).padStart(2,"0")}`;
     }
 
     const userDays = pontosGlobal[currentUser.id];
@@ -484,6 +487,9 @@ export function EmployeePanel({
         textoAceite: `Eu, ${currentUser.nome}, portador(a) da matrícula nº ${currentUser.matricula}, declaro para os devidos fins de direito e em conformidade com as diretrizes de relações trabalhistas, que visualizei, conferi e aceito integralmente esta folha de ponto digital referente ao período, atestando a exatidão de todos os horários e informações registradas, sem quaisquer ressalvas ou divergências.`,
         respondidoEm: new Date().toISOString()
       };
+      // Persistir no banco antes de atualizar o estado
+      await saveFolhaAceiteToDb(updated);
+
       if (setFolhasAceite) {
         setFolhasAceite(prev => prev.map(f => f.id === pendingFolha.id ? updated : f));
       }
@@ -498,7 +504,7 @@ export function EmployeePanel({
       setShowAceitoInput(false);
       setMotivoRecusa("");
     } catch (err: any) {
-      setAceiteError("Erro ao salvar aceite no servidor: " + err.message);
+      setAceiteError("Erro ao salvar aceite no servidor: " + (err?.message || err));
     } finally {
       setSubmittingAceite(false);
     }
@@ -519,6 +525,9 @@ export function EmployeePanel({
         motivoRecusa: motivoRecusa.trim(),
         respondidoEm: new Date().toISOString()
       };
+      // Persistir no banco antes de atualizar o estado
+      await saveFolhaAceiteToDb(updated);
+
       if (setFolhasAceite) {
         setFolhasAceite(prev => prev.map(f => f.id === pendingFolha.id ? updated : f));
       }
@@ -536,7 +545,7 @@ export function EmployeePanel({
       setShowAceitoInput(false);
       setMotivoRecusa("");
     } catch (err: any) {
-      setAceiteError("Erro ao registrar recusa: " + err.message);
+      setAceiteError("Erro ao registrar recusa: " + (err?.message || err));
     } finally {
       setSubmittingAceite(false);
     }
@@ -732,8 +741,9 @@ export function EmployeePanel({
   const [cameraCountdown, setCameraCountdown] = useState<number>(30);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const cameraTimeoutRef = useRef<any>(null);
-  const cameraIntervalRef = useRef<any>(null);
+  const cameraTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cameraIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const successTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function handleSelfieUniversal() {
     const foto = await tirarSelfie();
@@ -832,8 +842,8 @@ export function EmployeePanel({
   const [bestGeoCoords, setBestGeoCoords] = useState<{ latitude: number; longitude: number; accuracy?: number } | null>(null);
 
   const [autoSendCountdown, setAutoSendCountdown] = useState<number | null>(null);
-  const autoSendTimerRef = useRef<any>(null);
-  const autoSendIntervalRef = useRef<any>(null);
+  const autoSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function clearAutoSendTimers() {
     if (autoSendTimerRef.current) {
@@ -930,47 +940,9 @@ export function EmployeePanel({
     initPreferences();
     return () => { active = false; };
   }, [currentUser.id]);
-  // Re-merge offline queue whenever pontosGlobal updates from Firebase
-  // to prevent Firebase data from overwriting pending local punches
-  useEffect(() => {
-    let active = true;
-    async function remergeOfflineQueue() {
-      if (!currentUser?.id || !setPontosGlobal) return;
-      try {
-        const queue = await loadOfflineQueue();
-        if (active && queue && queue.length > 0) {
-          const userDays = pontosGlobal?.[currentUser.id] || {};
-          const syncedItems = queue.filter(item => {
-            const dayArr = userDays[item.dayKey];
-            if (!dayArr) return false;
-            const b = dayArr[item.slotIdx];
-            return b && !b.gravadoOffline && b.serverTime !== "pending";
-          });
-          if (syncedItems.length > 0) {
-            await clearSyncedPunches(syncedItems);
-            await refreshOfflineListFromDisk();
-          }
-
-          const remainingQueue = await loadOfflineQueue();
-          if (active && remainingQueue && remainingQueue.length > 0) {
-            const merged = await applyOfflineQueueToPontos(pontosGlobal, currentUser.id);
-            if (active) {
-              const currentJson = JSON.stringify(pontosGlobal?.[currentUser.id] || {});
-              const mergedJson = JSON.stringify(merged?.[currentUser.id] || {});
-              if (currentJson !== mergedJson) {
-                setPontosGlobal(merged);
-                console.log(`[Offline] Re-merged ${remainingQueue.length} pending punch(es) after pontosGlobal update.`);
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.error("[Offline] Error re-merging offline queue:", err);
-      }
-    }
-    remergeOfflineQueue();
-    return () => { active = false; };
-  }, [pontosGlobal, currentUser.id]);
+  // Ref para acessar pontosGlobal atual sem disparar re-render
+  const pontosGlobalRef = useRef(pontosGlobal);
+  pontosGlobalRef.current = pontosGlobal;
 
   useEffect(() => {
     return () => {
@@ -990,15 +962,18 @@ export function EmployeePanel({
     return () => clearInterval(timer);
   }, [baseRealTime, basePerfTime]);
 
+  // Memoize pending count so the interval only recreates when the count actually changes
+  const pendingSyncCount = useMemo(() => countPendingSync(), [pontosGlobal]);
+
   // Background auto-sync interval when there are pending punches
   useEffect(() => {
-    if (countPendingSync() === 0 || !syncNow) return;
+    if (pendingSyncCount === 0 || !syncNow) return;
     const interval = setInterval(() => {
       console.log("[Auto-Sync] Attempting background sync for pending punches...");
       syncNow().catch((err) => console.warn("[Auto-Sync] Failed:", err));
     }, 30000); // Check every 30 seconds
     return () => clearInterval(interval);
-  }, [pontosGlobal, syncNow]);
+  }, [pendingSyncCount, syncNow]);
 
   function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     setAtestadoError("");
@@ -1094,7 +1069,7 @@ export function EmployeePanel({
             : `Atestado Médico lançado pelo colaborador (CID: ${atestadoCid.trim().toUpperCase()})`),
           registradoEm: timestamp,
           tipo: "manual",
-          serverTime: navigator.onLine ? timestamp : "pending",
+          serverTime: timestamp,
           atestadoGroupId,
           totalDiasAtestado: datas.length,
           diaSequencia: index + 1,
@@ -1126,6 +1101,9 @@ export function EmployeePanel({
         [currentUser.id]: updatedDays
       }));
 
+      // Persistir no banco
+      await saveUserPontosToDb(currentUser.id, updatedDays);
+
       const descLog = atestadoDataInicio === atestadoDataFim
         ? `Atestado em ${atestadoDataInicio}`
         : `Atestado de ${atestadoDataInicio} até ${atestadoDataFim}`;
@@ -1145,7 +1123,7 @@ export function EmployeePanel({
         setAtestadoFotoNome("");
         setAtestadoObs("");
         setAtestadoIsParcial(false);
-        const todayStr = new Date().toISOString().slice(0, 10);
+     const todayStr = new Date().toISOString().slice(0, 10);
         setAtestadoDataInicio(todayStr);
         setAtestadoDataFim(todayStr);
       }, 2000);
@@ -1303,11 +1281,21 @@ export function EmployeePanel({
       a.download = `espelho_${u.matricula}.html`;
       a.click();
     }
+    URL.revokeObjectURL(url);
   }
 
   const tk = todayKey();
   const todayBatidas = pontosGlobal[currentUser.id]?.[tk] || [null, null, null, null];
   const temAlmoco = todayBatidas[1] !== null;
+
+  const {
+    connectivityMessage,
+    firebaseHealthMessage,
+    journeyAlerts,
+    isPunchDisabled,
+    punchCooldownSeconds,
+    triggerPunchCooldown
+  } = useAutoHeal(currentUser, todayBatidas);
 
   const steps = [
     { label: "Registrar Entrada", done: "Entrada", color: "#22C55E", light: "rgba(34,197,94,0.12)", border: "rgba(34,197,94,0.35)" },
@@ -1403,7 +1391,7 @@ export function EmployeePanel({
     let bestCoords: { latitude: number; longitude: number; accuracy?: number } | null = null;
     let samples = 0;
     let stopWatchFn: (() => void) | null = null;
-    let intervalId: any = null;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
 
     const totalDuration = 5;
     setGeoCountdown(totalDuration);
@@ -1554,11 +1542,13 @@ export function EmployeePanel({
       const isOffline = !navigator.onLine;
 
       let punchHora = timestamp;
-      let obsFinal = manualJust?.trim();
-      if (!hasCoords && hasPhoto) {
-        obsFinal = (obsFinal ? obsFinal + " | " : "") + "validado com foto";
+      let obsFinal = manualJust?.trim() || "";
+      if (hasCoords && hasPhoto) {
+        obsFinal += (obsFinal ? " | " : "") + "validado com foto e GPS";
+      } else if (hasCoords) {
+        obsFinal += (obsFinal ? " | " : "") + "validado com GPS";
       } else if (hasPhoto) {
-        obsFinal = (obsFinal ? obsFinal + " | " : "") + "validado com foto e GPS";
+        obsFinal += (obsFinal ? " | " : "") + "validado com foto";
       }
 
       let valDesc = "";
@@ -1570,26 +1560,28 @@ export function EmployeePanel({
         valDesc = `validado com foto`;
       }
 
+      let targetDayArray: (Batida | null)[] = [null, null, null, null];
+
       if (tipo === "auto") {
         const reg: Batida = {
           hora: timestamp,
           tipo: "auto",
           registradoEm: timestamp,
-          serverTime: isOffline ? "pending" : timestamp,
+          serverTime: timestamp,
           latitude: lat,
           longitude: lng,
           accuracy: acc,
           fotoComprovante: selfieToUse || undefined,
           obs: obsFinal,
           consentimentoGeoloc: true,
-          dispositivoLocalHora: new Date().toISOString(),
-          gravadoOffline: isOffline ? true : undefined
+          dispositivoLocalHora: new Date().toISOString()
         };
         setPontosGlobal(prev => {
           const userRegs = prev[currentUser.id] || {};
           const day = [...(userRegs[dayKey] || [null, null, null, null])];
           while (day.length < 4) day.push(null);
           day[idx] = reg;
+          targetDayArray = day;
           return {
             ...prev,
             [currentUser.id]: {
@@ -1615,7 +1607,7 @@ export function EmployeePanel({
           }
         );
       } else {
-        const d = new Date(dayKey + "T00:00:00");
+        const d = new Date(dayKey + "T12:00:00-03:00");
         if (manualHora) {
           const [hh, mm] = manualHora.split(":").map(Number);
           d.setHours(hh, mm, 0, 0);
@@ -1626,14 +1618,13 @@ export function EmployeePanel({
           tipo: "manual",
           obs: obsFinal,
           registradoEm: timestamp,
-          serverTime: isOffline ? "pending" : timestamp,
+          serverTime: timestamp,
           latitude: lat,
           longitude: lng,
           accuracy: acc,
           fotoComprovante: selfieToUse || undefined,
           consentimentoGeoloc: true,
           dispositivoLocalHora: new Date().toISOString(),
-          gravadoOffline: isOffline ? true : undefined,
           statusAprovacao: "pendente"
         };
         setPontosGlobal(prev => {
@@ -1641,6 +1632,7 @@ export function EmployeePanel({
           const day = [...(userRegs[dayKey] || [null, null, null, null])];
           while (day.length < 4) day.push(null);
           day[idx] = reg;
+          targetDayArray = day;
           return {
             ...prev,
             [currentUser.id]: {
@@ -1667,30 +1659,15 @@ export function EmployeePanel({
         );
       }
 
+      // Salva no Firestore. Se estiver offline, o Firebase SDK (persistentLocalCache) enfileira nativamente.
+      saveSingleDayPonto(currentUser.id, dayKey, targetDayArray).catch(err => {
+        console.warn("[Firestore] Registro retido em cache offline nativo:", err);
+      });
+
       // Record last punch timestamp into native preferences disk
       const punchTsNum = new Date(timestamp).getTime();
       await saveLastPunchTimestamp(punchTsNum);
-
-      // Save offline punch to @capacitor/preferences queue if offline
-      if (isOffline) {
-        await saveOfflinePunch({
-          userId: currentUser.id,
-          dayKey,
-          slotIdx: idx,
-          hora: punchHora,
-          tipo,
-          latitude: lat ?? null,
-          longitude: lng ?? null,
-          accuracy: acc ?? null,
-          fotoComprovante: selfieToUse ?? null,
-          registradoEm: timestamp,
-          dispositivoLocalHora: new Date().toISOString(),
-          gravadoOffline: true,
-          consentimentoGeoloc: true,
-          obs: obsFinal,
-          statusAprovacao: tipo === "manual" ? "pendente" : undefined
-        });
-      }
+      triggerPunchCooldown(45);
 
       if (currentPrePontoId && markPrePontoSuccess) {
         markPrePontoSuccess(currentPrePontoId);
@@ -1698,12 +1675,16 @@ export function EmployeePanel({
       }
 
       // Feedback de Sucesso e Encerramento Automático
+      if (successTimeoutRef.current) {
+        clearTimeout(successTimeoutRef.current);
+      }
       setPunchSuccessMsg(`Batida #${idx + 1} (${steps[idx].done}) registrada com sucesso!`);
-      setTimeout(() => {
+      successTimeoutRef.current = setTimeout(() => {
         setPunchSuccessMsg(null);
         setGeoActiveFor(null);
         clearGeo();
         setIsRegistering(false);
+        successTimeoutRef.current = null;
       }, 1500);
 
     } catch (err) {
@@ -1956,159 +1937,7 @@ export function EmployeePanel({
         padding: "24px 16px",
         fontFamily: "'DM Sans','Segoe UI',sans-serif"
       }}
-    >
-      {/* Pop-up de Atestado Recusado pelo RH */}
-      {atestadoRecusadoPendente && (
-        <div style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(0,0,0,0.8)",
-          backdropFilter: "blur(6px)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 999999,
-          padding: 16
-        }}>
-          <div style={{
-            background: t.surface,
-            border: `2px solid ${t.danger}`,
-            borderRadius: 20,
-            padding: 24,
-            maxWidth: 480,
-            width: "100%",
-            boxShadow: "0 25px 50px -12px rgba(239, 68, 68, 0.4)",
-            animation: "scaleIn 0.25s ease-out"
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-              <div style={{
-                width: 48,
-                height: 48,
-                borderRadius: "50%",
-                background: t.dangerBg,
-                border: `1.5px solid ${t.dangerBorder}`,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 24,
-                flexShrink: 0
-              }}>
-                🛑
-              </div>
-              <div>
-                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: t.text }}>
-                  Atestado Médico Recusado
-                </h3>
-                <p style={{ margin: 0, fontSize: 12, color: t.textMuted }}>
-                  Comunicado da Gestão de Recursos Humanos
-                </p>
-              </div>
-            </div>
-
-            <div style={{
-              background: t.surfaceAlt,
-              borderRadius: 12,
-              padding: 14,
-              marginBottom: 16,
-              border: `1px solid ${t.border}`
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 12, color: t.textMuted }}>
-                  {atestadoRecusadoPendente.totalDias > 1 ? `Período (${atestadoRecusadoPendente.totalDias} dias):` : "Data do Atestado:"}
-                </span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: t.text }}>
-                  {atestadoRecusadoPendente.totalDias > 1
-                    ? `${atestadoRecusadoPendente.dataInicio} a ${atestadoRecusadoPendente.dataFim}`
-                    : atestadoRecusadoPendente.dataInicio}
-                </span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 12, color: t.textMuted }}>Código CID-10:</span>
-                <span style={{ fontSize: 12, fontWeight: 800, fontFamily: "monospace", color: t.accent }}>
-                  {atestadoRecusadoPendente.batida.cid || "N/A"}
-                </span>
-              </div>
-              {atestadoRecusadoPendente.batida.revisadoPor && (
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12, color: t.textMuted }}>Analisado por:</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: t.textSub }}>
-                    {atestadoRecusadoPendente.batida.revisadoPor}
-                  </span>
-                </div>
-              )}
-            </div>
-
-            <div style={{
-              background: t.dangerBg,
-              border: `1.5px solid ${t.dangerBorder}`,
-              borderRadius: 12,
-              padding: 14,
-              marginBottom: 20
-            }}>
-              <div style={{ fontSize: 12, fontWeight: 800, color: t.danger, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
-                <span>💬</span> JUSTIFICATIVA DA RECUSA:
-              </div>
-              <div style={{ fontSize: 13, color: t.text, fontWeight: 600, lineHeight: 1.5, fontStyle: "italic" }}>
-                "{atestadoRecusadoPendente.batida.motivoRecusaAtestado || "Sem justificativa detalhada registrada."}"
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                const item = atestadoRecusadoPendente;
-                if (!item) return;
-                const { targetGroup, targetCid, targetMotivo } = item;
-
-                setPontosGlobal(prev => {
-                  const userRegs = prev[currentUser.id] || {};
-                  const updatedDays = { ...userRegs };
-
-                  Object.keys(updatedDays).forEach(dk => {
-                    const arr = updatedDays[dk];
-                    if (!arr) return;
-                    let changed = false;
-                    const newArr = arr.map(b => {
-                      if (b && b.ocorrencia === "atestado" && b.statusAtestado === "recusado" && !b.vistoPeloColaborador) {
-                        const isSameGroup = targetGroup && b.atestadoGroupId === targetGroup;
-                        const isSameDetails = !targetGroup && b.cid === targetCid && b.motivoRecusaAtestado === targetMotivo;
-                        if (isSameGroup || isSameDetails) {
-                          changed = true;
-                          return { ...b, vistoPeloColaborador: true };
-                        }
-                      }
-                      return b;
-                    });
-                    if (changed) {
-                      updatedDays[dk] = newArr;
-                    }
-                  });
-
-                  return {
-                    ...prev,
-                    [currentUser.id]: updatedDays
-                  };
-                });
-              }}
-              style={{
-                width: "100%",
-                padding: "12px",
-                background: t.accent,
-                color: "#ffffff",
-                border: "none",
-                borderRadius: 10,
-                fontWeight: 800,
-                fontSize: 14,
-                cursor: "pointer",
-                boxShadow: "0 4px 12px rgba(37,99,235,0.25)"
-              }}
-            >
-              Entendi / Ciente
-            </button>
-          </div>
-        </div>
-      )}
-      {/* Top Header */}
+    >      {/* Top Header */}
       <div style={{ width: "100%", maxWidth: 420, boxSizing: "border-box", marginBottom: 16 }}>
         {isOfflineData && (
           <div style={{
@@ -2183,7 +2012,7 @@ export function EmployeePanel({
               </button>
             )}
             {onToggleTheme && (
-              <button
+              <button type="button"
                 onClick={onToggleTheme}
                 style={{
                   background: t.surfaceAlt,
@@ -2200,7 +2029,7 @@ export function EmployeePanel({
                 Modo
               </button>
             )}
-            <button
+            <button type="button"
               onClick={onLogout}
               style={{
                 background: t.surfaceAlt,
@@ -2229,7 +2058,7 @@ export function EmployeePanel({
             boxSizing: "border-box"
           }}
         >
-          <button
+          <button type="button"
             onClick={() => {
               setTourInitialStep(1);
               setTourModalOpen(true);
@@ -2255,7 +2084,7 @@ export function EmployeePanel({
             <span style={{ fontSize: 14 }}>🤖</span> GUIA PASSO A PASSO
           </button>
 
-          <button
+          <button type="button"
             onClick={handleOpenSolicitarCorrecao}
             title="Solicitar Correção ou Ajuste de Ponto"
             style={{
@@ -2278,7 +2107,7 @@ export function EmployeePanel({
             <SquarePen size={15} color="#d97706" /> SOLICITAR CORREÇÃO
           </button>
 
-          <button
+          <button type="button"
             onClick={handleOpenAtestadoModal}
             title="Lançar Atestado Médico"
             style={{
@@ -2301,7 +2130,7 @@ export function EmployeePanel({
             <Stethoscope size={16} color={t.accent} /> ATESTADO
           </button>
 
-          <button
+          <button type="button"
             onClick={() => setPdfModalOpen(true)}
             title="Visualizar Espelho de Ponto (PDF)"
             style={{
@@ -2325,7 +2154,7 @@ export function EmployeePanel({
           </button>
 
           {/* Botão Guia Registros sem Internet (Biblioteca Offline) */}
-          <button
+          <button type="button"
             onClick={() => {
               refreshOfflineListFromDisk();
               setOfflineModalOpen(true);
@@ -2496,7 +2325,7 @@ export function EmployeePanel({
                           : t.textMuted;
 
               return (
-                <button
+                <button type="button"
                   key={key}
                   onClick={() => setCalDay(sel ? null : key)}
                   style={{ background: bg, border: `1.5px solid ${border}`, borderRadius: 8, padding: "6px 2px", cursor: "pointer", fontFamily: "inherit", transition: "all 0.18s" }}
@@ -2608,7 +2437,7 @@ export function EmployeePanel({
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "monospace", color: batida ? s.color : t.textMuted }}>{fmt(batida)}</span>
                       {!batida && calDay === todayKey() && (
-                        <button
+                        <button type="button"
                           onClick={handleOpenSolicitarCorrecao}
                           title="Solicitar Ajuste ou Correção"
                           style={{
@@ -2820,6 +2649,30 @@ export function EmployeePanel({
       </div>
 
       {/* Gauge and Button Trigger */}
+      {!calOpen && (connectivityMessage || firebaseHealthMessage || (journeyAlerts && journeyAlerts.length > 0)) && (
+        <div style={{ width: "100%", maxWidth: 380, marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+          {connectivityMessage && (
+            <div style={{ background: "#EFF6FF", border: "1px solid #93C5FD", borderRadius: 12, padding: "10px 14px", fontSize: 13, color: "#1E40AF", display: "flex", alignItems: "center", gap: 8 }}>
+              <span>🌐</span>
+              <span>{connectivityMessage}</span>
+            </div>
+          )}
+          {firebaseHealthMessage && (
+            <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 12, padding: "10px 14px", fontSize: 13, color: "#991B1B", display: "flex", alignItems: "center", gap: 8 }}>
+              <span>🔥</span>
+              <span>{firebaseHealthMessage}</span>
+            </div>
+          )}
+          {journeyAlerts && journeyAlerts.map((alertItem) => (
+            <div key={alertItem.id} style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 12, padding: "10px 14px", fontSize: 13, color: "#92400E", display: "flex", alignItems: "center", gap: 8 }}>
+              <span>⚠️</span>
+              <span><strong>Alerta da Jornada:</strong> {alertItem.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Gauge and Button Trigger */}
       {!calOpen && (
         currentUser.bloqueadoAceite ? (
           <div style={{
@@ -2857,7 +2710,7 @@ export function EmployeePanel({
             ) : todayBatidas[0] !== null && todayBatidas[1] === null ? (
               /* Special state: Antes do almoço. Show both option buttons stacked! */
               <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
-                <button
+                <button type="button"
                   onClick={() => abrirConfirm(1, tk)}
                   style={{
                     width: "100%",
@@ -2889,7 +2742,7 @@ export function EmployeePanel({
                   <span style={{ fontSize: 18, color: steps[1].color }}>➔</span>
                 </button>
 
-                <button
+                <button type="button"
                   onClick={() => abrirConfirm(3, tk)}
                   style={{
                     width: "100%",
@@ -2922,7 +2775,7 @@ export function EmployeePanel({
                 </button>
               </div>
             ) : (
-              <button
+              <button type="button"
                 onClick={() => abrirConfirm(nextIdx, tk)}
                 style={{
                   width: "100%",
@@ -3000,7 +2853,7 @@ export function EmployeePanel({
                   Seus registros estão 100% seguros localmente no aparelho. O sistema tentará sincronizar em segundo plano.
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                  <button
+                  <button type="button"
                     onClick={syncNow}
                     disabled={isSyncing}
                     style={{
@@ -3025,7 +2878,7 @@ export function EmployeePanel({
                     {isSyncing ? "Sincronizando..." : "Tentar Novamente"}
                   </button>
                   {syncError && (
-                    <button
+                    <button type="button"
                       onClick={() => {
                         if (setSyncError) setSyncError(null);
                       }}
@@ -3308,7 +3161,7 @@ export function EmployeePanel({
             }}
           >
             {/* Botão Fechar */}
-            <button
+            <button type="button"
               onClick={() => setOfflineModalOpen(false)}
               style={{
                 position: "absolute",
@@ -3394,7 +3247,7 @@ export function EmployeePanel({
             {/* Sync Button */}
             {(pendingOfflinePunchesList.length > 0 || offlineListFromDisk.length > 0) && (
               <>
-                <button
+                <button type="button"
                   onClick={async () => {
                     if (syncNow) {
                       try {
@@ -3468,7 +3321,7 @@ export function EmployeePanel({
                   </p>
                 </div>
               ) : (
-                pendingOfflinePunchesList.map((item, i) => {
+                pendingOfflinePunchesList.map((item: any, i: number) => {
                   const b = item.batida;
                   const regTime = b.registradoEm ? new Date(b.registradoEm) : b.hora ? new Date(b.hora) : new Date();
                   const dataFmt = regTime.toLocaleDateString("pt-BR");
@@ -3566,7 +3419,7 @@ export function EmployeePanel({
 
             {/* Modal Footer */}
             <div style={{ marginTop: 20, textAlign: "center" }}>
-              <button
+              <button type="button"
                 onClick={() => setOfflineModalOpen(false)}
                 style={{
                   background: t.surfaceAlt,
@@ -3615,7 +3468,7 @@ export function EmployeePanel({
               position: "relative"
             }}
           >
-            <button
+            <button type="button"
               onClick={() => {
                 setAtestadoModalOpen(false);
                 setAtestadoError("");
@@ -3861,7 +3714,7 @@ export function EmployeePanel({
                         <span style={{ fontSize: 12, fontWeight: 600, color: t.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "75%" }}>
                           {atestadoFotoNome || "atestado.jpg"}
                         </span>
-                        <button
+                        <button type="button"
                           onClick={() => {
                             setAtestadoFoto(null);
                             setAtestadoFotoNome("");
@@ -3928,117 +3781,7 @@ export function EmployeePanel({
                         />
                       </label>
 
-                      {/* Mock Capture simulator button to ensure seamless desktop testing! */}
-                      <button
-                        type="button"
-                          onClick={() => {
-                            const mockCanvas = document.createElement("canvas");
-                            mockCanvas.width = 1200;
-                            mockCanvas.height = 900;
-                            const ctx = mockCanvas.getContext("2d");
-                            if (ctx) {
-                              ctx.imageSmoothingEnabled = true;
-                              ctx.imageSmoothingQuality = "high";
-                              ctx.fillStyle = "#fcfcfd";
-                              ctx.fillRect(0, 0, 1200, 900);
-
-                              // Border frame
-                              ctx.strokeStyle = "#cbd5e1";
-                              ctx.lineWidth = 4;
-                              ctx.strokeRect(30, 30, 1140, 840);
-
-                              // Clinic Header
-                              ctx.fillStyle = "#1e3a8a";
-                              ctx.font = "bold 32px sans-serif";
-                              ctx.fillText("CLÍNICA MÉDICA INTEGRADA", 60, 90);
-
-                              ctx.fillStyle = "#64748b";
-                              ctx.font = "18px sans-serif";
-                              ctx.fillText("Atestado Médico Oficial de Afastamento - Uso Trabalhista / RH", 60, 125);
-
-                              ctx.strokeStyle = "#e2e8f0";
-                              ctx.lineWidth = 2;
-                              ctx.beginPath();
-                              ctx.moveTo(60, 150);
-                              ctx.lineTo(1140, 150);
-                              ctx.stroke();
-
-                              // Document Content
-                              ctx.fillStyle = "#0f172a";
-                              ctx.font = "22px sans-serif";
-                              ctx.fillText(`Atesto para os devidos fins de comprovação trabalhista que o(a) Sr(a):`, 60, 220);
-
-                              ctx.fillStyle = "#1e40af";
-                              ctx.font = "bold 26px sans-serif";
-                              ctx.fillText(`${currentUser.nome.toUpperCase()}`, 60, 260);
-
-                              ctx.fillStyle = "#334155";
-                              ctx.font = "20px sans-serif";
-                              ctx.fillText(`Esteve sob meus cuidados médicos no período de: ${atestadoDataInicio} até ${atestadoDataFim}`, 60, 320);
-
-                              ctx.fillText(`Necessitando de afastamento das suas atividades laborais conforme protocolo médico.`, 60, 360);
-
-                              // CID Box
-                              ctx.fillStyle = "#eff6ff";
-                              ctx.fillRect(60, 410, 1080, 80);
-                              ctx.strokeStyle = "#3b82f6";
-                              ctx.lineWidth = 2;
-                              ctx.strokeRect(60, 410, 1080, 80);
-
-                              ctx.fillStyle = "#1e40af";
-                              ctx.font = "bold 24px sans-serif";
-                              ctx.fillText(`DIAGNÓSTICO E CÓDIGO CID-10:  ${atestadoCid || "M54.5"}`, 80, 460);
-
-                              // Red Cross / Watermark
-                              ctx.strokeStyle = "rgba(220,38,38,0.12)";
-                              ctx.lineWidth = 30;
-                              ctx.beginPath();
-                              ctx.moveTo(950, 220);
-                              ctx.lineTo(950, 380);
-                              ctx.moveTo(870, 300);
-                              ctx.lineTo(1030, 300);
-                              ctx.stroke();
-
-                              // Doctor Stamp & Signature
-                              ctx.fillStyle = "#1e293b";
-                              ctx.font = "italic 22px serif";
-                              ctx.fillText("Dr. Roberto Silva - Médico Clínico Geral", 650, 700);
-                              ctx.font = "18px sans-serif";
-                              ctx.fillText("CRM/SP 148.920 - RQE 45210", 650, 735);
-
-                              ctx.strokeStyle = "#0284c7";
-                              ctx.lineWidth = 3;
-                              ctx.beginPath();
-                              ctx.moveTo(620, 670);
-                              ctx.lineTo(1050, 670);
-                              ctx.stroke();
-
-                              ctx.fillStyle = "#94a3b8";
-                              ctx.font = "14px monospace";
-                              ctx.fillText(`Autenticação Digital: DOC-${Date.now()}-REG-OK`, 60, 830);
-
-                              setAtestadoFoto(mockCanvas.toDataURL("image/jpeg", 0.92));
-                              setAtestadoFotoNome("atestado_medico_simulado.jpg");
-                              setAtestadoError("");
-                            }
-                          }}
-                          style={{
-                            background: "rgba(59,130,246,0.06)",
-                            border: `1px dashed rgba(59,130,246,0.3)`,
-                            borderRadius: 8,
-                            padding: "6px 12px",
-                            fontSize: 11,
-                            color: t.accent,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                            width: "100%",
-                            transition: "all 0.15s"
-                          }}
-                        >
-                          🧪 Simular Captura Digital de Atestado (Ambiente de Testes)
-                        </button>
-
-                    </div>
+                      </div>
                   )}
 
                 </div>
@@ -4070,12 +3813,11 @@ export function EmployeePanel({
 
                 {/* Action Buttons */}
                 <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                  <button
+                  <button type="button"
                     onClick={() => {
                       setAtestadoModalOpen(false);
                       setAtestadoError("");
                     }}
-                    type="button"
                     style={{
                       flex: 1,
                       background: t.surfaceAlt,
@@ -4229,7 +3971,7 @@ export function EmployeePanel({
               position: "relative"
             }}
           >
-            <button
+            <button type="button"
               onClick={() => setPdfModalOpen(false)}
               style={{
                 position: "absolute",
@@ -4390,7 +4132,7 @@ export function EmployeePanel({
             </div>
 
             {/* Print/Generate Action Button */}
-            <button
+            <button type="button"
               onClick={() => gerarEspelhoHTMLForEmployee(pdfAno, pdfMes)}
               style={{
                 width: "100%",
@@ -4416,7 +4158,7 @@ export function EmployeePanel({
               <span>Gerar & Imprimir Espelho PDF</span>
             </button>
 
-            <button
+            <button type="button"
               onClick={() => setPdfModalOpen(false)}
               style={{
                 width: "100%",
@@ -4489,7 +4231,7 @@ export function EmployeePanel({
             </div>
 
             {/* Now option */}
-            <button
+            <button type="button"
               onClick={() => registrarAgora(confirmModal.idx, confirmModal.dayKey)}
               style={{
                 width: "100%",
@@ -4511,7 +4253,7 @@ export function EmployeePanel({
             </button>
 
             {/* Option to request correction for missed punch */}
-            <button
+            <button type="button"
               onClick={() => {
                 setConfirmModal(null);
                 handleOpenSolicitarCorrecao();
@@ -4536,7 +4278,7 @@ export function EmployeePanel({
               </div>
             </button>
 
-            <button
+            <button type="button"
               onClick={() => setConfirmModal(null)}
               style={{
                 width: "100%",
@@ -4654,7 +4396,7 @@ export function EmployeePanel({
             {/* State: Waiting Consent and Capture */}
             {!punchSuccessMsg && !geoConsentAccepted && !geoCoords && !geoError && (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <button
+                <button type="button"
                   onClick={capturarLocalizacao}
                   style={{
                     width: "100%",
@@ -4746,7 +4488,7 @@ export function EmployeePanel({
                   </p>
 
                   {!isCameraActive ? (
-                    <button
+                    <button type="button"
                       onClick={startWebcam}
                       style={{
                         width: "100%",
@@ -4822,7 +4564,7 @@ export function EmployeePanel({
                       </div>
 
                       <div style={{ display: "flex", gap: 10, width: "100%", maxWidth: 320 }}>
-                        <button
+                        <button type="button"
                           onClick={stopWebcam}
                           style={{
                             flex: 1,
@@ -4839,7 +4581,7 @@ export function EmployeePanel({
                           Cancelar
                         </button>
 
-                        <button
+                        <button type="button"
                           onClick={captureSelfieFromVideo}
                           style={{
                             flex: 2,
@@ -4866,7 +4608,7 @@ export function EmployeePanel({
                   )}
 
                   <div style={{ marginTop: 12 }}>
-                    <button
+                    <button type="button"
                       onClick={capturarLocalizacao}
                       style={{
                         background: "transparent",
@@ -4997,26 +4739,26 @@ export function EmployeePanel({
                   </div>
                 )}
 
-                <button
+                <button type="button"
                   onClick={() => {
                     clearAutoSendTimers();
                     finalizarComGeo();
                   }}
-                  disabled={isRegistering}
+                  disabled={isRegistering || isPunchDisabled}
                   style={{
                     width: "100%",
                     marginTop: 14,
-                    background: "linear-gradient(135deg, #22C55E, #16A34A)",
+                    background: (isRegistering || isPunchDisabled) ? "#9CA3AF" : "linear-gradient(135deg, #22C55E, #16A34A)",
                     border: "none",
                     borderRadius: 14,
                     padding: "18px 24px",
-                    cursor: isRegistering ? "not-allowed" : "pointer",
+                    cursor: (isRegistering || isPunchDisabled) ? "not-allowed" : "pointer",
                     fontSize: 16,
                     fontWeight: 800,
                     color: "#fff",
                     fontFamily: "inherit",
-                    boxShadow: "0 6px 20px rgba(34,197,94,0.45)",
-                    opacity: isRegistering ? 0.6 : 1,
+                    boxShadow: (isRegistering || isPunchDisabled) ? "none" : "0 6px 20px rgba(34,197,94,0.45)",
+                    opacity: (isRegistering || isPunchDisabled) ? 0.7 : 1,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -5024,13 +4766,13 @@ export function EmployeePanel({
                     transition: "all 0.18s ease-in-out"
                   }}
                   onMouseEnter={(e) => {
-                    if (!isRegistering) {
+                    if (!isRegistering && !isPunchDisabled) {
                       e.currentTarget.style.transform = "scale(1.025)";
                       e.currentTarget.style.boxShadow = "0 8px 24px rgba(34,197,94,0.55)";
                     }
                   }}
                   onMouseLeave={(e) => {
-                    if (!isRegistering) {
+                    if (!isRegistering && !isPunchDisabled) {
                       e.currentTarget.style.transform = "scale(1)";
                       e.currentTarget.style.boxShadow = "0 6px 20px rgba(34,197,94,0.45)";
                     }
@@ -5041,6 +4783,8 @@ export function EmployeePanel({
                       <RefreshCw className="animate-spin" size={16} />
                       <span>Processando Registro...</span>
                     </>
+                  ) : isPunchDisabled ? (
+                    <span>⏳ Aguarde {punchCooldownSeconds}s (Anti-Duplicidade)</span>
                   ) : (
                     <span>🚀 Confirmar e Enviar para Auditoria</span>
                   )}
@@ -5048,7 +4792,7 @@ export function EmployeePanel({
               </div>
             )}
 
-            <button
+            <button type="button"
               onClick={dispensarGeo}
               style={{
                 width: "100%",
@@ -5139,7 +4883,7 @@ export function EmployeePanel({
               </div>
 
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <button
+                <button type="button"
                   onClick={() => {
                     gerarEspelhoHTMLForEmployee(signedSuccessFolha.ano, signedSuccessFolha.mes);
                   }}
@@ -5165,7 +4909,7 @@ export function EmployeePanel({
                   <span>Visualizar Folha Completa (Baixar PDF)</span>
                 </button>
 
-                <button
+                <button type="button"
                   onClick={() => {
                     setSignedSuccessFolha(null);
                   }}
@@ -5265,7 +5009,7 @@ export function EmployeePanel({
 
             {/* View Full Sheet Required Step */}
             <div style={{ marginBottom: 20 }}>
-              <button
+              <button type="button"
                 onClick={() => {
                   gerarEspelhoHTMLForEmployee(pendingFolha.ano, pendingFolha.mes);
                   setPdfVisualizado(true);
@@ -5319,7 +5063,7 @@ export function EmployeePanel({
             {/* Action Buttons to Select Path */}
             {!showRecusoInput && !showAceitoInput && (
               <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 12, marginTop: 12 }}>
-                <button
+                <button type="button"
                   onClick={() => {
                     if (!pdfVisualizado) {
                       setAceiteError("Você precisa clicar em 'Visualizar Folha Completa (Baixar PDF)' e analisar o documento antes de realizar o aceite.");
@@ -5345,7 +5089,7 @@ export function EmployeePanel({
                 >
                   Confirmar e Aceitar
                 </button>
-                <button
+                <button type="button"
                   onClick={() => {
                     if (!pdfVisualizado) {
                       setAceiteError("Você precisa clicar em 'Visualizar Folha Completa (Baixar PDF)' e analisar o documento antes de realizar a recusa.");
@@ -5410,7 +5154,7 @@ export function EmployeePanel({
                 />
 
                 <div style={{ display: "flex", gap: 10 }}>
-                  <button
+                  <button type="button"
                     onClick={handleConfirmAceite}
                     disabled={submittingAceite || aceitoConfirmText !== "ACEITO"}
                     style={{
@@ -5428,7 +5172,7 @@ export function EmployeePanel({
                   >
                     {submittingAceite ? "Processando..." : "Assinar Eletronicamente"}
                   </button>
-                  <button
+                  <button type="button"
                     onClick={() => {
                       setShowAceitoInput(false);
                       setAceitoConfirmText("");
@@ -5488,7 +5232,7 @@ export function EmployeePanel({
                 />
 
                 <div style={{ display: "flex", gap: 10 }}>
-                  <button
+                  <button type="button"
                     onClick={handleConfirmRecusa}
                     disabled={submittingAceite || !motivoRecusa.trim()}
                     style={{
@@ -5506,7 +5250,7 @@ export function EmployeePanel({
                   >
                     {submittingAceite ? "Processando..." : "Contestar & Bloquear Acesso"}
                   </button>
-                  <button
+                  <button type="button"
                     onClick={() => {
                       setShowRecusoInput(false);
                       setMotivoRecusa("");

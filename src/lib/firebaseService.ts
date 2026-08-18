@@ -12,6 +12,7 @@ import {
   getDocFromCache,
   deleteDoc as firestoreDeleteDoc,
   updateDoc as firestoreUpdateDoc,
+  onSnapshot,
   query,
   where,
   orderBy,
@@ -21,7 +22,8 @@ import {
   arrayUnion,
   increment,
   serverTimestamp,
-  Timestamp
+  Timestamp,
+  FieldValue
 } from "firebase/firestore";
 
 let hasFallenBack = false;
@@ -93,35 +95,24 @@ export function gerarIdAudit(userId: string | number, dia: string): string {
   return `${userId}_${dia}`;
 }
 
-function recreateRef(ref: any) {
-  if (!ref) return ref;
-  if (ref.type === "document" && ref.path) {
-    return doc(db, ref.path);
-  }
-  if (ref.type === "collection" && ref.path) {
-    return collection(db, ref.path);
-  }
-  return ref;
-}
+
 
 async function runWithFallback<T>(operation: (ref?: any) => Promise<T>, ref?: any, timeoutMs = 8000): Promise<T> {
-  let timer: any;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error("Timeout de conexão com o banco de dados Firestore")), timeoutMs);
   });
 
   try {
     const result = await Promise.race([operation(ref), timeoutPromise]);
-    clearTimeout(timer);
     return result;
-  } catch (error: any) {
-    clearTimeout(timer);
-    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
 // Resilient server-first wrappers for imported Firestore operations
-function getDocs(colRefOrQuery: any): Promise<any> {
+export function getDocs(colRefOrQuery: any): Promise<any> {
   return runWithFallback(async (r) => {
     const targetRef = r || colRefOrQuery;
     try {
@@ -148,7 +139,7 @@ function getDocs(colRefOrQuery: any): Promise<any> {
   }, colRefOrQuery, 8000);
 }
 
-function getDoc(docRef: any): Promise<any> {
+export function getDoc(docRef: any): Promise<any> {
   return runWithFallback(async (r) => {
     const targetRef = r || docRef;
     try {
@@ -178,7 +169,7 @@ function getDoc(docRef: any): Promise<any> {
 export async function forceServerFetch<T = any>(collectionName: string): Promise<T[]> {
   try {
     const colRef = collection(db, collectionName);
-    const snap = await firestoreGetDocs(colRef);
+    const snap = await getDocs(colRef); // usa o wrapper resiliente com fallback para cache
     if (typeof navigator !== "undefined" && navigator.onLine) {
       isUsingOfflineCache = false;
     }
@@ -275,10 +266,12 @@ function cleanObject(obj: any): any {
     return obj.map(cleanObject);
   }
   if (typeof obj === "object") {
+    if (obj instanceof FieldValue) {
+      return obj;
+    }
     if (obj.constructor && (
-      obj.constructor.name === "FieldValue" || 
       obj.constructor.name === "FieldValueImpl" || 
-      obj.constructor.name.includes("FieldValue") || 
+      (obj.constructor.name && obj.constructor.name.includes("FieldValue")) || 
       (typeof obj.isEqual === "function" && typeof obj.toGeoPoint !== "function" && typeof obj.toDate !== "function")
     )) {
       return obj;
@@ -309,13 +302,13 @@ function cleanObject(obj: any): any {
 
 // 1. Audit Buffer
 let auditBuffer: AuditLogEntry[] = [];
-let auditTimeout: any = null;
+let auditTimeout: ReturnType<typeof setTimeout> | null = null;
 const AUDIT_BUFFER_MAX = 10;
 const AUDIT_BUFFER_DELAY = 30000; // 30s
 
 // 2. Points Buffer
 let pontoBuffer = new Map<string, { userId: string | number; dayKey: string; dayData: any }>();
-let pontoSyncTimeout: any = null;
+let pontoSyncTimeout: ReturnType<typeof setTimeout> | null = null;
 const PONTO_BUFFER_DELAY = 300000; // 5 minutos (300.000 ms)
 const PONTO_BUFFER_MAX_ITEMS = 5;
 
@@ -358,15 +351,63 @@ export async function safeSync<T>(docData: T, syncFn: (data: T) => Promise<any>)
 }
 
 // Unload Event Listener to flush remaining buffers
+// Helper para persistir buffer no localStorage antes do unload
+function persistBufferToLocalStorage(): void {
+  if (typeof window === "undefined") return;
+  if (auditBuffer.length > 0) {
+    try {
+      const existing = JSON.parse(localStorage.getItem("__pending_audit_buffer") || "[]");
+      localStorage.setItem("__pending_audit_buffer", JSON.stringify([...existing, ...auditBuffer]));
+    } catch {}
+  }
+  if (pontoBuffer.size > 0) {
+    try {
+      const existing = JSON.parse(localStorage.getItem("__pending_ponto_buffer") || "[]");
+      const items = Array.from(pontoBuffer.values());
+      localStorage.setItem("__pending_ponto_buffer", JSON.stringify([...existing, ...items]));
+    } catch {}
+  }
+}
+
+// Tentar flush sincrono via keepalive + backup no localStorage
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
+    persistBufferToLocalStorage();
     if (auditBuffer.length > 0) {
-      flushAuditBuffer().catch(() => {});
+      try {
+        const blob = new Blob([JSON.stringify({ auditLogs: auditBuffer })], { type: "application/json" });
+        navigator.sendBeacon && navigator.sendBeacon("/api/flush-audit", blob);
+      } catch {}
     }
     if (pontoBuffer.size > 0) {
-      forceSyncPontos().catch(() => {});
+      try {
+        const blob = new Blob([JSON.stringify({ pontos: Array.from(pontoBuffer.values()) })], { type: "application/json" });
+        navigator.sendBeacon && navigator.sendBeacon("/api/flush-pontos", blob);
+      } catch {}
     }
   });
+}
+
+// Restaurar buffers pendentes do localStorage na inicialização
+if (typeof window !== "undefined") {
+  try {
+    const pendingAudit = JSON.parse(localStorage.getItem("__pending_audit_buffer") || "[]");
+    if (pendingAudit.length > 0) {
+      auditBuffer.push(...pendingAudit);
+      localStorage.removeItem("__pending_audit_buffer");
+      flushAuditBuffer().catch(() => {});
+    }
+    const pendingPontos = JSON.parse(localStorage.getItem("__pending_ponto_buffer") || "[]");
+    if (pendingPontos.length > 0) {
+      for (const item of pendingPontos) {
+        if (item && item.userId && item.dayKey) {
+          pontoBuffer.set(`${item.userId}_${item.dayKey}`, item);
+        }
+      }
+      localStorage.removeItem("__pending_ponto_buffer");
+      syncPontosBuffer(true).catch(() => {});
+    }
+  } catch {}
 }
 
 // ==================== INITIALIZATION & SEEDING ====================
@@ -504,7 +545,7 @@ export async function updateUserSenhaInDb(userId: number | string, novaSenha: st
       }
     }
 
-    await setDoc(docRef, payload, { merge: true });
+    await updateDoc(docRef, payload);
   } catch (error) {
     console.warn(`[Firebase] Failed to update password for user ${userId} in Firestore (offline?):`, error);
   }
@@ -528,6 +569,12 @@ async function prepareSingleDayPunches(dayArray: any): Promise<any> {
     dayArray.map(async (punch: any) => {
       if (!punch) return null;
       const newPunch = { ...punch };
+
+      // Preserva a hora local do dispositivo (momento exato do clique)
+      if (!newPunch.dispositivoLocalHora) {
+        newPunch.dispositivoLocalHora = newPunch.registradoEm || newPunch.hora || new Date().toISOString();
+      }
+
       if (newPunch.serverTime === "pending" || !newPunch.serverTime) {
         newPunch.serverTime = new Date().toISOString();
       } else if (typeof newPunch.serverTime === "object") {
@@ -619,7 +666,17 @@ export async function syncPontosBuffer(force = false): Promise<void> {
     for (const item of items) {
       pontoBuffer.delete(`${item.userId}_${item.dayKey}`);
     }
-    await batchSaveDiasPonto(items);
+    try {
+      await batchSaveDiasPonto(items);
+    } catch (err) {
+      // Re-adicionar ao buffer e salvar no localStorage como backup
+      console.warn("[Sync] Falha ao sincronizar pontos, re-adicionando ao buffer:", err);
+      for (const item of items) {
+        pontoBuffer.set(`${item.userId}_${item.dayKey}`, item);
+      }
+      persistBufferToLocalStorage();
+      break; // Parar para não loop infinito, tenta novamente no próximo ciclo
+    }
   }
 }
 
@@ -720,10 +777,39 @@ export async function saveSingleDayPonto(userId: number | string, dayKey: string
     dias: {
       [dayKey]: preparedPunch
     },
+    dispositivoLocalHora: new Date().toISOString(),
+    horaServidor: serverTimestamp(),
     atualizadoEm: new Date().toISOString()
   });
 
   await setDoc(docRef, payload, { merge: true });
+}
+
+/**
+ * Escuta em tempo real o documento de pontos do usuário com detecção do estado da gravação no cache local (hasPendingWrites).
+ * Permite exibir ícones como "Sincronizando..." enquanto o Firestore processa a gravação na nuvem.
+ */
+export function subscribePontosComStatus(
+  userId: number | string,
+  mes: string,
+  onUpdate: (info: { data: any; hasPendingWrites: boolean; isFromCache: boolean }) => void
+): () => void {
+  const docId = gerarIdDoc(userId, mes);
+  const docRef = doc(db, "pontos", docId);
+
+  return onSnapshot(
+    docRef,
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      const data = snapshot.data() || null;
+      const hasPendingWrites = snapshot.metadata.hasPendingWrites;
+      const isFromCache = snapshot.metadata.fromCache;
+      onUpdate({ data, hasPendingWrites, isFromCache });
+    },
+    (error) => {
+      console.warn(`[subscribePontosComStatus] Erro ao escutar status do documento ${docId}:`, error);
+    }
+  );
 }
 
 export async function batchSaveDiasPonto(updates: Array<{ userId: number | string; dayKey: string; dayData: any }>): Promise<void> {
@@ -752,9 +838,22 @@ export async function batchSaveDiasPonto(updates: Array<{ userId: number | strin
       await batch.commit();
       console.log(`[Firebase] Batch de ${chunk.length} dia(s) salvo com sucesso via writeBatch.`);
     } catch (error) {
-      console.warn("[Firebase] Erro no batchSaveDiasPonto, salvando item por item:", error);
+      console.warn("[Firebase] Erro no batchSaveDiasPonto, tentando salvar item por item:", error);
+      const failedItems: typeof chunk = [];
       for (const item of chunk) {
-        await saveSingleDayPonto(item.userId, item.dayKey, item.dayData).catch(() => {});
+        try {
+          await saveSingleDayPonto(item.userId, item.dayKey, item.dayData);
+        } catch (itemErr) {
+          console.error(`[Firebase] Falha ao salvar ponto ${item.userId} dia ${item.dayKey}:`, itemErr);
+          failedItems.push(item);
+        }
+      }
+      if (failedItems.length > 0) {
+        console.warn(`[Firebase] ${failedItems.length} item(s) não puderam ser salvos e serão reprocessados.`);
+        for (const item of failedItems) {
+          pontoBuffer.set(`${item.userId}_${item.dayKey}`, item);
+        }
+        persistBufferToLocalStorage();
       }
     }
   }
@@ -768,12 +867,36 @@ export async function saveUserPontosToDb(userId: number | string, days: any): Pr
   for (const dayKey of dayKeys) {
     await saveDiaPontoBuffered(userId, dayKey, days[dayKey]);
   }
+  // Forçar sincronização imediata para garantir persistência
+  await forceSyncPontos().catch(() => {});
   return days;
 }
 
 export async function fetchAllPontos(limitRecentDays: number = 0): Promise<PontosGlobal> {
   const mesAtual = getMesAtual();
-  return await fetchAllPontosMes(mesAtual);
+  const allPontos = await fetchAllPontosMes(mesAtual);
+
+  if (limitRecentDays <= 0) return allPontos;
+
+  // Filtrar apenas os N dias mais recentes do mês atual
+  const sortedDays = Object.keys(allPontos).sort((a, b) => b.localeCompare(a));
+  const recentDays = sortedDays.slice(0, limitRecentDays);
+  const filtered: PontosGlobal = {};
+
+  for (const userId of Object.keys(allPontos)) {
+    const userDays = allPontos[userId];
+    if (!userDays) continue;
+    const userFiltered: Record<string, any> = {};
+    for (const dayKey of recentDays) {
+      if (userDays[dayKey]) {
+        userFiltered[dayKey] = userDays[dayKey];
+      }
+    }
+    if (Object.keys(userFiltered).length > 0) {
+      filtered[userId] = userFiltered;
+    }
+  }
+  return filtered;
 }
 
 export async function fetchUserFullPontos(userId: number): Promise<Record<string, any>> {
@@ -791,6 +914,8 @@ export async function checkFirebaseConnectivity(): Promise<boolean> {
   }
   try {
     await enableNetwork(db);
+    // Ping real: tentar ler um doc leve para confirmar conectividade
+    await firestoreGetDoc(doc(db, "config", "empresa"));
     lastHealthCheckTime = now;
     isUsingOfflineCache = false;
     return true;
@@ -896,6 +1021,8 @@ export async function fetchAuditLogs(mes: string = getMesAtual()): Promise<Audit
     let snapshot;
     if (mes) {
       try {
+        // ⚠️ Requer índice composto no Firestore: collection=auditLogs, fields=dia(asc|desc)
+        // Se falhar por falta de índice, cairá no fallback abaixo
         const q = query(
           colRef,
           where("dia", ">=", `${mes}-01`),
@@ -904,7 +1031,8 @@ export async function fetchAuditLogs(mes: string = getMesAtual()): Promise<Audit
           limit(200)
         );
         snapshot = await getDocs(q);
-      } catch {
+      } catch (idxErr: any) {
+        console.warn("[Firebase] Query de auditLogs falhou (falta índice composto?). Usando fallback:", idxErr?.message || idxErr);
         const fallbackQ = query(colRef, limit(200));
         snapshot = await getDocs(fallbackQ);
       }
@@ -1136,7 +1264,7 @@ export async function fetchAllPrePontos(): Promise<PrePonto[]> {
     snapshot.forEach((docSnap) => {
       list.push(docSnap.data() as PrePonto);
     });
-    return list.sort((a, b) => new Date(b.quando).getTime() - new Date(a.quando).getTime());
+    return list; // já ordenado pelo Firestore via orderBy
   } catch (error) {
     console.warn("[Firebase] Error fetching prePontos (offline?):", error);
     return [];
@@ -1171,7 +1299,7 @@ export async function fetchAllFolhasAceite(): Promise<FolhaAceite[]> {
     snapshot.forEach((docSnap) => {
       list.push(docSnap.data() as FolhaAceite);
     });
-    return list.sort((a, b) => new Date(b.enviadoEm).getTime() - new Date(a.enviadoEm).getTime());
+    return list; // já ordenado pelo Firestore via orderBy
   } catch (error) {
     console.warn("[Firebase] Error fetching folhasAceite (offline?):", error);
     return [];
@@ -1180,7 +1308,7 @@ export async function fetchAllFolhasAceite(): Promise<FolhaAceite[]> {
 
 export async function saveFolhaAceiteToDb(folha: FolhaAceite): Promise<void> {
   try {
-    await setDoc(doc(db, "folhasAceite", folha.id), cleanObject(folha));
+    await setDoc(doc(db, "folhasAceite", folha.id), cleanObject(folha), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `folhasAceite/${folha.id}`);
   }
@@ -1227,7 +1355,7 @@ export async function fetchAllAlertas(): Promise<Alerta[]> {
         ativo: data.ativo !== false
       });
     });
-    return list.sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
+    return list; // já ordenado pelo Firestore via orderBy
   } catch (error) {
     console.warn("[Firebase] Error fetching alertas (offline?):", error);
     return [];
@@ -1253,16 +1381,10 @@ export async function deleteAlertaFromDb(alertaId: string): Promise<void> {
 export async function markAlertaAsReadInDb(alertaId: string, matricula: string): Promise<void> {
   try {
     const alertaRef = doc(db, "alertas", alertaId);
-    const docSnap = await getDoc(alertaRef);
-    if (docSnap.exists()) {
-      const data = docSnap.data();
-      const currentReads: string[] = Array.isArray(data.lidoPorMatriculas) ? data.lidoPorMatriculas : [];
-      if (!currentReads.includes(matricula)) {
-        await updateDoc(alertaRef, {
-          lidoPorMatriculas: [...currentReads, matricula]
-        });
-      }
-    }
+    // arrayUnion é atômico e evita race conditions
+    await updateDoc(alertaRef, {
+      lidoPorMatriculas: arrayUnion(matricula)
+    });
   } catch (error) {
     console.warn(`[Firebase] Não foi possível atualizar leitura do alerta ${alertaId}:`, error);
   }
@@ -1293,7 +1415,7 @@ export async function fetchAllDenuncias(): Promise<Denuncia[]> {
         atualizadoEm: data.atualizadoEm || null
       });
     });
-    return list.sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
+    return list; // já ordenado pelo Firestore via orderBy
   } catch (error) {
     console.warn("[Firebase] Error fetching denuncias (offline?):", error);
     return [];
@@ -1377,7 +1499,7 @@ export async function fetchAllSolicitacoesCorrecao(): Promise<SolicitacaoCorreca
         revisadoPor: data.revisadoPor || null
       });
     });
-    return list.sort((a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime());
+    return list; // já ordenado pelo Firestore via orderBy
   } catch (error) {
     console.warn("[Firebase] Error fetching solicitacoesCorrecao (offline?):", error);
     return [];
@@ -1413,6 +1535,14 @@ export async function saveSolicitacaoCorrecaoToDb(solicitationInput: Partial<Sol
     const msg = error?.message || String(error);
     if (msg.includes("Timeout de conexão") || msg.includes("offline") || msg.includes("unavailable")) {
       console.warn(`[Firebase] Timeout de conexão/offline ao salvar solicitação de correção ${id}, mantido em cache local.`);
+      // Salvar no localStorage para sync posterior
+      if (typeof window !== "undefined") {
+        try {
+          const pending = JSON.parse(localStorage.getItem("__pending_solicitacoes") || "[]");
+          pending.push(newSolicitation);
+          localStorage.setItem("__pending_solicitacoes", JSON.stringify(pending));
+        } catch {}
+      }
       return newSolicitation;
     }
     handleFirestoreError(error, OperationType.WRITE, `solicitacoesCorrecao/${id}`);

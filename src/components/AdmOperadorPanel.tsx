@@ -621,7 +621,7 @@ export function AdmOperadorPanel({
     justificativa: string
   ) => {
     const [hh, mm] = novaHora.split(":").map(Number);
-    const dateObj = new Date(`${dayKey}T00:00:00`);
+    const dateObj = new Date(`${dayKey}T12:00:00-03:00`);
     dateObj.setHours(hh, mm, 0, 0);
 
     const targetUser = users.find((u) => u.id === userId);
@@ -638,15 +638,20 @@ export function AdmOperadorPanel({
           })
         : "--:--";
 
+    const nowIso = new Date().toISOString();
     const updatedPunch: Batida = {
       ...(existingPunch || {}),
       hora: dateObj.toISOString(),
+      iso: dateObj.toISOString(),
       tipo: "manual",
       origemMarcacao: "MO",
       modificadoPorGestor: true,
       modificadoPor: currentUser.nome,
       modificadoPorMatricula: currentUser.matricula,
-      alteradoEm: new Date().toISOString(),
+      registradoEm: existingPunch?.registradoEm || nowIso,
+      alteradoEm: nowIso,
+      editadoEm: nowIso,
+      revisadoEm: nowIso,
       justificativaAlteracao: justificativa,
       lancadoPorAdm: true,
     };
@@ -934,12 +939,34 @@ export function AdmOperadorPanel({
     return false;
   }
 
-  function salvarLancamento(userId: number, dayKey: string, batidas: any, resumo: string) {
+  async function salvarLancamento(userId: number, dayKey: string, batidas: any, resumo: string) {
     if (!checkCalendarPermission()) return;
+    
+    const nowIso = new Date().toISOString();
+    const formattedBatidas = (Array.isArray(batidas) ? batidas : [null, null, null, null]).map((b: any) => {
+      if (!b) return null;
+      return {
+        ...b,
+        registradoEm: b.registradoEm || nowIso,
+        alteradoEm: nowIso,
+        editadoEm: nowIso,
+        revisadoEm: nowIso,
+        modificadoPorGestor: true,
+        modificadoPor: currentUser.nome,
+        modificadoPorMatricula: currentUser.matricula,
+        tipo: b.tipo || "manual",
+        origemMarcacao: b.origemMarcacao || "MO"
+      };
+    });
+
     setPontosGlobal(prev => ({
       ...prev,
-      [userId]: { ...(prev[userId] || {}), [dayKey]: batidas }
+      [userId]: { ...(prev[userId] || {}), [dayKey]: formattedBatidas }
     }));
+
+    await saveDiaPonto(userId, dayKey, formattedBatidas).catch(err =>
+      console.warn("Erro ao salvar lançamento manual no Firestore:", err)
+    );
 
     const u = users.find(x => x.id === userId);
     if (!u) return;
