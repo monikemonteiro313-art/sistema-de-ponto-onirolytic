@@ -275,8 +275,17 @@ export async function addToSyncQueue(type: "saveUserPontos" | "saveAuditLog", pa
         if (type === "saveUserPontos" && payload?.userId) {
           existingItem = items.find(i => i.type === "saveUserPontos" && i.payload?.userId === payload.userId);
         }
-        if (existingItem) {
-          existingItem.payload = payload;
+                if (existingItem) {
+          // MERGE dos dias: preserva os dias antigos e adiciona/atualiza os novos
+          const mergedPayload = {
+            ...existingItem.payload,
+            ...payload,
+            days: {
+              ...(existingItem.payload?.days || {}),
+              ...(payload?.days || {})
+            }
+          };
+          existingItem.payload = mergedPayload;
           existingItem.createdAt = Date.now();
           const putReq = store.put(existingItem);
           putReq.onsuccess = () => resolve(true);
@@ -337,12 +346,31 @@ export async function removeUserFromSyncQueue(userId: number | string): Promise<
       const req = store.getAll();
       req.onsuccess = () => {
         const items: QueueItem[] = req.result || [];
-        items.forEach(item => {
-          if (item.id && item.type === "saveUserPontos" && String(item.payload?.userId) === String(userId)) {
-            store.delete(item.id);
-          }
-        });
-        resolve(true);
+        const toDelete = items.filter(item => 
+          item.id && item.type === "saveUserPontos" && String(item.payload?.userId) === String(userId)
+        );
+
+        if (toDelete.length === 0) {
+          resolve(true);
+          return;
+        }
+
+        let completed = 0;
+        let hasError = false;
+
+        for (const item of toDelete) {
+          const delReq = store.delete(item.id!);
+          delReq.onsuccess = () => {
+            completed++;
+            if (completed === toDelete.length && !hasError) {
+              resolve(true);
+            }
+          };
+          delReq.onerror = () => {
+            hasError = true;
+            resolve(false);
+          };
+        }
       };
       req.onerror = () => resolve(false);
     });
@@ -380,6 +408,15 @@ export async function wipeAllLocalData(): Promise<void> {
 
   // 2. Preserva chaves essenciais do localStorage antes de limpar
   const preservar = ["hr_cached_wizard_done", "hr_current_user"];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith("termos_aceitos_") || k.startsWith("termo_aceito_") || k.startsWith("tour_visto_"))) {
+        if (!preservar.includes(k)) preservar.push(k);
+      }
+    }
+  } catch (_) {}
+
   const backup: Record<string, string | null> = {};
   for (const key of preservar) {
     try {

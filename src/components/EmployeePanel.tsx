@@ -84,6 +84,10 @@ interface EmployeePanelProps {
   syncError?: string | null;
   setSyncError?: React.Dispatch<React.SetStateAction<string | null>>;
   registerPrePonto?: (userId: number, userName: string, matricula: string, dayKey: string, idx: number, tipo: "auto" | "manual") => Promise<string>;
+  updatePrePontoDetails?: (
+    prePontoId: string,
+    details: { latitude?: number | null; longitude?: number | null; accuracy?: number | null; fotoComprovante?: string | null }
+  ) => Promise<void>;
   markPrePontoSuccess?: (prePontoId: string) => Promise<void>;
   cancelPrePonto?: (prePontoId: string) => Promise<void>;
   folhasAceite?: FolhaAceite[];
@@ -122,6 +126,7 @@ export function EmployeePanel({
   syncError,
   setSyncError,
   registerPrePonto,
+  updatePrePontoDetails,
   markPrePontoSuccess,
   cancelPrePonto,
   folhasAceite = [],
@@ -458,6 +463,10 @@ export function EmployeePanel({
   const [triggerSync, setTriggerSync] = useState(0);
   const [isRegistering, setIsRegistering] = useState(false);
   const [currentPrePontoId, setCurrentPrePontoId] = useState<string | null>(null);
+  const currentPrePontoIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    currentPrePontoIdRef.current = currentPrePontoId;
+  }, [currentPrePontoId]);
 
   // Find any pending sheets for this employee
   const pendingFolha = (folhasAceite || []).find(f => f.userId === currentUser.id && f.status === "pendente");
@@ -915,9 +924,11 @@ export function EmployeePanel({
       const queue = await loadOfflineQueue();
       if (active && queue && queue.length > 0) {
         console.log(`[EmployeePanel Boot] Loaded ${queue.length} offline punches from Capacitor Preferences native disk. Merging into state...`);
-        const merged = await applyOfflineQueueToPontos(pontosGlobal, currentUser.id);
+        // Usa o ref para pegar o estado MAIS RECENTE (evita race condition se o App.tsx
+        // já carregou do Firebase enquanto este effect rodava)
+        const merged = await applyOfflineQueueToPontos(pontosGlobalRef.current, currentUser.id);
         if (active) {
-          const currentJson = JSON.stringify(pontosGlobal?.[currentUser.id] || {});
+          const currentJson = JSON.stringify(pontosGlobalRef.current?.[currentUser.id] || {});
           const mergedJson = JSON.stringify(merged?.[currentUser.id] || {});
           if (currentJson !== mergedJson) {
             setPontosGlobal(merged);
@@ -1101,8 +1112,10 @@ export function EmployeePanel({
         [currentUser.id]: updatedDays
       }));
 
-      // Persistir no banco
-      await saveUserPontosToDb(currentUser.id, updatedDays);
+      // Persistir no banco (dia a dia para não estourar 1MB do Firestore)
+      for (const dayKey of Object.keys(updatedDays)) {
+        await saveSingleDayPonto(currentUser.id, dayKey, updatedDays[dayKey]);
+      }
 
       const descLog = atestadoDataInicio === atestadoDataFim
         ? `Atestado em ${atestadoDataInicio}`
@@ -1171,17 +1184,25 @@ export function EmployeePanel({
 
       const fmtB = (b: any) => {
         if (!b) return "—";
+        const getSafeTime = (h: any) => {
+          if (!h) return "—";
+          if (typeof h === "string" && /^\d{2}:\d{2}$/.test(h)) return h;
+          if (typeof h === "string" && /^\d{2}:\d{2}:\d{2}$/.test(h)) return h.substring(0, 5);
+          const d = new Date(h);
+          return !isNaN(d.getTime()) ? d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : String(h);
+        };
+
         if (b.ocorrencia) {
           if (b.ocorrencia === "dia_vazio" || b.ocorrencia === "vazio" || b.ocorrencia === "sem_vinculo" || b.ocorrencia === "isento") return "";
           if (b.ocorrencia === "atestado") {
             if (b.statusAtestado === "recusado") {
-              return b.hora ? `${new Date(b.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}${b.latitude && b.longitude ? " 📍" : ""}` : "—";
+              return b.hora ? `${getSafeTime(b.hora)}${b.latitude && b.longitude ? " 📍" : ""}` : "—";
             }
             return b.parcial ? "Atestado Parcial" : "Atestado";
           }
           return b.ocorrencia === "afastamento" ? "Afastamento" : b.ocorrencia === "falta" ? "Falta" : b.ocorrencia;
         }
-        let timeStr = new Date(b.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+        let timeStr = getSafeTime(b.hora);
         if (b.suspeitoHoraModificada) {
           timeStr += " ⚠️ Suspeito";
         }
@@ -1377,6 +1398,13 @@ export function EmployeePanel({
         setGeoSamplesCount(1);
         setGeoLoading(false);
         setGeoCountdown(0);
+        if (currentPrePontoIdRef.current && updatePrePontoDetails) {
+          updatePrePontoDetails(currentPrePontoIdRef.current, {
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            accuracy: coords.accuracy
+          });
+        }
         // Auto-envio imediato com 1 clique
         finalizarComGeo(coords, null);
         return;
@@ -1411,6 +1439,13 @@ export function EmployeePanel({
       if (coords) {
         setGeoCoords(coords);
         setBestGeoCoords(coords);
+        if (currentPrePontoIdRef.current && updatePrePontoDetails) {
+          updatePrePontoDetails(currentPrePontoIdRef.current, {
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            accuracy: coords.accuracy
+          });
+        }
         // Auto-envio imediato com 1 clique ou em 5s
         finalizarComGeo(coords, null);
       } else {
@@ -1428,6 +1463,13 @@ export function EmployeePanel({
           };
           setGeoCoords(finalCoords);
           setBestGeoCoords(finalCoords);
+          if (currentPrePontoIdRef.current && updatePrePontoDetails) {
+            updatePrePontoDetails(currentPrePontoIdRef.current, {
+              latitude: finalCoords.latitude,
+              longitude: finalCoords.longitude,
+              accuracy: finalCoords.accuracy
+            });
+          }
           // Auto-envio imediato com 1 clique ou em 5s
           finalizarComGeo(finalCoords, null);
         } catch (err) {
@@ -1452,6 +1494,13 @@ export function EmployeePanel({
           if (!bestCoords || (curAcc !== undefined && (bestCoords.accuracy === undefined || curAcc < bestCoords.accuracy))) {
             bestCoords = newCoords;
             setBestGeoCoords(newCoords);
+            if (currentPrePontoIdRef.current && updatePrePontoDetails) {
+              updatePrePontoDetails(currentPrePontoIdRef.current, {
+                latitude: newCoords.latitude,
+                longitude: newCoords.longitude,
+                accuracy: newCoords.accuracy
+              });
+            }
           }
 
           // Strict filter: accuracy <= 30 meters
@@ -1513,6 +1562,15 @@ export function EmployeePanel({
       return;
     }
 
+    if (currentPrePontoIdRef.current && updatePrePontoDetails) {
+      updatePrePontoDetails(currentPrePontoIdRef.current, {
+        latitude: hasCoords ? coordsToUse.latitude : null,
+        longitude: hasCoords ? coordsToUse.longitude : null,
+        accuracy: hasCoords ? (coordsToUse.accuracy ?? null) : null,
+        fotoComprovante: hasPhoto ? selfieToUse : null
+      });
+    }
+
     // Anti-fraude: Clock Tampering Check
     const tamperCheck = await checkClockTampering();
     if (tamperCheck.isTampered) {
@@ -1563,15 +1621,17 @@ export function EmployeePanel({
       let targetDayArray: (Batida | null)[] = [null, null, null, null];
 
       if (tipo === "auto") {
+        const isOffline = !navigator.onLine;
         const reg: Batida = {
           hora: timestamp,
           tipo: "auto",
           registradoEm: timestamp,
-          serverTime: timestamp,
-          latitude: lat,
-          longitude: lng,
-          accuracy: acc,
-          fotoComprovante: selfieToUse || undefined,
+          serverTime: isOffline ? "pending" : timestamp,
+          gravadoOffline: isOffline,
+          ...(lat !== undefined && { latitude: lat }),
+          ...(lng !== undefined && { longitude: lng }),
+          ...(acc !== undefined && { accuracy: acc }),
+          ...(selfieToUse && { fotoComprovante: selfieToUse }),
           obs: obsFinal,
           consentimentoGeoloc: true,
           dispositivoLocalHora: new Date().toISOString()
@@ -1613,16 +1673,18 @@ export function EmployeePanel({
           d.setHours(hh, mm, 0, 0);
         }
         punchHora = d.toISOString();
+        const isOffline = !navigator.onLine;
         const reg: Batida = {
           hora: punchHora,
           tipo: "manual",
           obs: obsFinal,
           registradoEm: timestamp,
-          serverTime: timestamp,
-          latitude: lat,
-          longitude: lng,
-          accuracy: acc,
-          fotoComprovante: selfieToUse || undefined,
+          serverTime: isOffline ? "pending" : timestamp,
+          gravadoOffline: isOffline,
+          ...(lat !== undefined && { latitude: lat }),
+          ...(lng !== undefined && { longitude: lng }),
+          ...(acc !== undefined && { accuracy: acc }),
+          ...(selfieToUse && { fotoComprovante: selfieToUse }),
           consentimentoGeoloc: true,
           dispositivoLocalHora: new Date().toISOString(),
           statusAprovacao: "pendente"
@@ -1659,10 +1721,41 @@ export function EmployeePanel({
         );
       }
 
-      // Salva no Firestore. Se estiver offline, o Firebase SDK (persistentLocalCache) enfileira nativamente.
-      saveSingleDayPonto(currentUser.id, dayKey, targetDayArray).catch(err => {
-        console.warn("[Firestore] Registro retido em cache offline nativo:", err);
-      });
+      // Persistência com Timeout e Resiliência (Compliance Portaria 671)
+      let firestoreSaved = false;
+      try {
+        await Promise.race([
+          saveSingleDayPonto(currentUser.id, dayKey, targetDayArray),
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error("Timeout ao salvar no Firestore")), 8000)
+          )
+        ]);
+        firestoreSaved = true;
+        console.log("✅ [Firestore] Batida confirmada na nuvem:", dayKey, idx);
+      } catch (err: any) {
+        console.warn("⚠️ [Firestore] Falha ou Timeout de rede (salvo na fila offline local):", err);
+      }
+
+      // Se falhou na nuvem ou está offline, garante a gravação na fila offline local
+      if (!firestoreSaved || isOffline) {
+        saveOfflinePunch({
+          userId: currentUser.id,
+          dayKey,
+          slotIdx: idx,
+          hora: punchHora,
+          tipo: tipo === "manual" ? "manual" : "normal",
+          ...(lat !== undefined && { latitude: lat }),
+          ...(lng !== undefined && { longitude: lng }),
+          ...(acc !== undefined && { accuracy: acc }),
+          ...(selfieToUse && { fotoComprovante: selfieToUse }),
+          registradoEm: timestamp,
+          dispositivoLocalHora: new Date().toISOString(),
+          gravadoOffline: true,
+          pendingSync: true,
+          consentimentoGeoloc: true,
+          obs: obsFinal
+        }).catch(err => console.warn("[OfflineQueue] Local save notice:", err));
+      }
 
       // Record last punch timestamp into native preferences disk
       const punchTsNum = new Date(timestamp).getTime();
@@ -1674,18 +1767,27 @@ export function EmployeePanel({
         setCurrentPrePontoId(null);
       }
 
-      // Feedback de Sucesso e Encerramento Automático
+      // Encerramento do Modal e Mensagem de Sucesso
+      setGeoActiveFor(null);
+      clearGeo();
+      setIsRegistering(false);
+      setPunchSuccessMsg(
+        firestoreSaved
+          ? `Batida #${idx + 1} (${steps[idx].done}) confirmada na nuvem!`
+          : `Batida #${idx + 1} (${steps[idx].done}) salva com segurança no dispositivo!`
+      );
+
       if (successTimeoutRef.current) {
         clearTimeout(successTimeoutRef.current);
       }
-      setPunchSuccessMsg(`Batida #${idx + 1} (${steps[idx].done}) registrada com sucesso!`);
       successTimeoutRef.current = setTimeout(() => {
         setPunchSuccessMsg(null);
-        setGeoActiveFor(null);
-        clearGeo();
-        setIsRegistering(false);
         successTimeoutRef.current = null;
-      }, 1500);
+      }, 4000);
+
+      if (syncNow) {
+        syncNow().catch(() => {});
+      }
 
     } catch (err) {
       console.error("[Punch Error]", err);
@@ -1704,6 +1806,8 @@ export function EmployeePanel({
   }
 
   async function registrarAgora(idx: number, dayKey: string) {
+    if (isRegistering || geoActiveFor) return;
+
     const tamperCheck = await checkClockTampering();
     if (tamperCheck.isTampered) {
       if (onAddLog) {
@@ -1828,6 +1932,9 @@ export function EmployeePanel({
   function fmt(batida: Batida | null) {
     if (!batida || !batida.hora) return "—";
     const horaStr = new Date(batida.hora).toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+    if (batida.origemMarcacao === "MO" || batida.modificadoPorGestor || batida.lancadoPorAdm) {
+      return `${horaStr} (m.o)`;
+    }
     if (batida.statusAprovacao === "recusado" || batida.statusAprovacao === "rejeitado" || batida.origemMarcacao === "RECUSADA") {
       return `${horaStr} (recusada)`;
     }
@@ -2405,19 +2512,34 @@ export function EmployeePanel({
                         <div style={{ fontSize: 13.5, fontWeight: batida ? 600 : 400, color: batida ? t.text : t.textMuted }}>{s.done}</div>
                         {batida?.tipo === "manual" && (
                           <div style={{ fontSize: 10, color: "#F59E0B", marginTop: 1, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
-                            <span>MANUAL ({batida.statusAprovacao === "aprovado" || batida.origemMarcacao === "MA" ? "M.A" : batida.statusAprovacao === "recusado" || batida.statusAprovacao === "rejeitado" ? "RECUSADA" : "M"}) · reg. {fmtFull(batida.registradoEm)}</span>
+                            <span>
+                              MANUAL ({
+                                batida.origemMarcacao === "MO" || batida.modificadoPorGestor || batida.lancadoPorAdm
+                                  ? "M.O"
+                                  : batida.statusAprovacao === "aprovado" || batida.origemMarcacao === "MA"
+                                    ? "M.A"
+                                    : batida.statusAprovacao === "recusado" || batida.statusAprovacao === "rejeitado" || batida.origemMarcacao === "RECUSADA"
+                                      ? "RECUSADA"
+                                      : "M"
+                              }) · reg. {fmtFull(batida.registradoEm)}
+                            </span>
                             {batida.obs ? <span> · "{batida.obs}"</span> : ""}
-                            {(!batida.statusAprovacao || batida.statusAprovacao === "pendente") && (
+                            {(batida.origemMarcacao === "MO" || batida.modificadoPorGestor || batida.lancadoPorAdm) && (
+                              <span style={{ background: "rgba(147,51,234,0.15)", color: "#9333EA", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(147,51,234,0.3)" }}>
+                                ✏️ M.O - Inserido/Ajustado pelo Gestor
+                              </span>
+                            )}
+                            {!(batida.origemMarcacao === "MO" || batida.modificadoPorGestor || batida.lancadoPorAdm) && (!batida.statusAprovacao || batida.statusAprovacao === "pendente") && (
                               <span style={{ background: "rgba(245,158,11,0.15)", color: "#D97706", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(245,158,11,0.3)" }}>
                                 ⏳ Aguardando Aprovação do Gestor
                               </span>
                             )}
-                            {(batida.statusAprovacao === "aprovado" || batida.origemMarcacao === "MA") && (
+                            {!(batida.origemMarcacao === "MO" || batida.modificadoPorGestor || batida.lancadoPorAdm) && (batida.statusAprovacao === "aprovado" || batida.origemMarcacao === "MA") && (
                               <span style={{ background: "rgba(34,197,94,0.15)", color: "#16A34A", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(34,197,94,0.3)" }}>
                                 ✅ M.A - Aprovado pelo Gestor
                               </span>
                             )}
-                            {(batida.statusAprovacao === "rejeitado" || batida.statusAprovacao === "recusado" || batida.origemMarcacao === "RECUSADA") && (
+                            {!(batida.origemMarcacao === "MO" || batida.modificadoPorGestor || batida.lancadoPorAdm) && (batida.statusAprovacao === "rejeitado" || batida.statusAprovacao === "recusado" || batida.origemMarcacao === "RECUSADA") && (
                               <span style={{ background: "rgba(239,68,68,0.15)", color: "#DC2626", fontWeight: 800, padding: "1px 6px", borderRadius: 6, border: "1px solid rgba(239,68,68,0.3)" }}>
                                 ❌ Marcação Recusada {batida.motivoRejeicaoAjuste ? `("${batida.motivoRejeicaoAjuste}")` : ""}
                               </span>
@@ -2603,7 +2725,6 @@ export function EmployeePanel({
               if (!syncNow) return;
               try {
                 await syncNow();
-                await clearOfflineQueue();
                 await refreshOfflineListFromDisk();
               } catch (err) {
                 console.error("[Sync] Falha:", err);
@@ -2647,6 +2768,30 @@ export function EmployeePanel({
           </div>
         )}
       </div>
+
+      {/* Main Screen Punch Success Toast Banner */}
+      {punchSuccessMsg && !geoActiveFor && (
+        <div style={{
+          width: "100%",
+          maxWidth: 380,
+          marginBottom: 16,
+          background: "linear-gradient(135deg, #16A34A, #15803D)",
+          border: "2px solid #22C55E",
+          borderRadius: 14,
+          padding: "14px 18px",
+          color: "#ffffff",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          boxShadow: "0 8px 24px rgba(22,163,74,0.35)"
+        }}>
+          <span style={{ fontSize: 24 }}>✅</span>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 14 }}>{punchSuccessMsg}</div>
+            <div style={{ fontSize: 11.5, opacity: 0.9 }}>Sua marcação foi gravada e confirmada!</div>
+          </div>
+        </div>
+      )}
 
       {/* Gauge and Button Trigger */}
       {!calOpen && (connectivityMessage || firebaseHealthMessage || (journeyAlerts && journeyAlerts.length > 0)) && (
@@ -3252,10 +3397,8 @@ export function EmployeePanel({
                     if (syncNow) {
                       try {
                         await syncNow();
-                        // Sync succeeded → clear offline queue from native disk
-                        await clearOfflineQueue();
                         await refreshOfflineListFromDisk();
-                        console.log("[Sync] Fila offline sincronizada e limpa com sucesso.");
+                        console.log("[Sync] Fila offline sincronizada.");
                       } catch (err) {
                         console.error("[Sync] Falha ao sincronizar:", err);
                       }
@@ -3321,7 +3464,7 @@ export function EmployeePanel({
                   </p>
                 </div>
               ) : (
-                pendingOfflinePunchesList.map((item: any, i: number) => {
+                offlineListFromDisk.map((item: any, i: number) => {
                   const b = item.batida;
                   const regTime = b.registradoEm ? new Date(b.registradoEm) : b.hora ? new Date(b.hora) : new Date();
                   const dataFmt = regTime.toLocaleDateString("pt-BR");

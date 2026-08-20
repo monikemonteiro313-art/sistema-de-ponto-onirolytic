@@ -225,26 +225,49 @@ export class ErrorBoundary extends Component<Props, State> {
 
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <button
-                onClick={() => window.location.reload()}
+                onClick={this.handleHardReset}
+                disabled={this.state.isCleaning}
                 style={{
                   background: "#3B6EF8",
                   border: "none",
                   borderRadius: 10,
                   color: "#fff",
-                  padding: "12px 24px",
+                  padding: "14px 24px",
                   fontSize: 14,
+                  fontWeight: 700,
+                  cursor: this.state.isCleaning ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  boxShadow: "0 4px 14px rgba(59, 110, 248, 0.35)",
+                  transition: "background 0.2s"
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#2D5DE0")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "#3B6EF8")}
+              >
+                <Trash2 size={16} /> {this.state.isCleaning ? "Limpando e Recarregando..." : "Recarregar e Limpar Dados Locais"}
+              </button>
+
+              <button
+                onClick={() => window.location.reload()}
+                style={{
+                  background: "rgba(255, 255, 255, 0.05)",
+                  border: "1px solid #1E2235",
+                  borderRadius: 10,
+                  color: "#E4E7F0",
+                  padding: "11px 24px",
+                  fontSize: 13,
                   fontWeight: 600,
                   cursor: "pointer",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                   gap: 8,
-                  transition: "background 0.2s"
+                  transition: "all 0.2s"
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "#2D5DE0")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "#3B6EF8")}
               >
-                <RotateCcw size={16} /> Recarregar Agora
+                <RotateCcw size={15} /> Apenas Recarregar Página
               </button>
 
               <button

@@ -6,7 +6,8 @@ import { LgpdModal } from "./LgpdModal";
 import { ModalDenunciaAnonima } from "./ModalDenunciaAnonima";
 import { wipeAllLocalData } from "../lib/indexedDbService";
 import { setPref } from "../utils/preferencesService";
-import { isMatriculaMatch } from "../utils/hrHelpers";
+import { isMatriculaMatch, saveUserToLocalCache } from "../utils/hrHelpers";
+import { fetchUserByIdFromDb } from "../lib/firebaseService";
 
 interface LoginScreenProps {
   mode: string;
@@ -288,7 +289,7 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
     }, 220);
   }
 
-  function submit() {
+  async function submit() {
     setError("");
     const matOk = mat.trim().length >= 4;
     if (!matOk) {
@@ -303,8 +304,28 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
     const cleanMat = mat.trim();
     const cleanPw = pw.trim();
 
+    // D) Validação por Timestamp ('senhaAlteradaEm'): Se online, verifica no Firestore se a senha foi alterada recentemente
+    let currentUsers = [...users];
+    try {
+      if (typeof navigator !== "undefined" && navigator.onLine) {
+        const candidate = currentUsers.find(u => isMatriculaMatch(u.matricula, cleanMat));
+        if (candidate && candidate.id) {
+          const fsUser = await fetchUserByIdFromDb(candidate.id);
+          if (fsUser) {
+            const fsTime = Number(fsUser.senhaAlteradaEm) || 0;
+            const locTime = Number(candidate.senhaAlteradaEm) || 0;
+            if (fsTime > locTime || (fsUser.senha && fsUser.senha.trim() !== candidate.senha?.trim())) {
+              const updatedUser: User = { ...candidate, ...fsUser };
+              saveUserToLocalCache(updatedUser);
+              currentUsers = currentUsers.map(u => u.id === updatedUser.id ? updatedUser : u);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
     // Check all matching candidates (including disabled ones for informative errors)
-    const allMatching = users.filter(u => isMatriculaMatch(u.matricula, cleanMat));
+    const allMatching = currentUsers.filter(u => isMatriculaMatch(u.matricula, cleanMat));
 
     if (allMatching.length === 0) {
       if (cleanMat === "090909") {
@@ -373,6 +394,9 @@ export function LoginScreen({ mode, t, users, onLogin, isAdminMode, setIsAdminMo
       setError("Acesso bloqueado. Contate o administrador.");
       return;
     }
+
+    // B) Atualização Instantânea do Cache Local de Autenticação ao logar
+    saveUserToLocalCache(user);
 
     setLoading(true);
     try {

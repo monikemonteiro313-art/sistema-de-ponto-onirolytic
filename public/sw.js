@@ -1,5 +1,5 @@
 // Service Worker for Registro de Ponto PWA - Static Interface Caching
-const CACHE_NAME = "ponto-digital-v2";
+const CACHE_NAME = "ponto-digital-v4";
 const STATIC_ASSETS = [
   "/",
   "/index.html",

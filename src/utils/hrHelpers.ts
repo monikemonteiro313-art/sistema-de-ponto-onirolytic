@@ -1,6 +1,66 @@
 import { User, Jornada, PontosGlobal, Batida, FolgaRemunerada } from "../types";
 import { getJornada, SUPERADMIN_MAT } from "../data/mockData";
 import { getDiaPontoReferencia } from "../lib/firebaseService";
+import { setPref } from "./preferencesService";
+import { saveUsersToIndexedDB } from "../lib/indexedDbService";
+
+/**
+ * Atualização Instantânea do Cache Local de Autenticação (localStorage, @capacitor/preferences e IndexedDB)
+ */
+export function saveUserToLocalCache(updatedUser: User): void {
+  try {
+    if (!updatedUser || updatedUser.id === undefined) return;
+
+    // 1. LocalStorage - hr_cached_users
+    let list: User[] = [];
+    try {
+      const raw = localStorage.getItem("hr_cached_users");
+      if (raw) list = JSON.parse(raw);
+    } catch (_) {}
+    if (!Array.isArray(list)) list = [];
+
+    const idx = list.findIndex(
+      u => Number(u.id) === Number(updatedUser.id) ||
+      (u.matricula && updatedUser.matricula && isMatriculaMatch(u.matricula, updatedUser.matricula))
+    );
+
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...updatedUser };
+    } else {
+      list.push(updatedUser);
+    }
+
+    const updatedJson = JSON.stringify(list);
+    try {
+      localStorage.setItem("hr_cached_users", updatedJson);
+    } catch (_) {}
+
+    // 2. Preferences (@capacitor/preferences)
+    setPref("hr_cached_users", updatedJson).catch(() => {});
+
+    // 3. IndexedDB
+    saveUsersToIndexedDB(list).catch(() => {});
+
+    // 4. Current User Cache se for o usuário logado
+    try {
+      const rawCurr = localStorage.getItem("hr_current_user");
+      if (rawCurr) {
+        const curr = JSON.parse(rawCurr);
+        if (
+          Number(curr.id) === Number(updatedUser.id) ||
+          (curr.matricula && updatedUser.matricula && isMatriculaMatch(curr.matricula, updatedUser.matricula))
+        ) {
+          const newCurr = { ...curr, ...updatedUser };
+          const newCurrJson = JSON.stringify(newCurr);
+          localStorage.setItem("hr_current_user", newCurrJson);
+          setPref("hr_cached_current_user", newCurrJson).catch(() => {});
+        }
+      }
+    } catch (_) {}
+  } catch (err) {
+    console.warn("[saveUserToLocalCache] Erro ao atualizar cache local do usuário:", err);
+  }
+}
 
 export function isMatriculaMatch(uMat: string | null | undefined, searchMat: string | null | undefined): boolean {
   if (!uMat || !searchMat) return false;
@@ -171,14 +231,24 @@ export function reconcileUsers(localUsers: User[], firestoreUsers: User[]): { me
       // User exists in BOTH Firestore and Local cache
       const fsMat = existing.matricula ? String(existing.matricula).trim() : "";
       const fsSenha = existing.senha ? String(existing.senha).trim() : "";
+      const fsTime = Number(existing.senhaAlteradaEm) || 0;
+      const locTime = Number(locU.senhaAlteradaEm) || 0;
 
       // Prefer Firestore matricula if present
       const finalMat = fsMat || locMat;
 
-      // Prefer custom non-default password
+      // Validação por Timestamp (senhaAlteradaEm): escolhe a senha do lado com timestamp mais recente
       let finalSenha = fsSenha;
-      if (isDefaultPw(fsSenha, finalMat)) {
-        if (locSenha && !isDefaultPw(locSenha, finalMat)) {
+      let finalSenhaTime = fsTime;
+
+      if (fsTime > locTime) {
+        finalSenha = fsSenha || locSenha;
+        finalSenhaTime = fsTime;
+      } else if (locTime > fsTime) {
+        finalSenha = locSenha || fsSenha;
+        finalSenhaTime = locTime;
+      } else {
+        if (isDefaultPw(fsSenha, finalMat) && locSenha && !isDefaultPw(locSenha, finalMat)) {
           finalSenha = locSenha;
         } else {
           finalSenha = fsSenha || locSenha || `Senha@${finalMat}`;
@@ -187,11 +257,21 @@ export function reconcileUsers(localUsers: User[], firestoreUsers: User[]): { me
 
       const isSuper = isMatriculaMatch(finalMat, SUPERADMIN_MAT);
 
+      const isTermosAceitos = Boolean(
+        existing.termosAceitos || existing.termoAceito || locU.termosAceitos || locU.termoAceito
+      );
+      const termosEm = existing.termosAceitosEm || existing.termoAceitoEm || locU.termosAceitosEm || locU.termoAceitoEm || null;
+
       const merged: User = {
         ...locU,
         ...existing, // Firestore attributes override stale local cache
         matricula: finalMat,
         senha: finalSenha,
+        senhaAlteradaEm: finalSenhaTime || existing.senhaAlteradaEm || locU.senhaAlteradaEm,
+        termoAceito: isTermosAceitos,
+        termosAceitos: isTermosAceitos,
+        termoAceitoEm: isTermosAceitos ? (termosEm || new Date().toISOString()) : null,
+        termosAceitosEm: isTermosAceitos ? (termosEm || new Date().toISOString()) : null,
         nome: isSuper ? "Onirolytic" : (existing.nome || locU.nome),
         primeiroAcesso: isSuper ? false : (existing.primeiroAcesso ?? locU.primeiroAcesso),
       };
@@ -307,14 +387,16 @@ export function getOverlapWithNightShift(start: Date, end: Date): NightShiftOver
   return overlaps;
 }
 
-export function formatNightShiftOverlaps(overlaps: NightShiftOverlap[]): { totalHoras: number; texto: string } {
-  const totalHoras = overlaps.reduce((sum, o) => sum + o.horas, 0);
-  if (totalHoras === 0) {
-    return { totalHoras: 0, texto: "" };
+export function formatNightShiftOverlaps(overlaps: NightShiftOverlap[]): { totalHoras: number; totalHorasRelogio: number; texto: string } {
+  const totalHorasRelogio = overlaps.reduce((sum, o) => sum + o.horas, 0);
+  if (totalHorasRelogio === 0) {
+    return { totalHoras: 0, totalHorasRelogio: 0, texto: "" };
   }
+  // Aplicação da Hora Ficta Noturna da CLT (Art. 73 § 1º: 1 hora noturna = 52m30s -> Fator 60 / 52.5 = 1.142857)
+  const totalHoras = totalHorasRelogio * (60 / 52.5);
   const parts = overlaps.map(o => `${o.textoIntervalo}`);
   let texto = parts.join(", ");
-  return { totalHoras, texto };
+  return { totalHoras, totalHorasRelogio, texto };
 }
 
 export function baixarArquivoAtestado(base64OrUrl: string, filename: string) {

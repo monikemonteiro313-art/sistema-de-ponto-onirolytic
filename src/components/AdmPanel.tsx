@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { Shield, Zap, Key, Unlock, Ban, Check, Trash2, Printer, FileSpreadsheet, Plane, SquarePen, Map as MapIcon, FileText, Globe, Database, Server, HardDrive, RefreshCw, WifiOff, Activity, Cpu, ClipboardList, CheckSquare, Square, BookOpen, HelpCircle, Info, Calendar, ShieldAlert, Bell, Send, UserCheck, Users, AlertCircle, Edit3, StickyNote, Settings, ChevronDown, Wrench, Filter, Camera } from "lucide-react";
 import { ThemeColors, User, AuditLogEntry, PontosGlobal, FolhaAceite, Alerta, Batida, Denuncia, SolicitacaoCorrecao, FolgaRemunerada } from "../types";
 import { Btn, Tag } from "./SharedUI";
-import { PwModal, CreateModal, DeleteModal, EditMatriculaModal } from "./AdmModals";
+import { PwModal, CreateModal, DeleteModal } from "./AdmModals";
 import { FeriasModal } from "./FeriasModal";
 import { GerenciarMarcacoesView } from "./GerenciarMarcacoesView";
 import { DenunciasView } from "./DenunciasView";
@@ -10,7 +10,7 @@ import { SolicitacoesCorrecaoView } from "./SolicitacoesCorrecaoView";
 import { FotosCameraView } from "./FotosCameraView";
 import { Paginacao } from "./Paginacao";
 
-import { genMatricula, isMatriculaMatch, timeAgo, resumoMesCalculado, calcularDia } from "../utils/hrHelpers";
+import { genMatricula, isMatriculaMatch, timeAgo, resumoMesCalculado, calcularDia, saveUserToLocalCache } from "../utils/hrHelpers";
 import { SUPERADMIN_MAT, getJornada } from "../data/mockData";
 import { fetchWizardDone, saveUserPontosToDb, saveDiaPonto, batchSaveDiasPonto, fetchPontosMes, fetchAllPontosMes, getMesAtual, saveAuditLogToDb, fetchBlocoNotas, saveBlocoNotasToDb, updateUserSenhaInDb, saveUserToDb, deleteUserFromDb } from "../lib/firebaseService";
 import { getFotoForLogEntry } from "../utils/photoHelper";
@@ -812,18 +812,18 @@ export function AdmPanel({
     }
   }, [users.length]);
 
+  const pontosGlobalCount = Object.keys(pontosGlobal || {}).length;
   useEffect(() => {
     if (isScanning.current) return;
-    const pontosCount = Object.keys(pontosGlobal).length;
-    if (pontosCount > 0) {
+    if (pontosGlobalCount > 0) {
       const now = new Date().toLocaleTimeString("pt-BR");
       setConsoleLogs(prev => [
-        { time: now, type: "SUCCESS", text: `Sincronização em tempo real: Coleção 'pontos' lida (${pontosCount} registros de batidas).` },
+        { time: now, type: "SUCCESS", text: `Sincronização em tempo real: Coleção 'pontos' lida (${pontosGlobalCount} registros de batidas).` },
         ...prev.slice(0, 30)
       ]);
-      setSessionReads(r => r + pontosCount);
+      setSessionReads(r => r + pontosGlobalCount);
     }
-  }, [pontosGlobal]);
+  }, [pontosGlobalCount]);
 
   useEffect(() => {
     if (combinedAuditLogs.length > 0) {
@@ -914,6 +914,9 @@ export function AdmPanel({
       revisadoEm: nowIso,
       justificativaAlteracao: justificativa,
       lancadoPorAdm: true,
+      statusAprovacao: "aprovado",
+      motivoRejeicaoAjuste: undefined,
+      statusAtestado: undefined,
     };
 
     dayPunches[batidaIdx] = updatedPunch;
@@ -1000,42 +1003,26 @@ export function AdmPanel({
       return;
     }
     const cleanPw = newPw.trim();
-    const updatedUser = { ...target, senha: cleanPw };
+    const now = Date.now();
+    const updatedUser = {
+      ...target,
+      senha: cleanPw,
+      senhaAlteradaEm: now,
+      primeiroAcesso: false
+    };
+
+    // B) Atualização Instantânea do Estado e Cache Local
     setUsers(u => u.map(x => (x.id === userId ? updatedUser : x)));
-    saveUserToDb(updatedUser).catch(err => {
-      console.warn("[Firebase] Erro ao atualizar senha no Firestore:", err);
-    });
-    updateUserSenhaInDb(userId, cleanPw, target.matricula).catch(err => {
+    saveUserToLocalCache(updatedUser);
+
+    // A) Atualização Atômica no Firestore (sem setDoc do objeto inteiro!)
+    updateUserSenhaInDb(userId, cleanPw).catch(err => {
       console.warn("[Firebase] Erro ao atualizar campo de senha no Firestore:", err);
     });
+
     addLog("Alterou senha", `${target.nome} (${target.matricula})`);
     setModal(null);
     showToast("Senha atualizada com sucesso");
-  }
-
-  function changeMatricula(userId: number, newMat: string) {
-    const target = users.find(x => x.id === userId);
-    if (!target) return;
-    const p = perms(currentUser, target);
-    if (!p.canChangePw) {
-      showToast("Sem permissão para esta ação.", "danger");
-      return;
-    }
-    const oldMat = target.matricula;
-    const cleanMat = newMat.trim();
-    const exists = users.some(x => x.id !== userId && isMatriculaMatch(x.matricula, cleanMat));
-    if (exists) {
-      showToast("Esta matrícula já está em uso por outro usuário.", "danger");
-      return;
-    }
-    const updatedUser = { ...target, matricula: cleanMat };
-    setUsers(u => u.map(x => (x.id === userId ? updatedUser : x)));
-    saveUserToDb(updatedUser).catch(err => {
-      console.warn("[Firebase] Erro ao atualizar matrícula no Firestore:", err);
-    });
-    addLog("Alterou matrícula", `${target.nome} (${oldMat})`, `Alterada para: ${cleanMat}`);
-    setModal(null);
-    showToast(`Matrícula de ${target.nome} alterada para ${cleanMat}`);
   }
 
   function toggleBlock(userId: number) {
@@ -2351,49 +2338,13 @@ export function AdmPanel({
                     opacity: u.desativado ? 0.65 : 1
                   }}
                 >
-                  {/* Matricula */}
+                  {/* Matricula (Imutavel) */}
                   <span style={{ fontSize: "12.5px", fontFamily: "monospace", color: t.textSub, display: "flex", alignItems: "center", gap: 4 }}>
-                    {p.canChangePw && !isSuper ? (
-                      <button
-                        onClick={() => setModal({ type: "matricula", user: u })}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          color: t.accent,
-                          cursor: "pointer",
-                          padding: "2px 4px",
-                          margin: "-2px -4px",
-                          borderRadius: 6,
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 4,
-                          fontWeight: 650,
-                          fontSize: "12.5px",
-                          fontFamily: "monospace",
-                          transition: "all 0.15s"
-                        }}
-                        onMouseEnter={e => {
-                          e.currentTarget.style.background = t.accentGlow;
-                          e.currentTarget.style.textDecoration = "underline";
-                        }}
-                        onMouseLeave={e => {
-                          e.currentTarget.style.background = "none";
-                          e.currentTarget.style.textDecoration = "none";
-                        }}
-                        title="Clique pra alterar a matrícula deste usuário"
-                      >
-                        {u.matricula}
-                        <SquarePen size={11} style={{ opacity: 0.6 }} />
-                      </button>
-                    ) : (
-                      <>
-                        {u.matricula}
-                        {isSuper && (
-                          <span style={{ fontSize: 9, background: `linear-gradient(135deg, ${t.accent}, #2040CC)`, color: "#fff", borderRadius: 4, padding: "1px 4px", fontWeight: 700 }}>
-                            ROOT
-                          </span>
-                        )}
-                      </>
+                    {u.matricula}
+                    {isSuper && (
+                      <span style={{ fontSize: 9, background: `linear-gradient(135deg, ${t.accent}, #2040CC)`, color: "#fff", borderRadius: 4, padding: "1px 4px", fontWeight: 700 }}>
+                        ROOT
+                      </span>
                     )}
                   </span>
 
@@ -6127,9 +6078,6 @@ export function AdmPanel({
 
       {modal?.type === "create" && <CreateModal setModal={setModal} t={t} users={users} tab={tab} onCreate={createUser} />}
       {modal?.type === "delete" && <DeleteModal modal={modal} setModal={setModal} t={t} onDelete={deactivateUser} />}
-      {modal?.type === "matricula" && modal?.user && (
-        <EditMatriculaModal modal={modal} setModal={setModal} t={t} users={users} onChangeMatricula={changeMatricula} />
-      )}
       {modal?.type === "ferias" && modal?.user && (
         <FeriasModal
           user={modal.user}

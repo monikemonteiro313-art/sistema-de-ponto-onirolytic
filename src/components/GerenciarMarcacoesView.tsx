@@ -23,6 +23,19 @@ interface GerenciarMarcacoesViewProps {
 
 const SLOT_NAMES = ["Entrada 1", "Saída 1 (Almoço)", "Entrada 2 (Retorno)", "Saída 2"];
 
+function safeFormatPunchTime(hora: any): string {
+  if (!hora) return "—";
+  if (typeof hora === "string") {
+    if (/^\d{2}:\d{2}$/.test(hora)) return hora;
+    if (/^\d{2}:\d{2}:\d{2}$/.test(hora)) return hora.substring(0, 5);
+  }
+  const d = new Date(hora);
+  if (!isNaN(d.getTime())) {
+    return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  }
+  return String(hora);
+}
+
 export function GerenciarMarcacoesView({
   t,
   users = [],
@@ -208,16 +221,18 @@ export function GerenciarMarcacoesView({
   }, [validUsers, searchMatricula]);
 
   // Automatically update selectedUserId when searching so the espelho de ponto switches to the searched employee
+  const searchQuery = searchMatricula.trim();
+  const firstFilteredUserId = filteredUsers[0]?.id;
   useEffect(() => {
-    if (searchMatricula.trim() !== "") {
-      if (filteredUsers.length > 0) {
+    if (searchQuery !== "") {
+      if (firstFilteredUserId !== undefined) {
         const isCurrentSelectedInFiltered = filteredUsers.some((u) => u.id === selectedUserId);
-        if (!isCurrentSelectedInFiltered || filteredUsers.length === 1) {
-          setSelectedUserId(filteredUsers[0].id);
+        if ((!isCurrentSelectedInFiltered || filteredUsers.length === 1) && selectedUserId !== firstFilteredUserId) {
+          setSelectedUserId(firstFilteredUserId);
         }
       }
     }
-  }, [searchMatricula, filteredUsers]);
+  }, [searchQuery, firstFilteredUserId, selectedUserId]);
 
   const selectedUser = useMemo(() => {
     return validUsers.find((u) => u.id === selectedUserId) || null;
@@ -822,17 +837,14 @@ export function GerenciarMarcacoesView({
                                 timeDisplay = punch.ocorrencia.toUpperCase();
                               }
                             } else if (punch.hora) {
-                              timeDisplay = new Date(punch.hora).toLocaleTimeString("pt-BR", {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              });
+                              timeDisplay = safeFormatPunchTime(punch.hora);
 
-                              if (punch.statusAprovacao === "recusado" || punch.statusAprovacao === "rejeitado" || punch.origemMarcacao === "RECUSADA") {
-                                tag = "RECUSADA";
+                              if (punch.lancadoPorAdm || punch.modificadoPorGestor || punch.origemMarcacao === "MO") {
+                                tag = "MO";
                               } else if (punch.statusAprovacao === "aprovado" || punch.origemMarcacao === "MA" || punch.tipo === "manual_solicitado") {
                                 tag = "MA";
-                              } else if (punch.lancadoPorAdm || punch.modificadoPorGestor || punch.origemMarcacao === "MO") {
-                                tag = "MO";
+                              } else if (punch.statusAprovacao === "recusado" || punch.statusAprovacao === "rejeitado" || punch.origemMarcacao === "RECUSADA") {
+                                tag = "RECUSADA";
                               }
                             }
                           }
@@ -932,7 +944,7 @@ export function GerenciarMarcacoesView({
                                           userMatricula: selectedUser?.matricula || "—",
                                           dayKey: day.dayKey,
                                           slotName: SLOT_NAMES[slotIdx] || `Batida #${slotIdx + 1}`,
-                                          timeStr: punch?.hora ? new Date(punch.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—"
+                                          timeStr: punch?.hora ? safeFormatPunchTime(punch.hora) : "—"
                                         });
                                       }}
                                       style={{
@@ -1148,7 +1160,7 @@ export function GerenciarMarcacoesView({
                   }}
                 >
                   <div style={{ fontWeight: 700, color: t.text, marginBottom: 4, display: "flex", justifyContent: "space-between" }}>
-                    <span>Horário Atual Registrado: {new Date(modalData.punch.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span>
+                    <span>Horário Atual Registrado: {safeFormatPunchTime(modalData.punch.hora)}</span>
                     {modalData.punch.origemMarcacao === "MA" || modalData.punch.statusAprovacao === "aprovado" ? (
                       <span style={{ color: "#2563eb", fontWeight: 800 }}>[Tag MA]</span>
                     ) : modalData.punch.origemMarcacao === "MO" || modalData.punch.modificadoPorGestor ? (
@@ -1202,7 +1214,7 @@ export function GerenciarMarcacoesView({
                                 userMatricula: selectedUser?.matricula || "—",
                                 dayKey: modalData.dayKey,
                                 slotName: SLOT_NAMES[modalData.slotIdx] || `Batida #${modalData.slotIdx + 1}`,
-                                timeStr: modalData.punch?.hora ? new Date(modalData.punch.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—"
+                                timeStr: modalData.punch?.hora ? safeFormatPunchTime(modalData.punch.hora) : "—"
                               });
                             }}
                             style={{ background: "#8b5cf6", color: "#ffffff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
@@ -1222,7 +1234,7 @@ export function GerenciarMarcacoesView({
                                 userMatricula: selectedUser?.matricula || "—",
                                 dayKey: modalData.dayKey,
                                 slotName: SLOT_NAMES[modalData.slotIdx] || `Batida #${modalData.slotIdx + 1}`,
-                                timeStr: modalData.punch?.hora ? new Date(modalData.punch.hora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—"
+                                timeStr: modalData.punch?.hora ? safeFormatPunchTime(modalData.punch.hora) : "—"
                               });
                             }}
                           />

@@ -2,321 +2,82 @@ import { Jornada, User, PontosGlobal, PeriodoFerias, DiaPontos } from "../types"
 
 export const JORNADAS_PREDEFINIDAS: Jornada[] = [
   {
-    id: "flex_8h_sab_4h",
-    nome: "Sem Horário Fixo (Seg–Sex 8h / Sáb 4h - 44h/sem)",
-    entrada: null,
-    saidaAlmoco: null,
-    retornoAlmoco: null,
-    saida: null,
-    diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 8,
-    descricao: "Seg–Sex: 8h/dia · Sáb: 4h · Total: 44h/sem · Sem horário pré-definido",
-    sabadoEspecial: true,
-    sabadoEntrada: null,
-    sabadoSaida: null,
-    sabadoHoras: 4
-  },
-  {
-    id: "posto_07_17_sab",
-    nome: "Posto 07h–17h (2h Almoço + Sáb 4h)",
-    entrada: "07:00",
-    saidaAlmoco: "11:00",
+    id: "seg_sab_8h_4h",
+    nome: "Seg a Sáb (8h Seg–Sex + 4h Sáb)",
+    entrada: "08:00",
+    saidaAlmoco: "12:00",
     retornoAlmoco: "13:00",
     saida: "17:00",
     diasSemana: [1, 2, 3, 4, 5, 6],
     horasDia: 8,
-    descricao: "Seg–Sex: 07h-11h / 13h-17h (8h) · Sáb: 07h-11h (4h) · Total: 44h/sem",
-    sabadoEspecial: true,
-    sabadoEntrada: "07:00",
-    sabadoSaida: "11:00",
-    sabadoHoras: 4
-  },
-  {
-    id: "posto_08_18_sab",
-    nome: "Posto 08h–18h (2h Almoço + Sáb 4h)",
-    entrada: "08:00",
-    saidaAlmoco: "12:00",
-    retornoAlmoco: "14:00",
-    saida: "18:00",
-    diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 8,
-    descricao: "Seg–Sex: 08h-12h / 14h-18h (8h) · Sáb: 08h-12h (4h) · Total: 44h/sem",
+    descricao: "Seg–Sex: 8h/dia · Sáb: 4h (08h–12h) · Total: 44h/sem (Valida por soma de horas)",
     sabadoEspecial: true,
     sabadoEntrada: "08:00",
     sabadoSaida: "12:00",
     sabadoHoras: 4
   },
   {
-    id: "posto_09_19_sab",
-    nome: "Posto 09h–19h (2h Almoço + Sáb 4h)",
-    entrada: "09:00",
-    saidaAlmoco: "13:00",
-    retornoAlmoco: "15:00",
-    saida: "19:00",
-    diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 8,
-    descricao: "Seg–Sex: 09h-13h / 15h-19h (8h) · Sáb: 09h-13h (4h) · Total: 44h/sem",
-    sabadoEspecial: true,
-    sabadoEntrada: "09:00",
-    sabadoSaida: "13:00",
-    sabadoHoras: 4
-  },
-  {
-    id: "noturno_17_03_sab",
-    nome: "Noturno Seg–Sáb 17h–03h (2h Intervalo - 8h/dia)",
-    entrada: "17:00",
-    saidaAlmoco: "21:00",
-    retornoAlmoco: "23:00",
-    saida: "03:00",
-    diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 8,
-    descricao: "Seg–Sáb: 17h–21h / 23h–03h (8h/dia) · Total: 48h/sem",
-    sabadoEspecial: false,
-    sabadoEntrada: "17:00",
-    sabadoSaidaAlmoco: "21:00",
-    sabadoRetornoAlmoco: "23:00",
-    sabadoSaida: "03:00",
-    sabadoHoras: 8
-  },
-  {
-    id: "clt_8h_sab_8h",
-    nome: "CLT 48h - Seg–Sáb 08h–17h (1h Almoço - Sáb 8h Integral)",
+    id: "seg_sab_8h",
+    nome: "Seg a Sáb (8h Seg–Sex + 8h Sáb)",
     entrada: "08:00",
     saidaAlmoco: "12:00",
     retornoAlmoco: "13:00",
     saida: "17:00",
     diasSemana: [1, 2, 3, 4, 5, 6],
     horasDia: 8,
-    descricao: "Seg–Sex: 08h–12h / 13h–17h (8h) · Sáb: 08h–12h / 13h–17h (8h) · Total: 48h/sem",
+    descricao: "Seg–Sex: 8h/dia · Sáb: 8h (08h–17h) · Total: 48h/sem",
     sabadoEspecial: true,
     sabadoEntrada: "08:00",
     sabadoSaida: "17:00",
     sabadoHoras: 8
   },
   {
-    id: "posto_07_17_sab_8h",
-    nome: "Posto 07h–17h (2h Almoço - Sáb 8h Integral)",
-    entrada: "07:00",
-    saidaAlmoco: "11:00",
+    id: "seg_sex_8h",
+    nome: "Seg a Sex (8h/dia - 40h/sem)",
+    entrada: "08:00",
+    saidaAlmoco: "12:00",
     retornoAlmoco: "13:00",
     saida: "17:00",
-    diasSemana: [1, 2, 3, 4, 5, 6],
+    diasSemana: [1, 2, 3, 4, 5],
     horasDia: 8,
-    descricao: "Seg–Sex: 07h-11h / 13h-17h (8h) · Sáb: 07h-11h / 13h-17h (8h) · Total: 48h/sem",
-    sabadoEspecial: true,
-    sabadoEntrada: "07:00",
-    sabadoSaida: "17:00",
-    sabadoHoras: 8
+    descricao: "Seg–Sex: 8h/dia · Sábados e Domingos Folga · Total: 40h/sem"
   },
   {
-    id: "flex_8h_sab_8h",
-    nome: "Sem Horário Fixo (Seg–Sáb 8h/dia - 48h/sem)",
-    entrada: null,
-    saidaAlmoco: null,
-    retornoAlmoco: null,
-    saida: null,
-    diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 8,
-    descricao: "Seg–Sáb: 8h/dia · Total: 48h/sem · Sem horário pré-definido",
-    sabadoEspecial: true,
-    sabadoEntrada: null,
-    sabadoSaida: null,
-    sabadoHoras: 8
-  },
-  {
-    id: "clt_comp_1h",
-    nome: "Compensatória 44h (1h Almoço - Sem Sábado)",
+    id: "seg_sex_compensatoria",
+    nome: "Seg a Sex Compensatória 44h (Sem Sábado)",
     entrada: "08:00",
     saidaAlmoco: "12:00",
     retornoAlmoco: "13:00",
     saida: "17:48",
     diasSemana: [1, 2, 3, 4, 5],
     horasDia: 8.8,
-    descricao: "Seg–Sex: 8h48min/dia (1h almoço) · Sáb: Folga · Total: 44h/sem"
+    descricao: "Seg–Sex: 8h48min/dia (1h a mais de Seg–Sex para folgar no Sábado) · Total: 44h/sem"
   },
   {
-    id: "clt_8h_sab_4h",
-    nome: "CLT 44h - 8h/dia (Seg–Sex) + Sáb 4h (08h–17h / Sáb 08h–12h)",
-    entrada: "08:00",
-    saidaAlmoco: "12:00",
-    retornoAlmoco: "13:00",
-    saida: "17:00",
-    diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 8,
-    descricao: "Seg–Sex: 08h–12h / 13h–17h (8h) · Sáb: 08h–12h (4h) · Total: 44h/sem (1h Almoço)",
-    sabadoEspecial: true,
-    sabadoEntrada: "08:00",
-    sabadoSaida: "12:00",
-    sabadoHoras: 4
-  },
-  {
-    id: "clt_07_16_sab",
-    nome: "CLT 44h - 8h/dia (Seg–Sex) + Sáb 4h (07h–16h / Sáb 07h–11h)",
+    id: "seg_sex_6h_sab_4h",
+    nome: "Seg a Sex 6h (15min int) + Sáb 4h",
     entrada: "07:00",
-    saidaAlmoco: "11:00",
-    retornoAlmoco: "12:00",
-    saida: "16:00",
+    saidaAlmoco: null,
+    retornoAlmoco: null,
+    saida: "13:15",
     diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 8,
-    descricao: "Seg–Sex: 07h–11h / 12h–16h (8h) · Sáb: 07h–11h (4h) · Total: 44h/sem (1h Almoço)",
+    horasDia: 6,
+    descricao: "Seg–Sex: 6h/dia (15min intervalo) · Sáb: 4h · Total: 34h/sem",
     sabadoEspecial: true,
     sabadoEntrada: "07:00",
     sabadoSaida: "11:00",
     sabadoHoras: 4
   },
   {
-    id: "clt_8h",
-    nome: "CLT Padrão 8h (Apenas Seg–Sex)",
-    entrada: "08:00",
-    saidaAlmoco: "12:00",
-    retornoAlmoco: "13:00",
-    saida: "17:00",
-    diasSemana: [1, 2, 3, 4, 5],
-    horasDia: 8,
-    descricao: "Seg–Sex · 8h/dia · 40h/semana (Sábados de Folga)"
-  },
-  {
-    id: "clt_6h",
-    nome: "Jornada 6h",
+    id: "seg_sex_6h",
+    nome: "Seg a Sex 6h (15min intervalo)",
     entrada: "07:00",
     saidaAlmoco: null,
     retornoAlmoco: null,
-    saida: "13:00",
-    diasSemana: [1, 2, 3, 4, 5, 6],
+    saida: "13:15",
+    diasSemana: [1, 2, 3, 4, 5],
     horasDia: 6,
-    descricao: "Seg–Sáb · 6h/dia · 36h/semana (sem intervalo obrigatório)"
-  },
-  {
-    id: "noturno_20_02",
-    nome: "Noturno 20h–02h (6h / 2 Batidas)",
-    entrada: "20:00",
-    saidaAlmoco: null,
-    retornoAlmoco: null,
-    saida: "02:00",
-    diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 6,
-    descricao: "20:00 às 02:00 · 6h/dia · Somente 2 batidas (Entrada e Saída) com intervalo de 15min pré-assinalado"
-  },
-  {
-    id: "clt_12x36",
-    nome: "12x36",
-    entrada: "07:00",
-    saidaAlmoco: "13:00",
-    retornoAlmoco: "14:00",
-    saida: "19:00",
-    diasSemana: [1, 3, 5],
-    horasDia: 12,
-    descricao: "12h trabalhadas · 36h de descanso (revezamento)"
-  },
-  {
-    id: "clt_noturno",
-    nome: "Noturno 8h",
-    entrada: "22:00",
-    saidaAlmoco: "02:00",
-    retornoAlmoco: "03:00",
-    saida: "06:00",
-    diasSemana: [1, 2, 3, 4, 5],
-    horasDia: 8,
-    descricao: "Seg–Sex · 22h–06h · adicional noturno aplicável"
-  },
-  {
-    id: "clt_tarde",
-    nome: "Vespertino 8h",
-    entrada: "13:00",
-    saidaAlmoco: "17:00",
-    retornoAlmoco: "18:00",
-    saida: "22:00",
-    diasSemana: [1, 2, 3, 4, 5],
-    horasDia: 8,
-    descricao: "Seg–Sex · 13h–22h"
-  },
-  {
-    id: "clt_meio",
-    nome: "Meio Período Manhã",
-    entrada: "08:00",
-    saidaAlmoco: null,
-    retornoAlmoco: null,
-    saida: "12:00",
-    diasSemana: [1, 2, 3, 4, 5],
-    horasDia: 4,
-    descricao: "Seg–Sex · 08h–12h · 4h/dia"
-  },
-  {
-    id: "clt_meio_t",
-    nome: "Meio Período Tarde",
-    entrada: "13:00",
-    saidaAlmoco: null,
-    retornoAlmoco: null,
-    saida: "17:00",
-    diasSemana: [1, 2, 3, 4, 5],
-    horasDia: 4,
-    descricao: "Seg–Sex · 13h–17h · 4h/dia"
-  },
-  {
-    id: "comercial",
-    nome: "Comercial 9h",
-    entrada: "09:00",
-    saidaAlmoco: "12:00",
-    retornoAlmoco: "13:00",
-    saida: "18:00",
-    diasSemana: [1, 2, 3, 4, 5],
-    horasDia: 8,
-    descricao: "Seg–Sex · 09h–18h"
-  },
-  {
-    id: "sabado",
-    nome: "Seg–Sáb 7h20",
-    entrada: "07:20",
-    saidaAlmoco: "11:20",
-    retornoAlmoco: "12:00",
-    saida: "16:00",
-    diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 7.33,
-    descricao: "Seg–Sáb · 44h/semana distribuídas"
-  },
-  {
-    id: "escala_5x1",
-    nome: "Escala 5x1",
-    entrada: null,
-    saidaAlmoco: null,
-    retornoAlmoco: null,
-    saida: null,
-    diasSemana: [1, 2, 3, 4, 5],
-    horasDia: 8,
-    descricao: "5 dias trabalhados · 1 folga (revezamento) · Sem horário fixo"
-  },
-  {
-    id: "escala_5x2",
-    nome: "Escala 5x2",
-    entrada: null,
-    saidaAlmoco: null,
-    retornoAlmoco: null,
-    saida: null,
-    diasSemana: [1, 2, 3, 4, 5],
-    horasDia: 8,
-    descricao: "Seg–Sex · 2 dias de folga · 40h/semana · Sem horário fixo"
-  },
-  {
-    id: "escala_6x1",
-    nome: "Escala 6x1",
-    entrada: null,
-    saidaAlmoco: null,
-    retornoAlmoco: null,
-    saida: null,
-    diasSemana: [1, 2, 3, 4, 5, 6],
-    horasDia: 8,
-    descricao: "6 dias trabalhados · 1 folga (revezamento) · Sem horário fixo"
-  },
-  {
-    id: "home_flex",
-    nome: "Home Office / Flexível",
-    entrada: null,
-    saidaAlmoco: null,
-    retornoAlmoco: null,
-    saida: null,
-    diasSemana: [1, 2, 3, 4, 5],
-    horasDia: 8,
-    descricao: "Sem horário fixo · carga horária diária de referência"
+    descricao: "Seg–Sex: 6h/dia (15min de intervalo) · Sábados e Domingos Folga · Total: 30h/sem"
   },
   {
     id: "personalizada",
@@ -331,8 +92,20 @@ export const JORNADAS_PREDEFINIDAS: Jornada[] = [
   }
 ];
 
-export function getJornada(id: string): Jornada | null {
-  return JORNADAS_PREDEFINIDAS.find(j => j.id === id) || null;
+export function getJornada(id: string | null | undefined): Jornada | null {
+  if (!id) return JORNADAS_PREDEFINIDAS[0];
+  const found = JORNADAS_PREDEFINIDAS.find(j => j.id === id);
+  if (found) return found;
+
+  // Fallback seguro de conversão para jornadas legadas:
+  if (id === "personalizada") return JORNADAS_PREDEFINIDAS.find(j => j.id === "personalizada") || JORNADAS_PREDEFINIDAS[0];
+  if (id.includes("comp") || id.includes("48")) return JORNADAS_PREDEFINIDAS[3]; // compensatoria
+  if (id.includes("6h") && (id.includes("sab") || id.includes("34"))) return JORNADAS_PREDEFINIDAS[4];
+  if (id.includes("6h")) return JORNADAS_PREDEFINIDAS[5];
+  if (id.includes("sab_4h") || id.includes("44") || id.includes("posto") || id.includes("07_16") || id.includes("08_18") || id.includes("07_17")) return JORNADAS_PREDEFINIDAS[0];
+  if (id.includes("sab_8h") || id.includes("5x1") || id.includes("6x1") || id.includes("sab")) return JORNADAS_PREDEFINIDAS[1];
+
+  return JORNADAS_PREDEFINIDAS[2];
 }
 
 export const SUPERADMIN_MAT = "090909";

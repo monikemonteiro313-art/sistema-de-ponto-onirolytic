@@ -533,6 +533,8 @@ function PainelTotais({ t, resumo, minimoHorasDia, mes }: PainelTotaisProps) {
   );
 }
 
+import { RegistrosOfflineView } from "./RegistrosOfflineView";
+
 // --- MAIN OPERATOR DASHBOARD COMPONENT ---
 interface AdmOperadorPanelProps {
   t: ThemeColors;
@@ -564,6 +566,8 @@ interface AdmOperadorPanelProps {
   saveAlertaToDb?: (alerta: Alerta) => Promise<void>;
   deleteAlertaFromDb?: (alertaId: string) => Promise<void>;
   auditLogs?: AuditLogEntry[];
+  onForceSyncOfflineRecord?: (item: any) => Promise<boolean>;
+  onDiscardOfflineRecord?: (item: any) => Promise<void>;
   onSyncData?: () => Promise<void>;
   isSyncingData?: boolean;
   isOfflineData?: boolean;
@@ -598,19 +602,22 @@ export function AdmOperadorPanel({
   saveAlertaToDb,
   deleteAlertaFromDb,
   auditLogs = [],
+  onForceSyncOfflineRecord,
+  onDiscardOfflineRecord,
   onSyncData,
   isSyncingData = false,
   isOfflineData = false
 }: AdmOperadorPanelProps) {
   const [busca, setBusca] = useState("");
   const [guiaAtiva, setGuiaAtiva] = useState<"frequencia" | "aprovacoes" | "beneficios" | "relatorios" | "gerenciar_marcacoes">("frequencia");
-  const [subFiltroAprovacoes, setSubFiltroAprovacoes] = useState<"correcoes" | "atestados" | "pontos_manuais" | "pre_pontos" | "denuncias" | "alertas">("correcoes");
+  const [subFiltroAprovacoes, setSubFiltroAprovacoes] = useState<"correcoes" | "atestados" | "pontos_manuais" | "pre_pontos" | "registros_offline" | "denuncias" | "alertas">("correcoes");
   const [alertaDestinoTipo, setAlertaDestinoTipo] = useState<"TODOS" | "ESPECIFICO">("TODOS");
   const [alertaMatricula, setAlertaMatricula] = useState<string>("");
   const [alertaMensagem, setAlertaMensagem] = useState<string>("");
   const [alertaSending, setAlertaSending] = useState<boolean>(false);
   const [confirmDeleteAlertaId, setConfirmDeleteAlertaId] = useState<string | null>(null);
   const [filtroStatusPontoManual, setFiltroStatusPontoManual] = useState<"todos" | "pendente" | "aprovado" | "rejeitado">("todos");
+  const [rejeitarPontoManualModal, setRejeitarPontoManualModal] = useState<{ item: any; motivo: string } | null>(null);
 
 
   const handleSalvarPontoGerenciado = async (
@@ -654,6 +661,9 @@ export function AdmOperadorPanel({
       revisadoEm: nowIso,
       justificativaAlteracao: justificativa,
       lancadoPorAdm: true,
+      statusAprovacao: "aprovado",
+      motivoRejeicaoAjuste: undefined,
+      statusAtestado: undefined,
     };
 
     dayPunches[batidaIdx] = updatedPunch;
@@ -3882,6 +3892,7 @@ export function AdmOperadorPanel({
                 { key: "atestados", label: "📋 Atestados Médicos", count: pendenciasCalculadas.atestadosPendentes },
                 { key: "pontos_manuais", label: "✍️ Pontos Manuais (M)", count: pendenciasCalculadas.pontosManuaisPendentes },
                 { key: "pre_pontos", label: "🛡️ Validação / Pré-Pontos", count: pendenciasCalculadas.prePontosPendentes },
+                { key: "registros_offline", label: "📡 Registros Offline (Contingência)", count: (prePontos || []).filter(p => p.status === "pendente").length },
                 { key: "denuncias", label: "📢 Canal de Denúncias", count: denuncias.filter(d => d.status === "pendente").length },
                 { key: "alertas", label: "🔔 Comunicados / Alertas", count: alertas.length }
               ].map(item => {
@@ -4251,6 +4262,79 @@ export function AdmOperadorPanel({
               </div>
             )}
 
+            {rejeitarPontoManualModal && (
+              <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+                <div style={{ background: t.surface, border: `1.5px solid ${t.border}`, borderRadius: 16, padding: 24, maxWidth: 460, width: "100%", boxShadow: "0 20px 40px rgba(0,0,0,0.2)" }}>
+                  <h3 style={{ margin: "0 0 12px", fontSize: 18, color: t.text, fontWeight: 800, display: "flex", alignItems: "center", gap: 8 }}>
+                    ❌ Recusar / Rejeitar Ponto Manual
+                  </h3>
+                  <p style={{ margin: "0 0 16px", fontSize: 13, color: t.textSub, lineHeight: 1.5 }}>
+                    Informe o motivo da recusa do ponto do colaborador <strong>{rejeitarPontoManualModal.item.userName}</strong> (Data: {rejeitarPontoManualModal.item.dayKey.split("-").reverse().join("/")}):
+                  </p>
+                  <textarea
+                    value={rejeitarPontoManualModal.motivo}
+                    onChange={(e) => setRejeitarPontoManualModal({ ...rejeitarPontoManualModal, motivo: e.target.value })}
+                    rows={3}
+                    placeholder="Motivo da recusa (mínimo de 3 caracteres)..."
+                    style={{
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: `1.5px solid ${t.border}`,
+                      background: t.surfaceAlt,
+                      color: t.text,
+                      fontSize: 13,
+                      resize: "none",
+                      outline: "none",
+                      marginBottom: 16
+                    }}
+                  />
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                    <button
+                      type="button"
+                      onClick={() => setRejeitarPontoManualModal(null)}
+                      style={{
+                        padding: "8px 16px",
+                        borderRadius: 8,
+                        border: `1px solid ${t.border}`,
+                        background: t.surfaceAlt,
+                        color: t.text,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        fontSize: 13
+                      }}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const m = rejeitarPontoManualModal.motivo.trim();
+                        if (!m) {
+                          alert("Por favor, digite a justificativa da recusa.");
+                          return;
+                        }
+                        handleRejeitarPontoManual(rejeitarPontoManualModal.item, m);
+                        setRejeitarPontoManualModal(null);
+                      }}
+                      style={{
+                        padding: "8px 16px",
+                        borderRadius: 8,
+                        border: "none",
+                        background: "#DC2626",
+                        color: "#ffffff",
+                        fontWeight: 800,
+                        cursor: "pointer",
+                        fontSize: 13
+                      }}
+                    >
+                      Confirmar Recusa
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Modal de Justificativa Manual de Recusa de Atestado */}
             {atestadoParaRecusar && (
               <div style={{
@@ -4584,10 +4668,10 @@ export function AdmOperadorPanel({
                         <button
                           type="button"
                           onClick={() => {
-                            const motivo = window.prompt("Informe o motivo da recusa do ponto manual:", item.motivoRejeicaoAjuste || "Horário inconsistente");
-                            if (motivo !== null) {
-                              handleRejeitarPontoManual(item, motivo);
-                            }
+                            setRejeitarPontoManualModal({
+                              item,
+                              motivo: item.motivoRejeicaoAjuste || "Horário inconsistente"
+                            });
                           }}
                           style={{
                             flex: 1,
@@ -4877,6 +4961,15 @@ export function AdmOperadorPanel({
               );
             })()}
           </>
+        ) : subFiltroAprovacoes === "registros_offline" ? (
+          <RegistrosOfflineView
+            t={t}
+            users={users}
+            prePontos={prePontos}
+            pontosGlobal={pontosGlobal}
+            onForceSyncRecord={onForceSyncOfflineRecord || (async () => false)}
+            onSyncData={onSyncData}
+          />
         ) : subFiltroAprovacoes === "denuncias" ? (
           <DenunciasView
             t={t}

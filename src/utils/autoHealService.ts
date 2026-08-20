@@ -182,15 +182,19 @@ export function useAutoHeal(
     };
   }, []);
 
-  // --- Atualização de Alertas de Jornada (Apenas Leitura) ---
+  // --- Atualização de Alertas de Jornada (Apenas Leitura com checagem de igualdade para evitar loops) ---
+  const todayPunchesStr = JSON.stringify(todayPunches || []);
   useEffect(() => {
-    if (!currentUser || !todayPunches) {
-      setJourneyAlerts([]);
+    if (!currentUser || !todayPunches || todayPunches.length === 0) {
+      setJourneyAlerts((prev) => (prev.length === 0 ? prev : []));
       return;
     }
     const alerts = checkJourneyAnomalies(todayPunches);
-    setJourneyAlerts(alerts);
-  }, [currentUser, todayPunches]);
+    setJourneyAlerts((prev) => {
+      if (JSON.stringify(prev) === JSON.stringify(alerts)) return prev;
+      return alerts;
+    });
+  }, [currentUser?.id, todayPunchesStr]);
 
   // --- Trava de Interface contra Duplicidade (Cooldown de 45s por padrão) ---
   const triggerPunchCooldown = useCallback((seconds: number = 45) => {

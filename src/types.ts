@@ -27,6 +27,7 @@ export interface User {
   nome: string;
   tipo: "colaborador" | "adm-dev";
   senha: string | null;
+  senhaAlteradaEm?: number;
   primeiroAcesso?: boolean;
   bloqueado: boolean;
   bloqueadoAceite?: boolean; // Novo campo para bloquear por recusa de folha
@@ -39,6 +40,8 @@ export interface User {
   perm_gestao_folhas?: boolean;
   termoAceito: boolean;
   termoAceitoEm: string | null;
+  termosAceitos?: boolean;
+  termosAceitosEm?: string | null;
   jornadaId: string | null;
   jornadaCustom: Jornada | null;
   insalubridade?: 0 | 20 | 40;
@@ -60,7 +63,7 @@ export interface User {
 export interface Batida {
   hora?: string;
   iso?: string;
-  tipo?: "auto" | "manual";
+  tipo?: "auto" | "manual" | "normal";
   registradoEm?: string;
   editadoEm?: string;
   editadoPor?: string;
@@ -110,7 +113,7 @@ export interface Batida {
 export type DiaPontos = (Batida | null)[];
 
 export interface PontosGlobal {
-  [userId: number]: {
+  [userId: string | number]: {
     [dayKey: string]: DiaPontos;
   };
 }
@@ -153,10 +156,16 @@ export interface PrePonto {
   matricula: string;
   dayKey: string;
   idx: number;
-  tipo: "auto" | "manual";
+  tipo: "auto" | "manual" | "normal";
   quando: string;
   status: "pendente" | "sucesso" | "cancelado";
   atualizadoEm?: string;
+  hora?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  accuracy?: number | null;
+  fotoComprovante?: string | null;
+  obs?: string;
 }
 
 export interface ThemeColors {
